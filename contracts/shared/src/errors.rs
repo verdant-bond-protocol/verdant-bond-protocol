@@ -85,4 +85,8 @@ pub enum GovernanceError {
     TimelockNotElapsed = 8,
     NotQueued = 9,
     AlreadyExecuted = 10,
+    InvalidThreshold = 11,
+    SignerAlreadyExists = 12,
+    SignerNotFound = 13,
+    InvalidTimelock = 14,
 }
