@@ -1,0 +1,1 @@
+Solution proposal for End-to-end lifecycle tests do not cover project registration through bond issuance, subscription, coupon distribution, DEX sale, and redemption
