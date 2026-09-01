@@ -10,6 +10,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
+import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 
 @Controller('projects')
 export class ProjectsController {
@@ -17,8 +18,9 @@ export class ProjectsController {
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async register(@Body() dto: CreateProjectDto): Promise<ProjectResponse> {
-    return this.projectsService.register(dto, '');
+  async register(@Body() dto: CreateProjectDto, @Req() req: any): Promise<ProjectResponse> {
+    const ownerAddress = req.user?.walletAddress || req.headers['x-wallet-address'] || '';
+    return this.projectsService.register(dto, ownerAddress);
   }
 
   @Get()

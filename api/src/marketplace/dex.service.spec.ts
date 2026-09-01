@@ -33,6 +33,10 @@ class InMemoryRedis {
     this.store.set(key, value);
   }
 
+  async cacheSet(key: string, _ttl: number, value: string, _tags?: string[]): Promise<void> {
+    this.store.set(key, value);
+  }
+
   async del(key: string): Promise<void> {
     this.store.delete(key);
   }
@@ -51,6 +55,7 @@ class InMemoryRedis {
   async sMembers(_key: string): Promise<string[]> {
     return [];
   }
+  async invalidateTag(_tag: string): Promise<void> {}
 
   keys(): string[] {
     return [...this.store.keys()];
@@ -67,7 +72,7 @@ class InMemoryRedis {
 describe('DexService', () => {
   let service: DexService;
   let contractService: { simulateCall: jest.Mock; invokeContractMethod: jest.Mock };
-  let redis: { get: jest.Mock; setEx: jest.Mock; del: jest.Mock; delPattern: jest.Mock };
+  let redis: { get: jest.Mock; setEx: jest.Mock; del: jest.Mock; cacheSet: jest.Mock; invalidateTag: jest.Mock; delPattern: jest.Mock };
 
   const simulateCallMock = jest.fn();
   const invokeContractMethodMock = jest.fn();
@@ -81,6 +86,8 @@ describe('DexService', () => {
       get: jest.fn().mockResolvedValue(null),
       setEx: jest.fn().mockResolvedValue(undefined),
       del: jest.fn().mockResolvedValue(undefined),
+      cacheSet: jest.fn().mockResolvedValue(undefined),
+      invalidateTag: jest.fn().mockResolvedValue(undefined),
       delPattern: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -164,7 +171,7 @@ describe('DexService', () => {
         if (id === 2) {
           const raw = rawOrder(id);
           // Set expiry at index 8
-          raw.value()[8] = nativeToScVal(pastExpiry, { type: 'u64' });
+          (raw.value() as xdr.ScVal[])[8] = nativeToScVal(pastExpiry, { type: 'u64' });
           return Promise.resolve(raw);
         }
         return Promise.resolve(rawOrder(id));
@@ -188,7 +195,7 @@ describe('DexService', () => {
         BigInt(1000),
         BigInt(25),
         'USDC',
-        0,
+         0,
         BigInt(1700000000),
         FUTURE_EXPIRY,
       ];
@@ -269,7 +276,7 @@ describe('DexService', () => {
         'deposit_quote',
         expect.any(String),
         expect.any(Array),
-        0,
+        address,
       );
     });
   });
@@ -297,7 +304,7 @@ describe('DexService', () => {
         'withdraw_quote',
         expect.any(String),
         expect.any(Array),
-        0,
+        address,
       );
     });
   });
@@ -324,7 +331,7 @@ describe('DexService', () => {
         'clean_expired_orders',
         'SADMIN',
         expect.any(Array),
-        0,
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
       );
       const args = invokeContractMethodMock.mock.calls[0][3];
       expect(Number(scValToNative(args[1]))).toBe(1);

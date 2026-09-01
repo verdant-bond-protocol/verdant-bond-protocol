@@ -133,6 +133,10 @@ impl OracleConsumer {
             .set(&DataKey::MinimumVerifierStake, &DEFAULT_MIN_VERIFIER_STAKE);
     }
 
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        get_nonce(&env, &address)
+    }
+
     pub fn set_admin(
         env: Env,
         current_admin: Address,

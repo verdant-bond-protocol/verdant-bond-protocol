@@ -11,7 +11,7 @@ import { SigningKeyProvider } from '../common/services/signing-key.provider';
 import { ConfigService } from '../config/config.service';
 import { HolderIndexService } from './holder-index.service';
 import { ReportStatus } from '../oracle/interfaces/oracle.interface';
-import { nativeToScVal, xdr } from '@stellar/stellar-sdk';
+import { xdr } from '@stellar/stellar-sdk';
 
 const validCouponResult = xdr.ScVal.scvVec([
   nativeToScVal(BigInt(1), { type: 'u64' }),
@@ -23,10 +23,7 @@ const validCouponResult = xdr.ScVal.scvVec([
 function bondsModuleWith(oracleService?: any) {
   const providers: any[] = [
     BondsService,
-    {
-      provide: HolderIndexService,
-      useValue: { getHoldersForCoupon: jest.fn().mockResolvedValue([]) },
-    },
+
     {
       provide: ContractService,
       useValue: { invokeContractMethod: jest.fn().mockResolvedValue({ result: validCouponResult, transactionHash: 'x' }), simulateCall: jest.fn() },

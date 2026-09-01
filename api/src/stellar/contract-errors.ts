@@ -14,6 +14,8 @@ export enum StableErrorCode {
   BOND_REPORT_NOT_VERIFIED = 'BOND_REPORT_NOT_VERIFIED',
   BOND_INVALID_REPORT = 'BOND_INVALID_REPORT',
   BOND_INVALID_SUPPLY = 'BOND_INVALID_SUPPLY',
+  BOND_REDEMPTION_UNDERFUNDED = 'BOND_REDEMPTION_UNDERFUNDED',
+  BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE = 'BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE',
 
   // Oracle Errors
   ORACLE_NOT_INITIALIZED = 'ORACLE_NOT_INITIALIZED',
@@ -107,6 +109,8 @@ export const ERROR_MAPPINGS: Record<string, Record<number, { code: StableErrorCo
     10: { code: StableErrorCode.BOND_REPORT_NOT_VERIFIED, message: 'Oracle report is not verified' },
     11: { code: StableErrorCode.BOND_INVALID_REPORT, message: 'Invalid oracle report' },
     12: { code: StableErrorCode.BOND_INVALID_SUPPLY, message: 'Invalid supply bounds' },
+    13: { code: StableErrorCode.BOND_REDEMPTION_UNDERFUNDED, message: 'Bond redemption pool is underfunded' },
+    14: { code: StableErrorCode.BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE, message: 'Incompatible methodology for credit type' },
   },
   ORACLE: {
     1: { code: StableErrorCode.ORACLE_NOT_INITIALIZED, message: 'Oracle contract is not initialized' },

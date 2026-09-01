@@ -186,6 +186,10 @@ impl DEXRouter {
             .ok_or(DEXError::NotInitialized)
     }
 
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        get_nonce(&env, &address)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn list_bond_tokens(
         env: Env,

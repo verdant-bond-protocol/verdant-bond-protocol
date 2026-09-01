@@ -98,6 +98,10 @@ impl CouponEngine {
             .set(&DataKey::Precision, &FIXED_POINT);
     }
 
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        get_nonce(&env, &address)
+    }
+
     pub fn register_bond(
         env: Env,
         caller: Address,

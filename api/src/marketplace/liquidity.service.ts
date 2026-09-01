@@ -53,7 +53,7 @@ export class LiquidityService {
       });
     }
 
-    await this.redis.setEx(cacheKey, 30, JSON.stringify(feeds));
+    await this.redis.cacheSet(cacheKey, 30, JSON.stringify(feeds), ['prices']);
     return feeds;
   }
 

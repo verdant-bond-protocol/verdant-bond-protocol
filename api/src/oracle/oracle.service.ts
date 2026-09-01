@@ -97,7 +97,6 @@ async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<Repor
     }
 
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(this.configService.getOracleConsumerAddress(), providerAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       this.configService.getOracleConsumerAddress(), 'submit_report', adminSecret,
@@ -110,7 +109,7 @@ async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<Repor
         nativeToScVal(dto.methodology, { type: 'symbol' }),
         this.evidenceHashToScVal(evidenceReference),
       ],
-      nonce,
+      providerAddress,
     );
 
     const reportId = Number(scValToNative(result));
@@ -256,7 +255,6 @@ async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<Repor
 
 async challengeReport(reportId: number, dto: ChallengeDto, challengerAddress: string): Promise<ChallengeResponse> {
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(this.configService.getOracleConsumerAddress(), challengerAddress);
 
     await this.contractService.invokeContractMethod(
       this.configService.getOracleConsumerAddress(), 'challenge_report', adminSecret,
@@ -265,7 +263,7 @@ async challengeReport(reportId: number, dto: ChallengeDto, challengerAddress: st
         nativeToScVal(BigInt(reportId), { type: 'u64' }),
         this.toBytes32(dto.counterEvidenceHash),
       ],
-      nonce,
+      challengerAddress,
     );
 
     await this.redis.del(`oracle:providers`);
@@ -308,7 +306,6 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
 
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.nonceService.next(this.configService.getOracleConsumerAddress(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       this.configService.getOracleConsumerAddress(), 'register_provider', adminSecret,
@@ -317,7 +314,7 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
         Address.fromString(dto.providerAddress).toScVal(),
         nativeToScVal(methodology, { type: 'symbol' }),
       ],
-      nonce,
+      adminAddress,
     );
 
     await this.redis.del(`oracle:providers`);

@@ -127,6 +127,13 @@ impl ProjectRegistry {
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Nonce(address))
+            .unwrap_or(0)
+    }
+
     pub fn register_project(
         env: Env,
         caller: Address,

@@ -7,7 +7,6 @@ import { NonceService } from '../common/services/nonce.service';
 import { RedisService } from '../common/services/redis.service';
 import { SigningKeyProvider } from '../common/services/signing-key.provider';
 import { ConfigService } from '../config/config.service';
-import { HolderIndexService } from './holder-index.service';
 import { BondResponse, HolderResponse, CreditTypeEnum, BondStatusEnum, BondMaturityStatusEnum } from './interfaces/bond.interface';
 
 const dummyBond: BondResponse = {
@@ -17,7 +16,6 @@ const dummyBond: BondResponse = {
   couponSchedule: ['10', '20'],
   creditType: CreditTypeEnum.Carbon,
   maturityDate: Math.floor(Date.now() / 1000) + 1000,
-  maturityStatus: BondMaturityStatusEnum.Active,
   totalSupply: '1000',
   totalSubscribed: '400',
   status: BondStatusEnum.Active,
@@ -34,7 +32,7 @@ function buildModule() {
   return Test.createTestingModule({
     providers: [
       BondsService,
-      { provide: HolderIndexService, useValue: { getHoldersWithBalances: jest.fn().mockResolvedValue([]) } },
+
       { provide: ContractService, useValue: { invokeContractMethod: jest.fn(), simulateCall: jest.fn() } },
       { provide: StellarService, useValue: { getKeypairFromSecret: jest.fn() } },
       { provide: NonceService, useValue: { next: jest.fn().mockResolvedValue(1) } },

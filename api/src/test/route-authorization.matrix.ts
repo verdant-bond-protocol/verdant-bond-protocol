@@ -61,7 +61,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: AuthController, method: 'updateKyc', httpMethod: 'POST', path: 'auth/kyc/:address', guards: [JwtAuthGuard], role: 'authenticated', mutation: true },
 
   // ---- Bonds ----
-  { controller: BondsController, method: 'create', httpMethod: 'POST', path: 'bonds', guards: [], role: 'public', mutation: true },
+  { controller: BondsController, method: 'create', httpMethod: 'POST', path: 'bonds', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: BondsController, method: 'findAll', httpMethod: 'GET', path: 'bonds', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'findHeldByAddress', httpMethod: 'GET', path: 'bonds/held/:address', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'findOne', httpMethod: 'GET', path: 'bonds/:id', guards: [], role: 'public', mutation: false },
@@ -71,6 +71,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: BondsController, method: 'distributeCoupon', httpMethod: 'POST', path: 'bonds/:id/coupon', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: BondsController, method: 'claimCredits', httpMethod: 'POST', path: 'bonds/:id/claim', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
   { controller: BondsController, method: 'getUndistributedTotal', httpMethod: 'GET', path: 'bonds/:id/undistributed', guards: [], role: 'public', mutation: false },
+  { controller: BondsController, method: 'getClaimableCredits', httpMethod: 'GET', path: 'bonds/:id/claimable-credits', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'sweepUndistributed', httpMethod: 'POST', path: 'bonds/:id/sweep-undistributed', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: BondsController, method: 'transfer', httpMethod: 'POST', path: 'bonds/:id/transfer', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
   { controller: BondsController, method: 'mature', httpMethod: 'POST', path: 'bonds/:id/mature', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
@@ -89,6 +90,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: OracleController, method: 'listProviders', httpMethod: 'GET', path: 'oracle/providers', guards: [], role: 'public', mutation: false },
   { controller: OracleController, method: 'getProviderStats', httpMethod: 'GET', path: 'oracle/stats/:providerAddress', guards: [], role: 'public', mutation: false },
   { controller: OracleController, method: 'staleness', httpMethod: 'GET', path: 'oracle/monitoring/staleness', guards: [], role: 'public', mutation: false },
+  { controller: OracleController, method: 'anomalies', httpMethod: 'GET', path: 'oracle/monitoring/anomalies', guards: [], role: 'public', mutation: false },
   { controller: OracleController, method: 'listIncidents', httpMethod: 'GET', path: 'oracle/incidents', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: OracleController, method: 'acknowledgeIncident', httpMethod: 'POST', path: 'oracle/incidents/:id/acknowledge', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: OracleController, method: 'resolveIncident', httpMethod: 'POST', path: 'oracle/incidents/:id/resolve', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },

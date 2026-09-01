@@ -436,7 +436,7 @@ describe('OracleService', () => {
         'register_provider',
         'SADMINSECRET',
         expect.any(Array),
-        0,
+        adminKeypair.publicKey(),
       );
       expect(redis.del).toHaveBeenCalledWith('oracle:providers');
     });

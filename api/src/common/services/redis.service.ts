@@ -45,11 +45,12 @@ export class RedisService {
     }
   }
 
-  async set(key: string, value: string, options?: { EX?: number }): Promise<void> {
+  async set(key: string, value: string, options?: { EX?: number; NX?: boolean; PX?: number }): Promise<string | null> {
     try {
-      await this.redis.set(key, value, options);
+      return await (this.redis.set as any)(key, value, options);
     } catch (error) {
       this.logDegraded('set', key, error);
+      return null;
     }
   }
 
@@ -59,6 +60,22 @@ export class RedisService {
     } catch (error) {
       this.logDegraded('setEx', key, error);
     }
+  }
+
+  async cacheSet(key: string, seconds: number, value: string, tags: string[]): Promise<void> {
+    await this.setEx(key, seconds, value);
+    for (const tag of tags) {
+      await this.sAdd(`cache-index:${tag}`, key);
+    }
+  }
+
+  async invalidateTag(tag: string): Promise<void> {
+    const indexKey = `cache-index:${tag}`;
+    const keys = await this.sMembers(indexKey);
+    for (const key of keys) {
+      await this.del(key);
+    }
+    await this.del(indexKey);
   }
 
   async del(key: string): Promise<void> {
@@ -141,6 +158,41 @@ export class RedisService {
     }
   }
 
+  async getOrThrow(key: string): Promise<string | null> {
+    try {
+      return await this.redis.get(key);
+    } catch (error) {
+      this.throwUnavailable('get', key, error);
+    }
+  }
+
+  async setOrThrow(key: string, value: string): Promise<void> {
+    try {
+      await this.redis.set(key, value);
+    } catch (error) {
+      this.throwUnavailable('set', key, error);
+    }
+  }
+
+  async acquireLockOrThrow(key: string, token: string, ttlMs: number): Promise<boolean> {
+    try {
+      return (await this.redis.set(key, token, { NX: true, PX: ttlMs })) === 'OK';
+    } catch (error) {
+      this.throwUnavailable('lock', key, error);
+    }
+  }
+
+  async releaseLockOrThrow(key: string, token: string): Promise<void> {
+    try {
+      await this.redis.eval(
+        "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+        { keys: [key], arguments: [token] },
+      );
+    } catch (error) {
+      this.throwUnavailable('unlock', key, error);
+    }
+  }
+
   async expire(key: string, seconds: number): Promise<boolean> {
     try {
       return await this.redis.expire(key, seconds);
@@ -193,6 +245,12 @@ export class RedisService {
   private logDegraded(operation: string, key: string, error: unknown): void {
     this.healthy = false;
     this.logger.warn(`Redis ${operation} failed for ${key}; continuing without cache: ${this.message(error)}`);
+  }
+
+  private throwUnavailable(operation: string, key: string, error: unknown): never {
+    this.healthy = false;
+    this.logger.error(`Redis ${operation} failed for ${key}: ${this.message(error)}`);
+    throw new ServiceUnavailableException('Nonce tracking is unavailable');
   }
 
   private message(error: unknown): string {

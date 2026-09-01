@@ -34,6 +34,8 @@ export class BondsController {
   constructor(private readonly bondsService: BondsService) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @RequireIntent('create_bond')
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
     return this.bondsService.create(dto);

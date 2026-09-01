@@ -28,6 +28,12 @@ export class ProjectsService {
   ) {}
 
   async register(dto: CreateProjectDto, ownerAddress: string): Promise<ProjectResponse> {
+    try {
+      Address.fromString(ownerAddress);
+    } catch {
+      throw new BadRequestException('Authenticated wallet address is required');
+    }
+
     let boundaryData: Record<string, any> = {};
     if (dto.boundary) {
       try {
@@ -41,7 +47,6 @@ export class ProjectsService {
         throw new BadRequestException(`Geospatial boundary validation failed: ${err.message}`);
       }
     }
-
     const metadata = {
       name: dto.name,
       methodology: dto.methodology,
@@ -60,7 +65,6 @@ export class ProjectsService {
     const ipfsHash = encodeCid(ipfsResult.hash);
 
     const ownerSecret = this.signingKeys.userSecret();
-    const nonce = await this.nonceService.next(this.configService.getProjectRegistryAddress(), ownerAddress);
 
     const { result, transactionHash } = await this.contractService.invokeContractMethod(
       this.configService.getProjectRegistryAddress(), 'register_project', ownerSecret,
@@ -70,7 +74,7 @@ export class ProjectsService {
         nativeToScVal(dto.methodology, { type: 'symbol' }),
         nativeToScVal(dto.country, { type: 'symbol' }),
       ],
-      nonce,
+      ownerAddress,
     );
 
     const projectId = Number(scValToNative(result));
@@ -127,12 +131,11 @@ export class ProjectsService {
   async approve(id: number): Promise<ProjectResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.nonceService.next(this.configService.getProjectRegistryAddress(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       this.configService.getProjectRegistryAddress(), 'approve_project', adminSecret,
       [Address.fromString(adminAddress).toScVal(), nativeToScVal(BigInt(id), { type: 'u64' })],
-      nonce,
+      adminAddress,
     );
 
     await this.redis.del(`project:${id}`);
@@ -142,12 +145,11 @@ export class ProjectsService {
   async reject(id: number): Promise<ProjectResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.nonceService.next(this.configService.getProjectRegistryAddress(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       this.configService.getProjectRegistryAddress(), 'reject_project', adminSecret,
       [Address.fromString(adminAddress).toScVal(), nativeToScVal(BigInt(id), { type: 'u64' })],
-      nonce,
+      adminAddress,
     );
 
     await this.redis.del(`project:${id}`);
