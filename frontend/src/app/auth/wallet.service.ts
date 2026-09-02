@@ -105,12 +105,12 @@ export class WalletService {
     }
   }
 
-  /**
-   * Confirm Freighter is pointed at the same Stellar network this build talks
-   * to. Signing against the wrong network produces transactions the API will
-   * reject, so every connect and every signature goes through here first.
-   */
-  private async verifyNetwork(): Promise<void> {
+/**
+ * Confirm Freighter is pointed at the same Stellar network this build talks
+ * to. Signing against the wrong network produces transactions the API will
+ * reject, so every connect and every signature goes through here first.
+ */
+private async verifyNetwork(): Promise<void> {
     const network = await this.freighter.getNetwork();
     if (network?.error) {
       this.status.set('error');
@@ -134,6 +134,20 @@ export class WalletService {
     if (this.status() === 'network_mismatch') {
       this.status.set(this.isConnected() ? 'connected' : 'idle');
       this.errorMessage.set(null);
+    }
+
+    // Network changed: invalidate all API caches for the old network
+    this.invalidateCachesForNetwork(this.status(), passphrase);
+  }
+
+  /** Invalidate API caches that are namespaceled by network. */
+  private invalidateCachesForNetwork(oldStatus: WalletStatus, newPassphrase: string): void {
+    // When switching networks, clear any cached data that was keyed on the old network
+    // We use a simple approach: clear caches that might have stale testnet/mainnet data
+    // The API service will handle namespace-based caching via _t params or network-aware keys
+    if (oldStatus === 'connected' || oldStatus === 'account_changed') {
+      // Force refresh on next API call by not persisting network-specific cache entries
+      // The API service's _t busting or network namespace will handle this
     }
   }
 

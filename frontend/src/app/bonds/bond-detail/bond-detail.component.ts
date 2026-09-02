@@ -306,6 +306,51 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                 @if (sweepError()) {
                   <div class="error-msg">{{ sweepError() }}</div>
                 }
+                <!-- Coupon Distribute -->
+                @if (couponEligibility() && couponEligibility()!.eligible) {
+                  <div class="coupon-distribute" *ngIf="!sweepSubmitting() && !adminIntent.hasSecret()">
+                    <button class="btn btn-outline distribute-coupon-btn" (click)="onDistributeCoupon()">
+                      Distribute Coupon
+                    </button>
+                  </div>
+                  @if (adminIntent.hasSecret()) {
+                    <app-admin-secret-prompt
+                      action="Distribute coupon"
+                      [description]="'Bond #' + b.id + ' — distribute coupon for period ' + couponEligibility()!.periodIndex + '.'"
+                      (unlocked)="onSecretUnlocked()"
+                      (cancelled)="secretPromptOpen.set(false)"
+                    />
+                  }
+                } @else if (couponEligibility()) {
+                  <div class="coupon-distribute muted">
+                    <strong>Coupon distribution blocked.</strong>
+                    The referenced oracle report is disputed or rejected.
+                  </div>
+                }
+                <!-- Mature Bond -->
+                @if (!maturityReached()) {
+                  <button
+                    class="btn btn-primary mature-btn"
+                    [disabled]="maturityReached() || matureSubmitting() || !authService.sessionReady()"
+                    (click)="onMature()"
+                  >
+                    {{ matureSubmitting() ? 'Maturing...' : 'Mature Bond' }}
+                  </button>
+                } @else {
+                  <p class="status-notice">Bond is already matured.</p>
+                }
+                <!-- Reconcile Holders -->
+                @if (!maturityReached()) {
+                  <button
+                    class="btn btn-outline reconcile-btn"
+                    [disabled]="reconcileSubmitting() || !authService.sessionReady()"
+                    (click)="onReconcileHolders()"
+                  >
+                    Reconcile Holders
+                  </button>
+                } @else {
+                  <p class="status-notice">Reconcile unavailable for matured bonds.</p>
+                }
               </div>
             }
             @if (secretPromptOpen()) {
@@ -441,6 +486,11 @@ export class BondDetailComponent implements OnInit, OnDestroy {
   readonly sweepSwept = signal(0);
   readonly sweepTx = signal('');
   readonly sweepError = signal('');
+  readonly matureSubmitting = signal(false);
+  readonly matureSuccess = signal(false);
+  readonly matureTx = signal('');
+  readonly matureError = signal('');
+  readonly reconcileSubmitting = signal(false);
   readonly secretPromptOpen = signal(false);
 
   /**
@@ -659,7 +709,7 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     this.submitSweep();
   }
 
-  private submitSweep(): void {
+private submitSweep(): void {
     const b = this.bond();
     if (!b) return;
 
@@ -682,4 +732,73 @@ export class BondDetailComponent implements OnInit, OnDestroy {
       },
     });
   }
+
+  onDistributeCoupon(): void {
+    const b = this.bond();
+    if (!b) return;
+
+    const confirmed = window.confirm(
+      `Distribute coupon for Bond #${b.id} period 0?`,
+    );
+    if (!confirmed) return;
+
+    this.apiService.distributeCoupon(b.id, { periodIndex: 0 }).subscribe({
+      next: (res) => {
+        this.reload(b.id);
+      },
+      error: (err) => {
+        this.sweepError.set(appErrorMessage(err, 'Distribute coupon failed'));
+      },
+    });
+  }
+
+  onMature(): void {
+    const b = this.bond();
+    if (!b) return;
+
+    const confirmed = window.confirm(
+      `Mature bond #${b.id}? This will mark the bond as matured and stop all subscriptions/transfers.`,
+    );
+    if (!confirmed) return;
+
+    this.matureSubmitting.set(true);
+    this.matureSuccess.set(false);
+    this.matureError.set('');
+
+    this.apiService.mature(b.id).subscribe({
+      next: (res) => {
+        this.matureSuccess.set(true);
+        this.matureTx.set(res.transactionHash);
+        this.pendingTx.register(res.transactionHash, 'mature');
+        this.matureSubmitting.set(false);
+        this.reload(b.id);
+      },
+      error: (err) => {
+        this.matureError.set(appErrorMessage(err, 'Mature failed'));
+        this.matureSubmitting.set(false);
+      },
+    });
+  }
+
+  onReconcileHolders(): void {
+    const b = this.bond();
+    if (!b) return;
+
+    const confirmed = window.confirm(
+      `Reconcile holders for Bond #${b.id}? This will refresh the holder index against on-chain balances.`,
+    );
+    if (!confirmed) return;
+
+    this.reconcileSubmitting.set(true);
+    this.apiService.reconcileHolders(b.id).subscribe({
+      next: (res) => {
+        this.reload(b.id);
+      },
+      error: (err) => {
+        this.sweepError.set(appErrorMessage(err, 'Reconcile failed'));
+        this.reconcileSubmitting.set(false);
+      },
+    });
+  }
+}
 }

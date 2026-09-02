@@ -7,6 +7,7 @@ import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner
 import { ChallengedReportsComponent } from '../challenged-reports/challenged-reports.component';
 import { Project, ProjectProvenanceEvent } from '../../shared/interfaces/bond.interface';
 import { forkJoin } from 'rxjs';
+import { AdminAccessService } from '../../shared/services/admin-access.service';
 
 @Component({
   selector: 'app-project-detail',
@@ -78,6 +79,18 @@ import { forkJoin } from 'rxjs';
           }
         </section>
 
+        @if (adminAccess.isAdmin()) {
+          <div class="admin-section" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            <h3 class="section-title">Admin: Project Approval</h3>
+            @if (project()?.status === 'Pending') {
+              <button class="btn btn-primary" (click)="onApprove()">Approve Project</button>
+              <button class="btn btn-outline" (click)="onReject()">Reject Project</button>
+            } @else {
+              <p class="status-notice">Project is already {{ project()?.status | lowercase }}.</p>
+            }
+          </div>
+        }
+
         <app-challenged-reports [projectId]="'' + p.id" />
       } @else if (loading()) {
         <div class="loading-section"><app-loading-spinner size="lg" /></div>
@@ -142,6 +155,30 @@ export class ProjectDetailComponent implements OnInit {
       error: (err) => {
         this.error.set(err.status === 404 ? 'Project not found' : 'Failed to load project');
         this.loading.set(false);
+      },
+    });
+  }
+
+  onApprove(): void {
+    if (!confirm('Approve project #'' + this.project()?.id + '?')) return;
+    this.apiService.approveProject(this.project()!.id).subscribe({
+      next: () => {
+        this.loadProjects();
+      },
+      error: (err) => {
+        this.error.set(appErrorMessage(err, 'Approve failed'));
+      },
+    });
+  }
+
+  onReject(): void {
+    if (!confirm('Reject project #'' + this.project()?.id + '?')) return;
+    this.apiService.rejectProject(this.project()!.id).subscribe({
+      next: () => {
+        this.loadProjects();
+      },
+      error: (err) => {
+        this.error.set(appErrorMessage(err, 'Reject failed'));
       },
     });
   }

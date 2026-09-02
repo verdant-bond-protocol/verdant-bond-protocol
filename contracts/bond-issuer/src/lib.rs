@@ -26,6 +26,14 @@ pub struct BondState {
     pub created_at: u64,
 }
 
+#[derive(Clone)]
+#[contracttype]
+pub struct PreviewSubscription {
+    pub remaining_supply: i128,
+    pub requested_amount: i128,
+    pub expected_failure: Option<BondError>,
+}
+
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
     let admin: Address = env
         .storage()
@@ -1330,5 +1338,48 @@ mod test {
                 prop_assert_eq!(client.total_subscribed(&bond_id), total_subscribed);
             }
         }
+    }
+
+    pub fn preview_subscribe(
+        env: Env,
+        bond_id: u64,
+        amount: i128,
+    ) -> Result<PreviewSubscription, BondError> {
+        investor.require_auth();
+
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
+        let mut state: BondState = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondState(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
+        if state.status != BondStatus::Active {
+            return Err(BondError::BondAlreadyMatured);
+        }
+
+        if env.ledger().timestamp() >= config.maturity_date {
+            return Err(BondError::BondAlreadyMatured);
+        }
+
+        if amount <= 0 {
+            return Err(BondError::ZeroAmount);
+        }
+
+        let remaining_supply = config.total_supply - state.total_subscribed;
+        if amount > remaining_supply {
+            return Err(BondError::InsufficientSupply);
+        }
+
+        Ok(PreviewSubscription {
+            remaining_supply,
+            requested_amount: amount,
+            expected_failure: None,
+        })
     }
 }

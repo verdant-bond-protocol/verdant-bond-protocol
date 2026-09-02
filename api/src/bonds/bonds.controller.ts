@@ -112,6 +112,14 @@ export class BondsController {
     return this.bondsService.getUndistributedTotal(id);
   }
 
+  @Get(':id/preview-subscribe')
+  async previewSubscribe(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('amount') amount: number,
+  ): Promise<{remaining_supply: number; requested_amount: number; expected_failure: string | null}> {
+    return this.bondsService.previewSubscribe(id, amount);
+  }
+
   @Get(':id/claimable-credits')
   @Header('Cache-Control', 'no-cache')
   async getClaimableCredits(
