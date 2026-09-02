@@ -230,6 +230,71 @@ export class ApiService {
     }));
   }
 
+  distributeCoupon(id: number, dto: { periodIndex: number }): Observable<CouponDistributionResponse> {
+    return this.withProblemDetails(defer(() => {
+      const headers = this.headers(this.adminIntentHeader('distribute_coupon', String(id)));
+      return this.http.post<CouponDistributionResponse>(
+        `/api/bonds/${id}/coupon`,
+        dto,
+        { headers },
+      );
+    }));
+  }
+
+  mature(id: number): Observable<BondResponse> {
+    return this.withProblemDetails(defer(() => {
+      const headers = this.headers(this.adminIntentHeader('mature_bond', String(id)));
+      return this.http.post<BondResponse>(
+        `/api/bonds/${id}/mature`,
+        {},
+        { headers },
+      );
+    }));
+  }
+
+  reconcileHolders(id: number): Observable<HolderListResponse> {
+    return this.withProblemDetails(defer(() => {
+      const headers = this.headers(this.adminIntentHeader('reconcile_holders', String(id)));
+      return this.http.post<HolderListResponse>(
+        `/api/bonds/${id}/reconcile-holders`,
+        {},
+        { headers },
+      );
+    }));
+  }
+
+  previewSubscribe(id: number, amount: number): Observable<{remaining_supply: number; requested_amount: number; expected_failure: string | null}> {
+    return this.withProblemDetails(this.http.get<{
+      remaining_supply: number;
+      requested_amount: number;
+      expected_failure: string | null;
+    }>(`/api/bonds/${id}/preview-subscribe?amount=${amount}`, {
+      headers: this.headers(),
+    }));
+  }
+
+  approveProject(id: number): Observable<Project> {
+    return this.withProblemDetails(defer(() => {
+      const headers = this.headers(this.adminIntentHeader('approve_project', String(id)));
+      return this.http.post<Project>(
+        `/api/projects/${id}/approve`,
+        {},
+        { headers },
+      );
+    }));
+  }
+
+  rejectProject(id: number): Observable<Project> {
+    return this.withProblemDetails(defer(() => {
+      const headers = this.headers(this.adminIntentHeader('reject_project', String(id)));
+      return this.http.post<Project>(
+        `/api/projects/${id}/reject`,
+        {},
+        { headers },
+      );
+    }));
+  }
+
   getProjects(page = 1, limit = 20): Observable<PaginatedResponse<Project>> {
     return this.withProblemDetails(this.http.get<PaginatedResponse<Project>>('/api/projects', {
       params: { page, limit },

@@ -5,6 +5,7 @@ import { ApiService } from '../../shared/services/api.service';
 import { ProjectCardComponent } from '../../shared/components/project-card/project-card.component';
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
 import { Project } from '../../shared/interfaces/bond.interface';
+import { AdminAccessService } from '../../shared/services/admin-access.service';
 
 @Component({
   selector: 'app-projects-list',
@@ -14,7 +15,10 @@ import { Project } from '../../shared/interfaces/bond.interface';
     <div class="projects-page">
       <div class="page-header">
         <h1 class="page-title">Projects</h1>
-        <a class="btn btn-primary" routerLink="/projects/new">Register Project</a>
+        @if (adminAccess.isAdmin()) {
+          <button class="btn btn-primary" (click)="onApproveAll()">Approve All Pending</button>
+          <button class="btn btn-outline" (click)="onRejectAll()">Reject All Pending</button>
+        }
       </div>
 
       @if (error()) {
@@ -67,6 +71,7 @@ import { Project } from '../../shared/interfaces/bond.interface';
 })
 export class ProjectsListComponent implements OnInit {
   private readonly apiService = inject(ApiService);
+  private readonly adminAccess = inject(AdminAccessService);
 
   readonly projects = signal<Project[]>([]);
   readonly loading = signal(true);
@@ -107,5 +112,15 @@ export class ProjectsListComponent implements OnInit {
       this.page.update(p => p + 1);
       this.loadProjects();
     }
+  }
+
+  onApproveAll(): void {
+    if (!confirm('Approve all pending projects?')) return;
+    alert('Approve all pending projects functionality would iterate through projects and call approve on each.');
+  }
+
+  onRejectAll(): void {
+    if (!confirm('Reject all pending projects?')) return;
+    alert('Reject all pending projects functionality would iterate through projects and call reject on each.');
   }
 }
