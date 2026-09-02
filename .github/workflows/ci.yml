@@ -71,6 +71,9 @@ jobs:
       - name: Test
         run: npm run test
         working-directory: api
+      - name: Mutate (Mutation Testing)
+        run: npm run mutate
+        working-directory: api
       - name: Build
         run: npm run build
         working-directory: api
