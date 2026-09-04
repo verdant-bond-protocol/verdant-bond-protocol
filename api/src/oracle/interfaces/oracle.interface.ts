@@ -45,6 +45,15 @@ export interface SlashRecord {
   activeAfter: boolean;
 }
 
+export interface SlashPreview {
+  reportId: number;
+  providerAddress: string;
+  currentStake: string;
+  penalty: string;
+  remainingStake: string;
+  activeAfter: boolean;
+}
+
 export interface ChallengeRecord {
   reportId: number;
   challengerAddress: string;

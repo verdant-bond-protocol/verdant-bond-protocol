@@ -440,6 +440,23 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
     );
   }
 
+  async getSlashPreview(providerAddress: string, reportId: number): Promise<SlashPreview> {
+    const scVal = await this.contractService.simulateCall({
+      contractAddress: this.configService.getOracleConsumerAddress(),
+      method: 'preview_slash',
+      args: [Address.fromString(providerAddress).toScVal(), nativeToScVal(BigInt(reportId), { type: 'u64' })],
+    });
+    const data = scValToNative(scVal) as any[];
+    return {
+      reportId: Number(data[0]),
+      providerAddress: data[1] as string,
+      currentStake: toBigIntString(data[2]),
+      penalty: toBigIntString(data[3]),
+      remainingStake: toBigIntString(data[4]),
+      activeAfter: data[5] as boolean,
+    };
+  }
+
   async getChallengeHistory(providerAddress: string): Promise<ChallengeRecord[]> {
     const scVal = await this.contractService.simulateCall({
       contractAddress: this.configService.getOracleConsumerAddress(),
