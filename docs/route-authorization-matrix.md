@@ -81,6 +81,9 @@ controller diverge from what is declared below. **Keep the two in sync.**
 | POST | `/projects/:id/reject` | public | — |
 | POST | `/projects/:id/documents` | public | — |
 | GET | `/projects/:id/export` | authenticated | `JwtAuthGuard` |
+| POST | `/projects/:id/certifications` | public | — |
+| GET | `/projects/:id/certifications` | public | — |
+| GET | `/projects/:id/coupon-certification` | public | — |
 
 ## Marketplace (`/marketplace`)
 

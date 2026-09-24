@@ -104,6 +104,9 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: ProjectsController, method: 'reject', httpMethod: 'POST', path: 'projects/:id/reject', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: ProjectsController, method: 'uploadDocuments', httpMethod: 'POST', path: 'projects/:id/documents', guards: [], role: 'public', mutation: true },
   { controller: ProjectsController, method: 'exportProject', httpMethod: 'GET', path: 'projects/:id/export', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: ProjectsController, method: 'addCertification', httpMethod: 'POST', path: 'projects/:id/certifications', guards: [], role: 'public', mutation: true },
+  { controller: ProjectsController, method: 'certificationHistory', httpMethod: 'GET', path: 'projects/:id/certifications', guards: [], role: 'public', mutation: false },
+  { controller: ProjectsController, method: 'couponCertification', httpMethod: 'GET', path: 'projects/:id/coupon-certification', guards: [], role: 'public', mutation: false },
 
   // ---- Marketplace ----
   { controller: MarketplaceController, method: 'listQuoteAssets', httpMethod: 'GET', path: 'marketplace/quote-assets', guards: [], role: 'public', mutation: false },
