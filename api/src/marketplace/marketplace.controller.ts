@@ -55,6 +55,7 @@ export class MarketplaceController {
       status,
       pagination.page ?? 1,
       pagination.limit ?? 20,
+      pagination.cursor,
     );
   }
 

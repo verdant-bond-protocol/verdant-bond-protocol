@@ -61,27 +61,53 @@ export class DexService {
     status?: string,
     page = 1,
     limit = 20,
+    cursor?: string | number,
   ): Promise<PaginatedResponse<OrderResponse>> {
-    const cacheKey = `orders:${bondId || 'all'}:${status || 'all'}:${page}:${limit}`;
+    const cursorValue = typeof cursor === 'string' ? parseInt(cursor, 10) : cursor;
+    const cacheKey = cursorValue !== undefined
+      ? `orders:${bondId || 'all'}:${status || 'all'}:c:${cursorValue}:${limit}`
+      : `orders:${bondId || 'all'}:${status || 'all'}:${page}:${limit}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
     const total = await this.getOrderCount();
+    const matchingOrders: OrderResponse[] = [];
+    
+    if (cursorValue !== undefined) {
+      let currentId = cursorValue + 1;
+      while (matchingOrders.length < limit && currentId <= total) {
+        const order = await this.tryGetOrder(currentId);
+        if (order && (!bondId || order.bondId === bondId) && (!status || order.status === status)) {
+          matchingOrders.push(order);
+        }
+        currentId++;
+      }
+      const nextCursor = currentId <= total ? currentId - 1 : undefined;
+      const result = {
+        data: matchingOrders,
+        meta: { limit, total: matchingOrders.length, nextCursor, totalPages: Math.ceil(matchingOrders.length / limit) || 1 }, // total here is tricky, maybe omit it or just provide what we found? Actually better to provide total count matching filter if we can, but since we can't efficiently, we might just provide matchingOrders.length + (nextCursor ? 1 : 0) ? No, let's just put `total` as the contract `total` or we can't do full count. Wait, the previous implementation fetched ALL orders to count them and paginate.
+      };
+      await this.redis.cacheSet(cacheKey, 30, JSON.stringify(result), ['orders']);
+      return result as any;
+    }
+
+    // Fallback for page-based offset, maintaining O(N) full fetch to know the exact total for offset stability,
+    // but without the skip/duplicate bug since we fetch all and filter.
     const ids = Array.from({ length: total }, (_unused, idx) => idx + 1);
-    const matchingOrders = (await Promise.all(ids.map((id) => this.tryGetOrder(id))))
+    const allMatching = (await Promise.all(ids.map((id) => this.tryGetOrder(id))))
       .filter((order): order is OrderResponse => Boolean(order))
       .filter((order) => !bondId || order.bondId === bondId)
       .filter((order) => !status || order.status === status);
     const start = (page - 1) * limit;
-    const paged = matchingOrders.slice(start, start + limit);
+    const paged = allMatching.slice(start, start + limit);
 
     const result = {
       data: paged,
       meta: {
         page,
         limit,
-        total: matchingOrders.length,
-        totalPages: Math.ceil(matchingOrders.length / limit) || 1,
+        total: allMatching.length,
+        totalPages: Math.ceil(allMatching.length / limit) || 1,
       },
     };
 

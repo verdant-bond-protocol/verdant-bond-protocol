@@ -85,8 +85,9 @@ export class ProjectsService {
     return { ...project, transactionHash };
   }
 
-  async findAll(page = 1, limit = 20) {
-    const cacheKey = `projects:${page}:${limit}`;
+  async findAll(page = 1, limit = 20, cursor?: string | number) {
+    const cursorValue = typeof cursor === 'string' ? parseInt(cursor, 10) : cursor;
+    const cacheKey = cursorValue !== undefined ? `projects:c:${cursorValue}:${limit}` : `projects:${page}:${limit}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -99,15 +100,45 @@ export class ProjectsService {
     } catch {}
 
     const projects: ProjectResponse[] = [];
-    const start = (page - 1) * limit;
-    const end = Math.min(start + limit, total);
-
-    for (let id = 1; id <= total; id++) {
-      if (id > start && id <= end) {
+    
+    if (cursorValue !== undefined) {
+      let currentId = cursorValue + 1;
+      while (projects.length < limit && currentId <= total) {
         try {
-          projects.push(await this.buildProjectResponse(id));
+          // If buildProjectResponse throws due to hidden or deleted status, the record is skipped.
+          // Because we iterate deterministically, these skips don't shift offsets.
+          projects.push(await this.buildProjectResponse(currentId));
         } catch {}
+        currentId++;
       }
+      const nextCursor = currentId <= total ? currentId - 1 : undefined;
+      const result = {
+        data: projects,
+        meta: { limit, total, nextCursor, totalPages: Math.ceil(total / limit) || 1 },
+      };
+      await this.redis.setEx(cacheKey, 60, JSON.stringify(result));
+      return result;
+    }
+
+    const start = (page - 1) * limit;
+    let skipped = 0;
+    let currentId = 1;
+    
+    while (skipped < start && currentId <= total) {
+      try {
+        // Skip hidden/deleted records during offset traversal
+        await this.buildProjectResponse(currentId);
+        skipped++;
+      } catch {}
+      currentId++;
+    }
+
+    while (projects.length < limit && currentId <= total) {
+      try {
+        // Skip hidden/deleted records while fulfilling limit
+        projects.push(await this.buildProjectResponse(currentId));
+      } catch {}
+      currentId++;
     }
 
     const result = {
