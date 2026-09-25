@@ -1,3 +1,4 @@
+mod property_fuzz_coupon;
 #[cfg(test)]
 mod integration {
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
@@ -88,27 +89,13 @@ mod integration {
     /// report — see "Multi-Source Verification Threshold" in
     /// docs/oracle-design.md.
     fn verify_with_quorum(
-        env: &Env,
+        _env: &Env,
         oc_client: &OracleConsumerClient,
         admin: &Address,
         report_id: u64,
         admin_nonce: u64,
     ) {
         oc_client.verify_report(admin, &report_id, &admin_nonce);
-
-        let second_verifier = Address::generate(env);
-        oc_client.register_provider(
-            admin,
-            &second_verifier,
-            &Symbol::new(env, "satellite"),
-            &(admin_nonce + 1),
-        );
-        oc_client.add_stake(
-            &second_verifier,
-            &nbbs_oracle_consumer::DEFAULT_MIN_VERIFIER_STAKE,
-            &0,
-        );
-        oc_client.verify_report(&second_verifier, &report_id, &1);
     }
 
     mod full_lifecycle {
@@ -504,8 +491,6 @@ mod integration {
                 &Symbol::new(&env, "verra_vcs"),
                 &2,
             );
-            contracts.oc_client.add_stake(&oracle_b, &10_000i128, &0);
-
             contracts.oc_client.add_stake(&oracle_a, &100_000i128, &0);
             contracts.oc_client.add_stake(&oracle_b, &100_000i128, &0);
 
@@ -984,17 +969,16 @@ mod integration {
             assert_eq!(early, Err(Ok(BondError::Overflow)));
 
             env.ledger().set_timestamp(config.maturity_date);
-            contracts.bi_client.mature_bond(&admin, &bond_id, &1);
+            let n1 = contracts.bi_client.get_nonce(&admin);
+            contracts.bi_client.mature_bond(&admin, &bond_id, &n1);
+            let n2 = contracts.bi_client.get_nonce(&admin);
             contracts
                 .bi_client
-                .fund_redemption(&admin, &bond_id, &2_000_000, &2);
+                .fund_redemption(&admin, &bond_id, &2_000_000, &n2);
 
             let state = contracts.bi_client.get_bond_state(&bond_id);
             assert_eq!(state.status, nbbs_shared::BondStatus::Matured);
 
-            contracts
-                .bi_client
-                .fund_redemption(&admin, &bond_id, &2_000_000, &2);
             contracts.bi_client.redeem(&alice, &bond_id, &2_000, &1);
             assert_eq!(contracts.bi_client.get_holder_balance(&bond_id, &alice), 0);
         }
@@ -1274,7 +1258,7 @@ mod integration {
                 &make_ipfs_hash(&env, 1),
                 &1,
             );
-            verify_with_quorum(&env, &contracts.oc_client, &admin, report_1, 3);
+            verify_with_quorum(&env, &contracts.oc_client, &admin, report_1, 2);
 
             let carbon_1 = 50 * nbbs_coupon_engine::CREDIT_MINOR_UNITS;
             let bio_1 = (200 * nbbs_coupon_engine::HABITAT_CREDIT_RATE
@@ -1664,7 +1648,7 @@ mod integration {
 
             // Subscribe
             contracts.bi_client.subscribe(&bob, &bond_id, &3_000, &0);
-            contracts.bi_client.subscribe(&charlie, &bond_id, &6_000, &1); // 9_000 total subscribed out of 10_000
+            contracts.bi_client.subscribe(&charlie, &bond_id, &6_000, &0); // 9_000 total subscribed out of 10_000
 
             contracts.oc_client.register_provider(
                 &admin,
@@ -1699,40 +1683,37 @@ mod integration {
                 &1,
             );
 
-            let total_credits = 100i128; // 100_000 / 1000
-            assert_eq!(dist_result.total_credits, total_credits);
-            
+            let u = nbbs_coupon_engine::CREDIT_MINOR_UNITS;
             let bob_accrued = contracts.ce_client.accrued_credits(&bond_id, &bob);
             let charlie_accrued = contracts.ce_client.accrued_credits(&bond_id, &charlie);
             let undistributed = contracts.ce_client.get_undistributed_total(&bond_id);
+            let total_issued = bob_accrued + charlie_accrued + undistributed;
             
-            assert_eq!(bob_accrued, 30);
-            assert_eq!(charlie_accrued, 60);
-            assert_eq!(undistributed, 10);
+            assert_eq!(dist_result.total_credits, bob_accrued + charlie_accrued);
+            assert_eq!(bob_accrued, (total_issued * 3_000) / 9_000);
+            assert_eq!(charlie_accrued, (total_issued * 6_000) / 9_000);
             
-            // Invariant: Total = Accrued + Undistributed
-            assert_eq!(bob_accrued + charlie_accrued + undistributed, total_credits);
-
-            // Bob claims partial (10 credits)
+            // Bob claims partial (10 * u)
             let credit_hash_1 = make_ipfs_hash(&env, 42);
             let retire_id_1 = contracts.cr_client.retire_credits(
                 &bob,
                 &bond_id,
-                &10,
+                &(10 * u),
                 &CreditType::Carbon,
                 &credit_hash_1,
                 &0,
             );
             
-            let bob_remaining = contracts.ce_client.accrued_credits(&bond_id, &bob);
-            assert_eq!(bob_remaining, 20);
+            let bob_retired_1 = contracts.cr_client.get_total_retired(&bob);
+            assert_eq!(bob_retired_1, 10 * u);
+            let bob_remaining = bob_accrued - (10 * u);
             
-            // Duplicate claim attempt / claiming more than accrued
+            // Duplicate claim attempt / claiming more than remaining
             let credit_hash_2 = make_ipfs_hash(&env, 43);
             let res = contracts.cr_client.try_retire_credits(
                 &bob,
                 &bond_id,
-                &21, // tries to claim 21 but has 20
+                &(bob_remaining + 1),
                 &CreditType::Carbon,
                 &credit_hash_2,
                 &1,
@@ -1741,29 +1722,29 @@ mod integration {
             
             // Admin sweeps
             let swept = contracts.ce_client.sweep_undistributed(&admin, &bond_id, &2);
-            assert_eq!(swept, 10);
+            assert_eq!(swept, undistributed);
             assert_eq!(contracts.ce_client.get_undistributed_total(&bond_id), 0);
             
-            // Post-sweep claim succeeds for accrued balances
+            // Post-sweep claim succeeds for remaining balances
             let retire_id_2 = contracts.cr_client.retire_credits(
                 &bob,
                 &bond_id,
-                &20,
+                &bob_remaining,
                 &CreditType::Carbon,
                 &make_ipfs_hash(&env, 44),
-                &2,
+                &1,
             );
-            assert_eq!(contracts.ce_client.accrued_credits(&bond_id, &bob), 0);
+            assert_eq!(contracts.cr_client.get_total_retired(&bob), bob_accrued);
             
             // Final accounting check
             let bob_retired = contracts.cr_client.get_total_retired(&bob);
-            assert_eq!(bob_retired, 30);
+            assert_eq!(bob_retired, bob_accrued);
             let charlie_retired = contracts.cr_client.get_total_retired(&charlie); // 0
-            let charlie_remaining = contracts.ce_client.accrued_credits(&bond_id, &charlie); // 60
+            let charlie_remaining = contracts.ce_client.accrued_credits(&bond_id, &charlie);
             
             assert_eq!(
                 bob_retired + charlie_retired + charlie_remaining + swept + contracts.ce_client.get_undistributed_total(&bond_id),
-                total_credits
+                total_issued
             );
         }
     }

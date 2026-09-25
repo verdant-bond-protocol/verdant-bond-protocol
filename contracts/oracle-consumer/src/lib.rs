@@ -859,10 +859,40 @@ impl OracleConsumer {
             .instance()
             .set(&DataKey::Provider(provider.clone()), &p);
 
-        env.events()
+                env.events()
             .publish((Symbol::new(&env, "stake_withdrawn"),), (provider, amount));
 
         Ok(())
+    }
+
+    pub fn slash_provider(
+        env: Env,
+        admin: Address,
+        provider: Address,
+        report_id: u64,
+        nonce: u64,
+    ) -> Result<(), OracleError> {
+        require_admin(&env, &admin)?;
+        let expected_nonce = get_nonce(&env, &admin);
+        if nonce != expected_nonce {
+            return Err(OracleError::InvalidNonce);
+        }
+        set_nonce(&env, &admin, expected_nonce + 1);
+        slash_provider(&env, &provider, report_id)
+    }
+
+    pub fn preview_slash(
+        env: Env,
+        report_id: u64,
+        _nonce: u64,
+    ) -> Result<SlashPreview, OracleError> {
+        let report: Report = env
+            .storage()
+            .instance()
+            .get(&DataKey::Report(report_id))
+            .ok_or(OracleError::ReportNotFound)?;
+        let provider: Address = report.provider;
+        preview_slash(&env, &provider, report_id)
     }
 }
 
@@ -953,6 +983,10 @@ pub fn preview_slash(env: &Env, provider: &Address, report_id: u64) -> Result<Sl
         .get(&DataKey::Provider(provider.clone()))
         .ok_or(OracleError::ProviderNotFound)?;
 
+    if !p.active {
+        return Err(OracleError::ProviderNotFound);
+    }
+
     let mut penalty = p.stake * SLASH_PENALTY_PPM / 1_000_000;
     if penalty <= 0 {
         penalty = p.stake;
@@ -975,7 +1009,7 @@ pub fn preview_slash(env: &Env, provider: &Address, report_id: u64) -> Result<Sl
 }
 
 fn try_preview_slash(env: &Env, provider: &Address, report_id: u64) -> Result<SlashPreview, OracleError> {
-    let preview = self.preview_slash(env, provider, report_id)?;
+    let preview = preview_slash(env, provider, report_id)?;
     Ok(preview)
 }
 
@@ -2409,9 +2443,9 @@ mod test {
         assert_eq!(report_verified.provider_stake_at_verification, Some(50000));
         
         // Stake change/slash after verification
-        client.slash_provider(&admin, &provider, &report_id, &0);
+        client.slash_provider(&admin, &provider, &report_id, &3);
         let p_after = client.get_provider(&provider);
-        assert_eq!(p_after.stake, 50000 - SLASH_PENALTY_PPM);
+        assert_eq!(p_after.stake, 50000 - (50000 * SLASH_PENALTY_PPM / 1_000_000));
         
         let report_after_slash = client.get_report(&report_id);
         assert_eq!(report_after_slash.provider_stake_at_verification, Some(50000));
@@ -2442,14 +2476,14 @@ mod test {
             &BiodiversityMetrics::Absent,
             &Symbol::new(&env, "verra_vcs"),
             &make_ipfs_hash(&env, 1),
-            &0,
+            &1,
         );
 
         let preview = client.preview_slash(&report_id, &0);
         assert_eq!(preview.report_id, report_id);
         assert_eq!(preview.current_stake, 50000);
-        assert_eq!(preview.penalty, 5); // 10% of 50000
-        assert_eq!(preview.remaining_stake, 49995);
+        assert_eq!(preview.penalty, 5000); // 10% of 50000
+        assert_eq!(preview.remaining_stake, 45000);
         assert_eq!(preview.active_after, true);
     }
 
@@ -2478,16 +2512,16 @@ mod test {
             &BiodiversityMetrics::Absent,
             &Symbol::new(&env, "verra_vcs"),
             &make_ipfs_hash(&env, 1),
-            &0,
+            &1,
         );
 
-        client.slash_provider(&admin, &provider, &report_id, &0);
+        client.slash_provider(&admin, &provider, &report_id, &1);
 
         // Try preview after slashing - stake should be 45000
         let preview = client.preview_slash(&report_id, &0);
         assert_eq!(preview.current_stake, 45000);
-        assert_eq!(preview.penalty, 5000); // 10% of 50000
-        assert_eq!(preview.remaining_stake, 40000);
+        assert_eq!(preview.penalty, 4500); // 10% of 45000
+        assert_eq!(preview.remaining_stake, 40500);
         assert_eq!(preview.active_after, true);
     }
 
@@ -2504,8 +2538,7 @@ mod test {
         let client = OracleConsumerClient::new(&env, &contract_id);
 
         client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
-        // Remove provider (make inactive)
-        client.remove_provider(&admin, &provider, &0);
+        client.add_stake(&provider, &50000, &0);
 
         let report_id = client.submit_report(
             &provider,
@@ -2516,8 +2549,11 @@ mod test {
             &BiodiversityMetrics::Absent,
             &Symbol::new(&env, "verra_vcs"),
             &make_ipfs_hash(&env, 1),
-            &0,
+            &1,
         );
+
+        // Remove provider (make inactive)
+        client.remove_provider(&admin, &provider, &1);
 
         // Preview should fail with ProviderNotFound
         let result = client.try_preview_slash(&report_id, &0);
@@ -2531,7 +2567,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let provider = Address::generate(&env);
-        let project_id = create_project_id(&env, 1);
+        let _project_id = create_project_id(&env, 1);
 
         let contract_id = env.register(OracleConsumer, (admin.clone(),));
         let client = OracleConsumerClient::new(&env, &contract_id);
