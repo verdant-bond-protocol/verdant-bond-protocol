@@ -974,10 +974,7 @@ pub fn preview_slash(env: &Env, provider: &Address, report_id: u64) -> Result<Sl
     })
 }
 
-fn try_preview_slash(env: &Env, provider: &Address, report_id: u64) -> Result<SlashPreview, OracleError> {
-    let preview = self.preview_slash(env, provider, report_id)?;
-    Ok(preview)
-}
+
 
 #[cfg(test)]
 mod test {
