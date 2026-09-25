@@ -27,6 +27,7 @@ import { nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
 import { toBigIntString } from '../common/utils';
 import { ConfigService } from '../config/config.service';
+import { FeatureFlagsService, FeatureFlag } from '../config/feature-flags.service';
 import { normalizeQuoteAssetSymbol } from './quote-assets';
 
 
@@ -54,6 +55,7 @@ export class DexService {
     private readonly redis: RedisService,
     private readonly signingKeys: SigningKeyProvider,
     private readonly configService: ConfigService,
+    private readonly featureFlagsService: FeatureFlagsService,
   ) {}
 
   async listOrders(
@@ -116,6 +118,9 @@ export class DexService {
   }
 
   async listBondTokens(dto: ListBondDto, sellerAddress: string): Promise<OrderResponse> {
+    if (!this.featureFlagsService.isEnabled(FeatureFlag.ENABLE_SECONDARY_MARKET)) {
+      throw new HttpException('Secondary market trading is currently disabled', HttpStatus.SERVICE_UNAVAILABLE);
+    }
     const adminSecret = this.getAdminSecret();
 
     const { result, transactionHash } = await this.contractService.invokeContractMethod(
@@ -149,6 +154,9 @@ export class DexService {
    * contract call is attempted.
    */
   async buyBondTokens(dto: BuyBondDto, buyerAddress: string): Promise<OrderResponse> {
+    if (!this.featureFlagsService.isEnabled(FeatureFlag.ENABLE_SECONDARY_MARKET)) {
+      throw new HttpException('Secondary market trading is currently disabled', HttpStatus.SERVICE_UNAVAILABLE);
+    }
     const order = await this.fetchOrderFromLedger(dto.orderId);
     this.assertOrderIsActionable(order);
     if (BigInt(dto.amount) > BigInt(order.amount)) {
