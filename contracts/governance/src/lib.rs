@@ -1,11 +1,38 @@
 #![no_std]
 #![allow(deprecated)]
+#![allow(clippy::too_many_arguments)]
 use nbbs_shared::GovernanceError;
 use soroban_sdk::{
     contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Val, Vec,
 };
 
 pub const DEFAULT_TIMELOCK_SECONDS: u64 = 172_800;
+pub const ROUTINE_TIMELOCK_SECONDS: u64 = 86_400; // 24 hours
+pub const CRITICAL_TIMELOCK_SECONDS: u64 = 259_200; // 72 hours
+pub const EMERGENCY_TIMELOCK_SECONDS: u64 = 3_600; // 1 hour
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum GovernanceTrack {
+    Routine = 0,
+    Critical = 1,
+    Emergency = 2,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct TrackConfig {
+    pub timelock_seconds: u64,
+    pub threshold: u32,
+    pub min_approval_weight: u128,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct Checkpoint {
+    pub ledger_sequence: u32,
+    pub vote_weight: u128,
+}
 
 #[derive(Clone)]
 #[contracttype]
@@ -19,6 +46,11 @@ pub enum DataKey {
     Nonce(Address),
     ExecutionNonce(Address),
     AllowList(Address, Symbol),
+    TrackConfig(GovernanceTrack),
+    VotingPower(Address),
+    CheckpointCount(Address),
+    Checkpoint(Address, u32),
+    Paused(Address),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +79,10 @@ pub struct Proposal {
     pub queued_at: u64,
     pub executed_at: u64,
     pub timelock_seconds: u64,
+    pub track: GovernanceTrack,
+    pub snapshot_sequence: u32,
+    pub approval_weight: u128,
+    pub veto_weight: u128,
 }
 
 fn get_nonce(env: &Env, addr: &Address) -> u64 {
@@ -129,6 +165,112 @@ fn validate_proposal_callable(
     Ok(())
 }
 
+fn is_signer(env: &Env, address: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get::<_, Vec<Address>>(&DataKey::Signers)
+        .map(|signers| signers.contains(address.clone()))
+        .unwrap_or(false)
+}
+
+fn get_track_config(env: &Env, track: GovernanceTrack) -> TrackConfig {
+    env.storage()
+        .instance()
+        .get(&DataKey::TrackConfig(track))
+        .unwrap_or(match track {
+            GovernanceTrack::Routine => TrackConfig {
+                timelock_seconds: ROUTINE_TIMELOCK_SECONDS,
+                threshold: 1,
+                min_approval_weight: 0,
+            },
+            GovernanceTrack::Critical => TrackConfig {
+                timelock_seconds: CRITICAL_TIMELOCK_SECONDS,
+                threshold: 1,
+                min_approval_weight: 0,
+            },
+            GovernanceTrack::Emergency => TrackConfig {
+                timelock_seconds: EMERGENCY_TIMELOCK_SECONDS,
+                threshold: 1,
+                min_approval_weight: 0,
+            },
+        })
+}
+
+fn record_voting_checkpoint(env: &Env, voter: &Address, new_weight: u128) {
+    let current_ledger = env.ledger().sequence();
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CheckpointCount(voter.clone()))
+        .unwrap_or(0);
+
+    if count > 0 {
+        let last_idx = count - 1;
+        let last_cp: Option<Checkpoint> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Checkpoint(voter.clone(), last_idx));
+        if let Some(mut cp) = last_cp {
+            if cp.ledger_sequence == current_ledger {
+                cp.vote_weight = new_weight;
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Checkpoint(voter.clone(), last_idx), &cp);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::VotingPower(voter.clone()), &new_weight);
+                return;
+            }
+        }
+    }
+
+    let cp = Checkpoint {
+        ledger_sequence: current_ledger,
+        vote_weight: new_weight,
+    };
+    env.storage()
+        .instance()
+        .set(&DataKey::Checkpoint(voter.clone(), count), &cp);
+    env.storage()
+        .instance()
+        .set(&DataKey::CheckpointCount(voter.clone()), &(count + 1));
+    env.storage()
+        .instance()
+        .set(&DataKey::VotingPower(voter.clone()), &new_weight);
+}
+
+fn get_voting_power_at(env: &Env, voter: &Address, snapshot_sequence: u32) -> u128 {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CheckpointCount(voter.clone()))
+        .unwrap_or(0);
+    if count == 0 {
+        return 0;
+    }
+
+    let mut low: u32 = 0;
+    let mut high: u32 = count;
+    let mut best: Option<u128> = None;
+
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let cp: Checkpoint = env
+            .storage()
+            .instance()
+            .get(&DataKey::Checkpoint(voter.clone(), mid))
+            .unwrap();
+        if cp.ledger_sequence <= snapshot_sequence {
+            best = Some(cp.vote_weight);
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    best.unwrap_or(0)
+}
+
 #[contract]
 pub struct Governance;
 
@@ -156,8 +298,41 @@ impl Governance {
             .instance()
             .set(&DataKey::TimelockSeconds, &timelock_seconds);
 
-        // Bootstrap with empty allow-list - must be configured via add_to_allow_list
-        // This ensures that no proposals can be made until governance explicitly allows them
+        // Configure default risk tier tracks:
+        // 1. Routine parameter changes: default configured timelock and standard threshold
+        let routine_cfg = TrackConfig {
+            timelock_seconds,
+            threshold,
+            min_approval_weight: 0,
+        };
+        // 2. Critical parameter changes: elevated threshold and longer timelock
+        let critical_threshold = (threshold + 1).min(signers.len());
+        let critical_timelock = timelock_seconds.saturating_mul(3) / 2;
+        let critical_cfg = TrackConfig {
+            timelock_seconds: critical_timelock.max(CRITICAL_TIMELOCK_SECONDS),
+            threshold: critical_threshold,
+            min_approval_weight: 0,
+        };
+        // 3. Emergency pause: supermajority approval threshold and short 1-hour timelock
+        let emergency_threshold = signers.len().max(threshold);
+        let emergency_cfg = TrackConfig {
+            timelock_seconds: EMERGENCY_TIMELOCK_SECONDS,
+            threshold: emergency_threshold,
+            min_approval_weight: 0,
+        };
+
+        env.storage().instance().set(
+            &DataKey::TrackConfig(GovernanceTrack::Routine),
+            &routine_cfg,
+        );
+        env.storage().instance().set(
+            &DataKey::TrackConfig(GovernanceTrack::Critical),
+            &critical_cfg,
+        );
+        env.storage().instance().set(
+            &DataKey::TrackConfig(GovernanceTrack::Emergency),
+            &emergency_cfg,
+        );
     }
 
     pub fn add_to_allow_list(
@@ -211,6 +386,28 @@ impl Governance {
         description: Symbol,
         nonce: u64,
     ) -> Result<u64, GovernanceError> {
+        Self::propose_with_track(
+            env,
+            caller,
+            target,
+            method,
+            args,
+            description,
+            GovernanceTrack::Routine,
+            nonce,
+        )
+    }
+
+    pub fn propose_with_track(
+        env: Env,
+        caller: Address,
+        target: Address,
+        method: Symbol,
+        args: Vec<Val>,
+        description: Symbol,
+        track: GovernanceTrack,
+        nonce: u64,
+    ) -> Result<u64, GovernanceError> {
         caller.require_auth();
         check_nonce(&env, &caller, nonce)?;
         require_signer(&env, &caller)?;
@@ -220,11 +417,9 @@ impl Governance {
             return Err(GovernanceError::Unauthorized);
         }
 
-        // Best-effort validation: attempt a dry-run invocation with empty args
-        // to catch obvious errors early (invalid method/target) before timelock
-        // This is NOT a full validation - it won't catch all logic errors,
-        // but it catches the most common case: typos in contract address or method name.
         validate_proposal_callable(&env, &target, &method, &args)?;
+
+        let track_config = get_track_config(&env, track);
 
         let count: u64 = env
             .storage()
@@ -236,11 +431,8 @@ impl Governance {
             .instance()
             .set(&DataKey::ProposalCount, &proposal_id);
 
-        let timelock_seconds: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::TimelockSeconds)
-            .unwrap_or(DEFAULT_TIMELOCK_SECONDS);
+        // Pre-proposal snapshot checkpoint: strictly prior to the current ledger sequence to defend against flash-loans
+        let snapshot_sequence = env.ledger().sequence().saturating_sub(1);
 
         let proposal = Proposal {
             id: proposal_id,
@@ -255,7 +447,11 @@ impl Governance {
             created_at: env.ledger().timestamp(),
             queued_at: 0,
             executed_at: 0,
-            timelock_seconds,
+            timelock_seconds: track_config.timelock_seconds,
+            track,
+            snapshot_sequence,
+            approval_weight: 0,
+            veto_weight: 0,
         };
         env.storage()
             .instance()
@@ -277,7 +473,6 @@ impl Governance {
     ) -> Result<(), GovernanceError> {
         caller.require_auth();
         check_nonce(&env, &caller, nonce)?;
-        require_signer(&env, &caller)?;
 
         let mut proposal: Proposal = env
             .storage()
@@ -287,6 +482,13 @@ impl Governance {
 
         if proposal.status != ProposalStatus::Pending {
             return Err(GovernanceError::NotPending);
+        }
+
+        let is_signer_voter = is_signer(&env, &caller);
+        let snapshot_weight = get_voting_power_at(&env, &caller, proposal.snapshot_sequence);
+
+        if !is_signer_voter && snapshot_weight == 0 {
+            return Err(GovernanceError::InsufficientVotingPower);
         }
 
         let vote_key = DataKey::Vote(proposal_id, caller.clone());
@@ -300,14 +502,18 @@ impl Governance {
         }
         env.storage().instance().set(&vote_key, &true);
 
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Threshold)
-            .unwrap_or(1);
+        let track_config = get_track_config(&env, proposal.track);
 
-        proposal.approval_count += 1;
-        if proposal.approval_count >= threshold {
+        if is_signer_voter {
+            proposal.approval_count += 1;
+        }
+        proposal.approval_weight = proposal.approval_weight.saturating_add(snapshot_weight);
+
+        let count_met = proposal.approval_count >= track_config.threshold;
+        let weight_met = track_config.min_approval_weight > 0
+            && proposal.approval_weight >= track_config.min_approval_weight;
+
+        if count_met || weight_met {
             proposal.status = ProposalStatus::Queued;
             proposal.queued_at = env.ledger().timestamp();
         }
@@ -331,7 +537,6 @@ impl Governance {
     ) -> Result<(), GovernanceError> {
         caller.require_auth();
         check_nonce(&env, &caller, nonce)?;
-        require_signer(&env, &caller)?;
 
         let mut proposal: Proposal = env
             .storage()
@@ -341,6 +546,13 @@ impl Governance {
 
         if proposal.status != ProposalStatus::Pending {
             return Err(GovernanceError::NotPending);
+        }
+
+        let is_signer_voter = is_signer(&env, &caller);
+        let snapshot_weight = get_voting_power_at(&env, &caller, proposal.snapshot_sequence);
+
+        if !is_signer_voter && snapshot_weight == 0 {
+            return Err(GovernanceError::InsufficientVotingPower);
         }
 
         let vote_key = DataKey::Vote(proposal_id, caller.clone());
@@ -354,14 +566,18 @@ impl Governance {
         }
         env.storage().instance().set(&vote_key, &false);
 
-        let threshold: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Threshold)
-            .unwrap_or(1);
+        let track_config = get_track_config(&env, proposal.track);
 
-        proposal.veto_count += 1;
-        if proposal.veto_count >= threshold {
+        if is_signer_voter {
+            proposal.veto_count += 1;
+        }
+        proposal.veto_weight = proposal.veto_weight.saturating_add(snapshot_weight);
+
+        let count_met = proposal.veto_count >= track_config.threshold;
+        let weight_met = track_config.min_approval_weight > 0
+            && proposal.veto_weight >= track_config.min_approval_weight;
+
+        if count_met || weight_met {
             proposal.status = ProposalStatus::Rejected;
         }
         env.storage()
@@ -443,6 +659,12 @@ impl Governance {
         env.invoke_contract::<Val>(&proposal.target, &proposal.method, full_args);
         set_execution_nonce(&env, &proposal.target, exec_nonce + 1);
 
+        if proposal.method == Symbol::new(&env, "pause") {
+            env.storage()
+                .instance()
+                .set(&DataKey::Paused(proposal.target.clone()), &true);
+        }
+
         proposal.status = ProposalStatus::Executed;
         proposal.executed_at = now;
         env.storage()
@@ -505,6 +727,162 @@ impl Governance {
             .get::<_, Vec<Address>>(&DataKey::Signers)
             .map(|signers| signers.contains(address))
             .unwrap_or(false)
+    }
+
+    pub fn set_track_config(
+        env: Env,
+        caller: Address,
+        track: GovernanceTrack,
+        timelock_seconds: u64,
+        threshold: u32,
+        min_approval_weight: u128,
+        nonce: u64,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        let config = TrackConfig {
+            timelock_seconds,
+            threshold,
+            min_approval_weight,
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TrackConfig(track), &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "track_config_updated"),),
+            (track, timelock_seconds, threshold),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_track_config(env: Env, track: GovernanceTrack) -> TrackConfig {
+        get_track_config(&env, track)
+    }
+
+    pub fn set_voting_power(
+        env: Env,
+        caller: Address,
+        voter: Address,
+        weight: u128,
+        nonce: u64,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        record_voting_checkpoint(&env, &voter, weight);
+
+        env.events().publish(
+            (Symbol::new(&env, "voting_power_updated"),),
+            (voter, weight),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_voting_power_at(env: Env, voter: Address, snapshot_sequence: u32) -> u128 {
+        get_voting_power_at(&env, &voter, snapshot_sequence)
+    }
+
+    pub fn get_current_voting_power(env: Env, voter: Address) -> u128 {
+        get_voting_power_at(&env, &voter, env.ledger().sequence())
+    }
+
+    pub fn is_paused(env: Env, target: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused(target))
+            .unwrap_or(false)
+    }
+
+    pub fn set_paused(
+        env: Env,
+        caller: Address,
+        target: Address,
+        paused: bool,
+        nonce: u64,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Paused(target.clone()), &paused);
+
+        env.events().publish(
+            (Symbol::new(&env, "contract_paused"),),
+            (target, paused, caller),
+        );
+
+        Ok(())
+    }
+
+    pub fn propose_emergency_pause(
+        env: Env,
+        caller: Address,
+        target: Address,
+        nonce: u64,
+    ) -> Result<u64, GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        let pause_sym = Symbol::new(&env, "pause");
+        env.storage().instance().set(
+            &DataKey::AllowList(target.clone(), pause_sym.clone()),
+            &true,
+        );
+
+        let track = GovernanceTrack::Emergency;
+        let track_config = get_track_config(&env, track);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProposalCount)
+            .unwrap_or(0);
+        let proposal_id = count + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::ProposalCount, &proposal_id);
+
+        let snapshot_sequence = env.ledger().sequence().saturating_sub(1);
+
+        let proposal = Proposal {
+            id: proposal_id,
+            proposer: caller.clone(),
+            target: target.clone(),
+            method: pause_sym,
+            args: vec![&env],
+            description: Symbol::new(&env, "emergency_pause"),
+            status: ProposalStatus::Pending,
+            approval_count: 0,
+            veto_count: 0,
+            created_at: env.ledger().timestamp(),
+            queued_at: 0,
+            executed_at: 0,
+            timelock_seconds: track_config.timelock_seconds,
+            track,
+            snapshot_sequence,
+            approval_weight: 0,
+            veto_weight: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::Proposal(proposal_id), &proposal);
+
+        env.events().publish(
+            (Symbol::new(&env, "emergency_pause_proposed"),),
+            (proposal_id, caller, target),
+        );
+
+        Ok(proposal_id)
     }
 }
 
@@ -1010,5 +1388,232 @@ mod test {
         );
 
         assert_eq!(result, Err(Ok(GovernanceError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_governance_tracks_different_timelocks_and_thresholds() {
+        let (env, client, signers) = setup();
+        env.ledger().set_timestamp(1_000_000);
+        let target = make_target(&env);
+        let method = Symbol::new(&env, "set_something");
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &method, &0);
+
+        // Verify default track configurations
+        let routine_cfg = client.get_track_config(&GovernanceTrack::Routine);
+        assert_eq!(routine_cfg.timelock_seconds, DEFAULT_TIMELOCK_SECONDS);
+        assert_eq!(routine_cfg.threshold, 3);
+
+        let critical_cfg = client.get_track_config(&GovernanceTrack::Critical);
+        assert_eq!(critical_cfg.timelock_seconds, CRITICAL_TIMELOCK_SECONDS);
+        assert_eq!(critical_cfg.threshold, 4);
+
+        let emergency_cfg = client.get_track_config(&GovernanceTrack::Emergency);
+        assert_eq!(emergency_cfg.timelock_seconds, EMERGENCY_TIMELOCK_SECONDS);
+        assert_eq!(emergency_cfg.threshold, 5);
+
+        // 1. Propose on Routine track (requires 3 approvals, 24h timelock)
+        let routine_pid = client.propose_with_track(
+            &signers.get(0).unwrap(),
+            &target,
+            &method,
+            &vec![&env],
+            &Symbol::new(&env, "routine_desc"),
+            &GovernanceTrack::Routine,
+            &1,
+        );
+        let prop = client.get_proposal(&routine_pid);
+        assert_eq!(prop.timelock_seconds, DEFAULT_TIMELOCK_SECONDS);
+        assert_eq!(prop.track, GovernanceTrack::Routine);
+
+        client.vote_approve(&signers.get(1).unwrap(), &routine_pid, &0);
+        client.vote_approve(&signers.get(2).unwrap(), &routine_pid, &0);
+        client.vote_approve(&signers.get(3).unwrap(), &routine_pid, &0);
+        assert_eq!(
+            client.get_proposal(&routine_pid).status,
+            ProposalStatus::Queued
+        );
+
+        // 2. Propose on Critical track (requires 4 approvals, 72h timelock)
+        let critical_pid = client.propose_with_track(
+            &signers.get(0).unwrap(),
+            &target,
+            &method,
+            &vec![&env],
+            &Symbol::new(&env, "critical_desc"),
+            &GovernanceTrack::Critical,
+            &2,
+        );
+        let prop = client.get_proposal(&critical_pid);
+        assert_eq!(prop.timelock_seconds, CRITICAL_TIMELOCK_SECONDS);
+        assert_eq!(prop.track, GovernanceTrack::Critical);
+
+        client.vote_approve(&signers.get(1).unwrap(), &critical_pid, &1);
+        client.vote_approve(&signers.get(2).unwrap(), &critical_pid, &1);
+        client.vote_approve(&signers.get(3).unwrap(), &critical_pid, &1);
+        // 3 approvals should NOT queue for Critical track
+        assert_eq!(
+            client.get_proposal(&critical_pid).status,
+            ProposalStatus::Pending
+        );
+
+        client.vote_approve(&signers.get(4).unwrap(), &critical_pid, &0);
+        // 4th approval queues the Critical proposal
+        assert_eq!(
+            client.get_proposal(&critical_pid).status,
+            ProposalStatus::Queued
+        );
+
+        // 3. Propose on Emergency track (requires 5 approvals, 1h timelock)
+        let emergency_pid = client.propose_with_track(
+            &signers.get(0).unwrap(),
+            &target,
+            &method,
+            &vec![&env],
+            &Symbol::new(&env, "emergency_desc"),
+            &GovernanceTrack::Emergency,
+            &3,
+        );
+        let prop = client.get_proposal(&emergency_pid);
+        assert_eq!(prop.timelock_seconds, EMERGENCY_TIMELOCK_SECONDS);
+        assert_eq!(prop.track, GovernanceTrack::Emergency);
+
+        client.vote_approve(&signers.get(1).unwrap(), &emergency_pid, &2);
+        client.vote_approve(&signers.get(2).unwrap(), &emergency_pid, &2);
+        client.vote_approve(&signers.get(3).unwrap(), &emergency_pid, &2);
+        assert_eq!(
+            client.get_proposal(&emergency_pid).status,
+            ProposalStatus::Pending
+        );
+
+        client.vote_approve(&signers.get(4).unwrap(), &emergency_pid, &1);
+        // 4 approvals is still pending because emergency requires 5
+        assert_eq!(
+            client.get_proposal(&emergency_pid).status,
+            ProposalStatus::Pending
+        );
+
+        client.vote_approve(&signers.get(0).unwrap(), &emergency_pid, &4);
+        // 5th approval reaches supermajority and queues
+        assert_eq!(
+            client.get_proposal(&emergency_pid).status,
+            ProposalStatus::Queued
+        );
+    }
+
+    #[test]
+    fn test_flash_loan_voting_fails_due_to_pre_proposal_snapshot() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+        let method = Symbol::new(&env, "set_something");
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &method, &0);
+
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        // Configure Critical track to require 1_000_000 voting weight quorum
+        client.set_track_config(
+            &signers.get(0).unwrap(),
+            &GovernanceTrack::Critical,
+            &CRITICAL_TIMELOCK_SECONDS,
+            &10, // high signer count so weight quorum must be used
+            &1_000_000,
+            &1,
+        );
+
+        // Pre-proposal ledger 100: Alice has 600,000 staked voting power
+        env.ledger().set_sequence_number(100);
+        client.set_voting_power(&signers.get(0).unwrap(), &alice, &600_000, &2);
+
+        // Pre-proposal ledger 150: Bob has 500,000 staked voting power
+        env.ledger().set_sequence_number(150);
+        client.set_voting_power(&signers.get(0).unwrap(), &bob, &500_000, &3);
+
+        // Attacker had 10 tokens at ledger 50
+        env.ledger().set_sequence_number(50);
+        client.set_voting_power(&signers.get(0).unwrap(), &attacker, &10, &4);
+
+        // Ledger 200: Proposal is created
+        env.ledger().set_sequence_number(200);
+        let pid = client.propose_with_track(
+            &signers.get(0).unwrap(),
+            &target,
+            &method,
+            &vec![&env],
+            &Symbol::new(&env, "community_prop"),
+            &GovernanceTrack::Critical,
+            &5,
+        );
+
+        let proposal = client.get_proposal(&pid);
+        // Snapshot sequence is strictly prior to proposal creation sequence (200 - 1 = 199)
+        assert_eq!(proposal.snapshot_sequence, 199);
+
+        // Ledger 201: Attacker executes a flash loan borrowing 50,000,000 tokens
+        env.ledger().set_sequence_number(201);
+        client.set_voting_power(&signers.get(0).unwrap(), &attacker, &50_000_000, &6);
+
+        // Attacker attempts to vote using their 50M flash-loaned power
+        // The contract evaluates their power at snapshot sequence 199, where they had only 10 tokens
+        client.vote_approve(&attacker, &pid, &0);
+
+        let prop_after_attacker = client.get_proposal(&pid);
+        // Attacker's approval weight is only 10, NOT 50,000,000!
+        assert_eq!(prop_after_attacker.approval_weight, 10);
+        assert_eq!(prop_after_attacker.status, ProposalStatus::Pending);
+
+        // A totally new address who borrowed via flash loan with 0 pre-snapshot balance fails entirely
+        let pure_flash_loaner = Address::generate(&env);
+        client.set_voting_power(
+            &signers.get(0).unwrap(),
+            &pure_flash_loaner,
+            &100_000_000,
+            &7,
+        );
+        let res = client.try_vote_approve(&pure_flash_loaner, &pid, &0);
+        assert_eq!(res, Err(Ok(GovernanceError::InsufficientVotingPower)));
+
+        // Honest pre-staked voters vote with their snapshot power
+        client.vote_approve(&alice, &pid, &0);
+        let prop_after_alice = client.get_proposal(&pid);
+        assert_eq!(prop_after_alice.approval_weight, 600_010);
+        assert_eq!(prop_after_alice.status, ProposalStatus::Pending);
+
+        client.vote_approve(&bob, &pid, &0);
+        let prop_after_bob = client.get_proposal(&pid);
+        // Total weight is 600_000 + 500_000 + 10 = 1_100_010 >= 1_000_000 quorum!
+        assert_eq!(prop_after_bob.approval_weight, 1_100_010);
+        assert_eq!(prop_after_bob.status, ProposalStatus::Queued);
+    }
+
+    #[test]
+    fn test_emergency_pause_flow() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+
+        // Initially not paused
+        assert!(!client.is_paused(&target));
+
+        // Propose emergency pause
+        let pid = client.propose_emergency_pause(&signers.get(0).unwrap(), &target, &0);
+        let prop = client.get_proposal(&pid);
+        assert_eq!(prop.track, GovernanceTrack::Emergency);
+        assert_eq!(prop.timelock_seconds, EMERGENCY_TIMELOCK_SECONDS);
+
+        // Emergency requires supermajority of signers (5 out of 5)
+        for (i, signer) in signers.iter().enumerate() {
+            let s_nonce = if i == 0 { 1 } else { 0 };
+            client.vote_approve(&signer, &pid, &s_nonce);
+        }
+
+        let queued_prop = client.get_proposal(&pid);
+        assert_eq!(queued_prop.status, ProposalStatus::Queued);
+
+        // Direct set_paused / is_paused controls
+        client.set_paused(&signers.get(0).unwrap(), &target, &true, &2);
+        assert!(client.is_paused(&target));
+
+        client.set_paused(&signers.get(1).unwrap(), &target, &false, &1);
+        assert!(!client.is_paused(&target));
     }
 }
