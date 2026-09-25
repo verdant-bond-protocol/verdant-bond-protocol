@@ -1,3 +1,4 @@
+mod reproducible_build_test;
 #[cfg(test)]
 mod integration {
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
