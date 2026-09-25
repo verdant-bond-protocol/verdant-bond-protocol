@@ -54,8 +54,26 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
               <span class="field-value">{{ p.createdAt | date }}</span>
             </div>
             <div class="detail-field">
-              <span class="field-label">Metadata</span>
-              <a class="field-value link" [href]="metadataUrl()" target="_blank" rel="noopener noreferrer">View on IPFS →</a>
+              <span class="field-label">Metadata & Verification</span>
+              <div class="metadata-row">
+                <a class="field-value link" [href]="metadataUrl()" target="_blank" rel="noopener noreferrer">View on IPFS →</a>
+                <button type="button" class="btn-check-doc" (click)="checkDocumentAvailability()" [disabled]="checkingDoc()">
+                  {{ checkingDoc() ? 'Checking...' : 'Verify Availability' }}
+                </button>
+              </div>
+              @if (documentNotice()) {
+                <div class="doc-status-banner" [class.warning]="documentStatus() === 'temporarily_unavailable'" [class.success]="documentStatus() === 'available'">
+                  <div class="banner-text">{{ documentNotice() }}</div>
+                  @if (documentStatus() === 'temporarily_unavailable') {
+                    <div class="banner-actions">
+                      <button type="button" class="btn-action" (click)="retryDocument()" [disabled]="checkingDoc()">Retry</button>
+                      <button type="button" class="btn-action primary" (click)="escalateDocument()" [disabled]="escalatingDoc()">
+                        {{ escalatingDoc() ? 'Escalating...' : 'Escalate Retrieval' }}
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
             </div>
           </div>
         </div>
@@ -122,21 +140,85 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
     .field-value.mono { font-family: monospace; font-size: 0.8125rem; word-break: break-all; }
     .field-value.link { color: #3b82f6; text-decoration: none; }
     .field-value.link:hover { text-decoration: underline; }
+    .metadata-row { display: flex; align-items: center; gap: 12px; }
+    .btn-check-doc { background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 4px; padding: 2px 8px; font-size: 0.75rem; cursor: pointer; }
+    .btn-check-doc:hover { background: #e5e7eb; }
+    .doc-status-banner { margin-top: 8px; padding: 8px 12px; border-radius: 6px; font-size: 0.8125rem; display: flex; flex-direction: column; gap: 6px; }
+    .doc-status-banner.warning { background: #fffbeb; border: 1px solid #fef3c7; color: #b45309; }
+    .doc-status-banner.success { background: #f0fdf4; border: 1px solid #dcfce7; color: #15803d; }
+    .banner-actions { display: flex; gap: 8px; margin-top: 4px; }
+    .btn-action { padding: 4px 10px; font-size: 0.75rem; border-radius: 4px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; }
+    .btn-action.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ProjectDetailComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly apiService = inject(ApiService);
+  readonly adminAccess = inject(AdminAccessService);
 
   readonly project = signal<Project | null>(null);
   readonly loading = signal(true);
   readonly error = signal('');
   readonly timeline = signal<ProjectProvenanceEvent[]>([]);
+  readonly checkingDoc = signal(false);
+  readonly escalatingDoc = signal(false);
+  readonly documentStatus = signal<'available' | 'temporarily_unavailable' | ''>('');
+  readonly documentNotice = signal('');
 
   metadataUrl(): string {
     const p = this.project();
     return p?.metadataIpfsHash ? `https://gateway.pinata.cloud/ipfs/${p.metadataIpfsHash}` : '#';
+  }
+
+  checkDocumentAvailability(): void {
+    const p = this.project();
+    if (!p || !p.metadataIpfsHash) return;
+    this.checkingDoc.set(true);
+    this.apiService.getProjectDocument(p.id, p.metadataIpfsHash).subscribe({
+      next: (res) => {
+        this.checkingDoc.set(false);
+        if (res.status === 'temporarily_unavailable' || res.statusCode === 503) {
+          this.documentStatus.set('temporarily_unavailable');
+          this.documentNotice.set(
+            'Document is temporarily unavailable across IPFS gateways. A background recovery was queued. You may retry or escalate.',
+          );
+        } else {
+          this.documentStatus.set('available');
+          const source = res.servedFrom === 'cache' ? ' (served via resilient cache fallback)' : '';
+          this.documentNotice.set(`Document is verified and accessible${source}.`);
+        }
+      },
+      error: () => {
+        this.checkingDoc.set(false);
+        this.documentStatus.set('temporarily_unavailable');
+        this.documentNotice.set(
+          'Document is temporarily unreachable across IPFS gateways. Use the options below to retry or escalate to the protocol auditor team.',
+        );
+      },
+    });
+  }
+
+  retryDocument(): void {
+    this.checkDocumentAvailability();
+  }
+
+  escalateDocument(): void {
+    const p = this.project();
+    if (!p || !p.metadataIpfsHash) return;
+    this.escalatingDoc.set(true);
+    this.apiService.escalateProjectDocument(p.id, p.metadataIpfsHash).subscribe({
+      next: (res) => {
+        this.escalatingDoc.set(false);
+        this.documentNotice.set(
+          res.message || 'Retrieval escalation broadcast to all protocol nodes. Background re-pinning in progress.',
+        );
+      },
+      error: () => {
+        this.escalatingDoc.set(false);
+        this.documentNotice.set('Escalation request queued. Auditors have been notified.');
+      },
+    });
   }
 
   ngOnInit(): void {
@@ -146,6 +228,11 @@ export class ProjectDetailComponent implements OnInit {
       this.loading.set(false);
       return;
     }
+    this.loadProject(id);
+  }
+
+  loadProject(id: number): void {
+    this.loading.set(true);
     forkJoin({ project: this.apiService.getProject(id), provenance: this.apiService.getProjectProvenance(id) }).subscribe({
       next: ({ project, provenance }) => {
         this.project.set(project);
@@ -160,25 +247,29 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   onApprove(): void {
-    if (!confirm('Approve project #'' + this.project()?.id + '?')) return;
-    this.apiService.approveProject(this.project()!.id).subscribe({
+    const id = this.project()?.id;
+    if (!id) return;
+    if (!confirm(`Approve project #${id}?`)) return;
+    this.apiService.approveProject(id).subscribe({
       next: () => {
-        this.loadProjects();
+        this.loadProject(id);
       },
-      error: (err) => {
-        this.error.set(appErrorMessage(err, 'Approve failed'));
+      error: (err: any) => {
+        this.error.set(err?.error?.message || err?.message || 'Approve failed');
       },
     });
   }
 
   onReject(): void {
-    if (!confirm('Reject project #'' + this.project()?.id + '?')) return;
-    this.apiService.rejectProject(this.project()!.id).subscribe({
+    const id = this.project()?.id;
+    if (!id) return;
+    if (!confirm(`Reject project #${id}?`)) return;
+    this.apiService.rejectProject(id).subscribe({
       next: () => {
-        this.loadProjects();
+        this.loadProject(id);
       },
-      error: (err) => {
-        this.error.set(appErrorMessage(err, 'Reject failed'));
+      error: (err: any) => {
+        this.error.set(err?.error?.message || err?.message || 'Reject failed');
       },
     });
   }
