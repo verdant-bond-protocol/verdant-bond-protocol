@@ -46,6 +46,7 @@ pub enum DataKey {
     Nonce(Address),
     ExecutionNonce(Address),
     AllowList(Address, Symbol),
+    MethodMinTrack(Address, Symbol),
     TrackConfig(GovernanceTrack),
     VotingPower(Address),
     CheckpointCount(Address),
@@ -129,6 +130,64 @@ fn set_execution_nonce(env: &Env, target: &Address, nonce: u64) {
     env.storage()
         .instance()
         .set(&DataKey::ExecutionNonce(target.clone()), &nonce);
+}
+
+
+fn is_emergency_method(env: &Env, method: &Symbol) -> bool {
+    *method == Symbol::new(env, "pause")
+        || *method == Symbol::new(env, "emergency_pause")
+        || *method == Symbol::new(env, "unpause")
+        || *method == Symbol::new(env, "emergency_stop")
+        || *method == Symbol::new(env, "freeze")
+}
+
+fn is_critical_method(env: &Env, method: &Symbol) -> bool {
+    *method == Symbol::new(env, "set_admin")
+        || *method == Symbol::new(env, "upgrade")
+        || *method == Symbol::new(env, "update_admin")
+        || *method == Symbol::new(env, "set_track_config")
+        || *method == Symbol::new(env, "allow_method")
+        || *method == Symbol::new(env, "allow_method_with_track")
+        || *method == Symbol::new(env, "remove_from_allow_list")
+        || *method == Symbol::new(env, "disallow_method")
+        || *method == Symbol::new(env, "set_signers")
+        || *method == Symbol::new(env, "set_threshold")
+        || *method == Symbol::new(env, "set_method_min_track")
+        || *method == Symbol::new(env, "set_risk_parameters")
+        || *method == Symbol::new(env, "set_oracle_threshold")
+        || *method == Symbol::new(env, "set_deviation_cap")
+        || *method == Symbol::new(env, "set_staleness_threshold")
+        || *method == Symbol::new(env, "register_credit_type")
+        || *method == Symbol::new(env, "set_dispute_bond")
+}
+
+fn get_method_min_track(env: &Env, target: &Address, method: &Symbol) -> GovernanceTrack {
+    if let Some(track) = env
+        .storage()
+        .instance()
+        .get::<DataKey, GovernanceTrack>(&DataKey::MethodMinTrack(target.clone(), method.clone()))
+    {
+        return track;
+    }
+    if is_critical_method(env, method) {
+        GovernanceTrack::Critical
+    } else if is_emergency_method(env, method) {
+        GovernanceTrack::Emergency
+    } else {
+        GovernanceTrack::Routine
+    }
+}
+
+fn set_method_min_track(
+    env: &Env,
+    target: &Address,
+    method: &Symbol,
+    min_track: GovernanceTrack,
+) {
+    env.storage().instance().set(
+        &DataKey::MethodMinTrack(target.clone(), method.clone()),
+        &min_track,
+    );
 }
 
 fn is_method_allowed(env: &Env, target: &Address, method: &Symbol) -> bool {
@@ -373,6 +432,49 @@ impl Governance {
         Ok(())
     }
 
+    
+    pub fn allow_method_with_track(
+        env: Env,
+        caller: Address,
+        target: Address,
+        method: Symbol,
+        min_track: GovernanceTrack,
+        nonce: u64,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        set_method_allowed(&env, &target, &method, true);
+        set_method_min_track(&env, &target, &method, min_track);
+
+        env.events()
+            .publish((Symbol::new(&env, "method_allowed"),), (target, method));
+
+        Ok(())
+    }
+
+    pub fn set_method_min_track(
+        env: Env,
+        caller: Address,
+        target: Address,
+        method: Symbol,
+        min_track: GovernanceTrack,
+        nonce: u64,
+    ) -> Result<(), GovernanceError> {
+        caller.require_auth();
+        check_nonce(&env, &caller, nonce)?;
+        require_signer(&env, &caller)?;
+
+        set_method_min_track(&env, &target, &method, min_track);
+
+        Ok(())
+    }
+
+    pub fn get_method_min_track(env: Env, target: Address, method: Symbol) -> GovernanceTrack {
+        get_method_min_track(&env, &target, &method)
+    }
+
     pub fn is_method_allowed(env: Env, target: Address, method: Symbol) -> bool {
         is_method_allowed(&env, &target, &method)
     }
@@ -415,6 +517,27 @@ impl Governance {
         // Check allow-list: target/method pair must be explicitly allowed
         if !is_method_allowed(&env, &target, &method) {
             return Err(GovernanceError::Unauthorized);
+        }
+
+        // Enforce track policy:
+        // 1. Emergency track is restricted strictly to permitted emergency circuit-breaker actions
+        let is_emergency = is_emergency_method(&env, &method);
+        let min_track = get_method_min_track(&env, &target, &method);
+
+        if track == GovernanceTrack::Emergency {
+            if !is_emergency && min_track != GovernanceTrack::Emergency {
+                return Err(GovernanceError::InvalidTrack);
+            }
+        }
+
+        // 2. Minimum risk track validation: Critical operations cannot be proposed on Routine or Emergency track
+        if min_track == GovernanceTrack::Critical && track != GovernanceTrack::Critical {
+            return Err(GovernanceError::InvalidTrack);
+        }
+
+        // 3. Emergency-specific methods must use Emergency track
+        if min_track == GovernanceTrack::Emergency && track != GovernanceTrack::Emergency {
+            return Err(GovernanceError::InvalidTrack);
         }
 
         validate_proposal_callable(&env, &target, &method, &args)?;
@@ -1395,8 +1518,13 @@ mod test {
         let (env, client, signers) = setup();
         env.ledger().set_timestamp(1_000_000);
         let target = make_target(&env);
-        let method = Symbol::new(&env, "set_something");
-        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &method, &0);
+        let routine_method = Symbol::new(&env, "routine_action");
+        let critical_method = Symbol::new(&env, "set_oracle_threshold");
+        let emergency_method = Symbol::new(&env, "pause");
+
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &routine_method, &0);
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &critical_method, &1);
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &emergency_method, &2);
 
         // Verify default track configurations
         let routine_cfg = client.get_track_config(&GovernanceTrack::Routine);
@@ -1415,11 +1543,11 @@ mod test {
         let routine_pid = client.propose_with_track(
             &signers.get(0).unwrap(),
             &target,
-            &method,
+            &routine_method,
             &vec![&env],
             &Symbol::new(&env, "routine_desc"),
             &GovernanceTrack::Routine,
-            &1,
+            &3,
         );
         let prop = client.get_proposal(&routine_pid);
         assert_eq!(prop.timelock_seconds, DEFAULT_TIMELOCK_SECONDS);
@@ -1437,11 +1565,11 @@ mod test {
         let critical_pid = client.propose_with_track(
             &signers.get(0).unwrap(),
             &target,
-            &method,
+            &critical_method,
             &vec![&env],
             &Symbol::new(&env, "critical_desc"),
             &GovernanceTrack::Critical,
-            &2,
+            &4,
         );
         let prop = client.get_proposal(&critical_pid);
         assert_eq!(prop.timelock_seconds, CRITICAL_TIMELOCK_SECONDS);
@@ -1467,11 +1595,11 @@ mod test {
         let emergency_pid = client.propose_with_track(
             &signers.get(0).unwrap(),
             &target,
-            &method,
+            &emergency_method,
             &vec![&env],
             &Symbol::new(&env, "emergency_desc"),
             &GovernanceTrack::Emergency,
-            &3,
+            &5,
         );
         let prop = client.get_proposal(&emergency_pid);
         assert_eq!(prop.timelock_seconds, EMERGENCY_TIMELOCK_SECONDS);
@@ -1492,7 +1620,7 @@ mod test {
             ProposalStatus::Pending
         );
 
-        client.vote_approve(&signers.get(0).unwrap(), &emergency_pid, &4);
+        client.vote_approve(&signers.get(0).unwrap(), &emergency_pid, &6);
         // 5th approval reaches supermajority and queues
         assert_eq!(
             client.get_proposal(&emergency_pid).status,
@@ -1616,4 +1744,150 @@ mod test {
         client.set_paused(&signers.get(1).unwrap(), &target, &false, &1);
         assert!(!client.is_paused(&target));
     }
+
+    #[test]
+    fn test_downgrade_critical_operation_to_routine_rejected() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+        let critical_method = Symbol::new(&env, "set_oracle_threshold");
+
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &critical_method, &0);
+        assert_eq!(
+            client.get_method_min_track(&target, &critical_method),
+            GovernanceTrack::Critical
+        );
+
+        // Attempting to propose critical operation on Routine track via propose() must fail
+        let res_propose = client.try_propose(
+            &signers.get(1).unwrap(),
+            &target,
+            &critical_method,
+            &vec![&env],
+            &Symbol::new(&env, "downgrade_attempt_1"),
+            &0,
+        );
+        assert_eq!(res_propose, Err(Ok(GovernanceError::InvalidTrack)));
+
+        // Attempting to propose critical operation on Routine track via propose_with_track() must fail
+        let res_routine = client.try_propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &critical_method,
+            &vec![&env],
+            &Symbol::new(&env, "downgrade_attempt_2"),
+            &GovernanceTrack::Routine,
+            &0,
+        );
+        assert_eq!(res_routine, Err(Ok(GovernanceError::InvalidTrack)));
+
+        // Attempting to propose critical operation on Emergency track must also fail
+        let res_emergency = client.try_propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &critical_method,
+            &vec![&env],
+            &Symbol::new(&env, "emergency_critical_abuse"),
+            &GovernanceTrack::Emergency,
+            &0,
+        );
+        assert_eq!(res_emergency, Err(Ok(GovernanceError::InvalidTrack)));
+
+        // Proposing on Critical track succeeds
+        let pid = client.propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &critical_method,
+            &vec![&env],
+            &Symbol::new(&env, "valid_critical"),
+            &GovernanceTrack::Critical,
+            &0,
+        );
+        assert_eq!(pid, 1);
+        let prop = client.get_proposal(&pid);
+        assert_eq!(prop.track, GovernanceTrack::Critical);
+        assert_eq!(prop.timelock_seconds, CRITICAL_TIMELOCK_SECONDS);
+    }
+
+    #[test]
+    fn test_emergency_track_restricted_to_circuit_breaker() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+        let routine_method = Symbol::new(&env, "routine_update");
+        let pause_method = Symbol::new(&env, "pause");
+
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &routine_method, &0);
+        client.add_to_allow_list(&signers.get(0).unwrap(), &target, &pause_method, &1);
+
+        // Attempting to propose a routine method on the Emergency track fails
+        let res = client.try_propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &routine_method,
+            &vec![&env],
+            &Symbol::new(&env, "unauthorized_emergency_attempt"),
+            &GovernanceTrack::Emergency,
+            &0,
+        );
+        assert_eq!(res, Err(Ok(GovernanceError::InvalidTrack)));
+
+        // Proposing emergency pause on Emergency track succeeds
+        let pid = client.propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &pause_method,
+            &vec![&env],
+            &Symbol::new(&env, "emergency_pause_action"),
+            &GovernanceTrack::Emergency,
+            &0,
+        );
+        assert_eq!(pid, 1);
+        let prop = client.get_proposal(&pid);
+        assert_eq!(prop.track, GovernanceTrack::Emergency);
+        assert_eq!(prop.timelock_seconds, EMERGENCY_TIMELOCK_SECONDS);
+    }
+
+    #[test]
+    fn test_allow_method_with_track_custom_enforcement() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+        let custom_method = Symbol::new(&env, "custom_action");
+
+        // Allow with explicit Critical track
+        client.allow_method_with_track(
+            &signers.get(0).unwrap(),
+            &target,
+            &custom_method,
+            &GovernanceTrack::Critical,
+            &0,
+        );
+        assert_eq!(
+            client.get_method_min_track(&target, &custom_method),
+            GovernanceTrack::Critical
+        );
+
+        // Proposing as Routine fails
+        let res_routine = client.try_propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &custom_method,
+            &vec![&env],
+            &Symbol::new(&env, "routine_attempt"),
+            &GovernanceTrack::Routine,
+            &0,
+        );
+        assert_eq!(res_routine, Err(Ok(GovernanceError::InvalidTrack)));
+
+        // Proposing as Critical succeeds
+        let pid = client.propose_with_track(
+            &signers.get(1).unwrap(),
+            &target,
+            &custom_method,
+            &vec![&env],
+            &Symbol::new(&env, "critical_success"),
+            &GovernanceTrack::Critical,
+            &0,
+        );
+        assert_eq!(pid, 1);
+    }
+
 }
