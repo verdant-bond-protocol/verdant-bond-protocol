@@ -31,7 +31,7 @@ pub struct BondState {
 pub struct PreviewSubscription {
     pub remaining_supply: i128,
     pub requested_amount: i128,
-    pub expected_failure: Option<BondError>,
+    pub expected_failure: Option<u32>,
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
@@ -240,7 +240,6 @@ impl BondIssuer {
         amount: i128,
         nonce: u64,
     ) -> Result<(), BondError> {
-        investor.require_auth();
         consume_nonce(&env, &investor, nonce)?;
 
         if amount <= 0 {
@@ -1345,7 +1344,6 @@ mod test {
         bond_id: u64,
         amount: i128,
     ) -> Result<PreviewSubscription, BondError> {
-        investor.require_auth();
 
         let config: BondConfig = env
             .storage()

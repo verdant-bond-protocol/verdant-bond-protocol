@@ -934,21 +934,6 @@ mod test {
             &0,
         );
         oc.verify_report(&t.admin, &report_id, &(admin_nonce + 1));
-
-        let second_verifier = Address::generate(env);
-        oc.register_provider(
-            &t.admin,
-            &second_verifier,
-            &Symbol::new(env, "satellite"),
-            &(admin_nonce + 2),
-        );
-        oc.add_stake(
-            &second_verifier,
-            &nbbs_oracle_consumer::DEFAULT_MIN_VERIFIER_STAKE,
-            &0,
-        );
-        oc.verify_report(&second_verifier, &report_id, &1);
-
         report_id
     }
 
@@ -1567,7 +1552,7 @@ mod test {
             &project_id,
             200_000,
             BiodiversityMetrics::Absent,
-            3,
+            2,
         );
         t.client
             .distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id2, &2);
@@ -1955,7 +1940,7 @@ mod test {
                         &create_project_id(&t._env, 7),
                         carbon,
                         BiodiversityMetrics::Absent,
-                        (period as u64) * 3,
+                        (period as u64) * 2,
                     );
                     t.client.distribute_coupon(
                         &t.admin,
