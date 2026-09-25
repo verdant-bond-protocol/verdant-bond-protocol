@@ -12,6 +12,7 @@ import {
   QuoteBalanceResponse, QuoteTransactionResponse,
   QuoteAsset, DepositQuoteDto, WithdrawQuoteDto, HolderResponse,
   ClaimableCreditDetail, ClaimableCreditsResponse,
+  HolderListResponse, CouponDistributionResponse, TransactionStatusResponse,
 } from '../interfaces/bond.interface';
 
 export interface ProblemDetails {
@@ -241,10 +242,10 @@ export class ApiService {
     }));
   }
 
-  mature(id: number): Observable<BondResponse> {
+  mature(id: number): Observable<Bond> {
     return this.withProblemDetails(defer(() => {
       const headers = this.headers(this.adminIntentHeader('mature_bond', String(id)));
-      return this.http.post<BondResponse>(
+      return this.http.post<Bond>(
         `/api/bonds/${id}/mature`,
         {},
         { headers },
@@ -344,6 +345,12 @@ export class ApiService {
 
   cancelOrder(orderId: number): Observable<void> {
     return this.http.delete<void>(`/api/marketplace/orders/${orderId}`, { headers: this.headers() });
+  }
+
+  getTransactionStatus(hash: string): Observable<TransactionStatusResponse> {
+    return this.withProblemDetails(this.http.get<TransactionStatusResponse>(`/api/stellar/transactions/${hash}`, {
+      headers: this.headers(),
+    }));
   }
 
   getQuoteBalance(asset: QuoteAsset = 'USDC'): Observable<QuoteBalanceResponse> {

@@ -115,6 +115,20 @@ export interface SubscriptionResponse {
   transactionHash: string;
 }
 
+// Mirror api/src/bonds/interfaces/bond.interface.ts.
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
+}
+
 export interface ClaimCreditsResponse {
   bondId: number;
   investorAddress: string;
