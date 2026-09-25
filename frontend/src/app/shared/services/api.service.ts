@@ -11,8 +11,28 @@ import {
   UndistributedTotalResponse, SweepUndistributedResponse,
   QuoteBalanceResponse, QuoteTransactionResponse,
   QuoteAsset, DepositQuoteDto, WithdrawQuoteDto, HolderResponse,
-  ClaimableCreditDetail, ClaimableCreditsResponse,
+  ClaimableCreditsResponse,
+  BondResponse, HolderListResponse, CouponDistributionResponse, TransactionStatusResponse,
 } from '../interfaces/bond.interface';
+
+export interface ProjectDocumentResponse {
+  hash: string;
+  projectId: number;
+  status: string;
+  statusCode?: number;
+  data?: unknown;
+  servedFrom?: string;
+  message?: string;
+  [key: string]: unknown;
+}
+
+export interface DocumentHealthResponse {
+  hash: string;
+  status: string;
+  lastChecked?: string;
+  availableGateways?: string[];
+  [key: string]: unknown;
+}
 
 export interface ProblemDetails {
   type: string;
@@ -309,6 +329,18 @@ export class ApiService {
     return this.withProblemDetails(this.http.get<ProjectProvenance>(`/api/projects/${id}/provenance`));
   }
 
+  getProjectDocument(projectId: number, hash: string): Observable<ProjectDocumentResponse> {
+    return this.withProblemDetails(this.http.get<ProjectDocumentResponse>(`/api/projects/${projectId}/documents/${hash}`));
+  }
+
+  escalateProjectDocument(projectId: number, hash: string): Observable<ProjectDocumentResponse> {
+    return this.withProblemDetails(this.http.post<ProjectDocumentResponse>(`/api/projects/${projectId}/documents/${hash}/escalate`, {}));
+  }
+
+  getProjectDocumentHealth(projectId: number, hash: string): Observable<DocumentHealthResponse> {
+    return this.withProblemDetails(this.http.get<DocumentHealthResponse>(`/api/projects/${projectId}/documents/${hash}/health`));
+  }
+
   registerProject(data: CreateProjectDto): Observable<Project> {
     return this.withProblemDetails(this.http.post<Project>('/api/projects', data, { headers: this.headers() }));
   }
@@ -370,11 +402,11 @@ export class ApiService {
     return this.withProblemDetails(this.http.post<QuoteTransactionResponse>('/api/marketplace/withdraw', data, { headers }));
   }
 
-  getPortfolio(address?: string, force = false): Observable<any> {
+  getPortfolio(address?: string, force = false): Observable<Record<string, unknown>> {
     let params = new HttpParams();
     if (address) params = params.set('address', address);
     if (force) params = params.set('force', 'true');
-    return this.withProblemDetails(this.http.get<any>('/api/portfolio', {
+    return this.withProblemDetails(this.http.get<Record<string, unknown>>('/api/portfolio', {
       params,
       headers: this.headers(),
     }));
@@ -410,6 +442,12 @@ export class ApiService {
     const params = opts?.bustCache === false ? undefined : new HttpParams().set('_t', Date.now().toString());
     return this.withProblemDetails(
       this.http.get<BondDetailResponse>(`/api/bonds/${id}/detail`, { params }),
+    );
+  }
+
+  getTransactionStatus(hash: string): Observable<TransactionStatusResponse> {
+    return this.withProblemDetails(
+      this.http.get<TransactionStatusResponse>(`/api/stellar/transactions/${hash}`),
     );
   }
 }

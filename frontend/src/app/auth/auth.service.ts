@@ -10,6 +10,7 @@ export class AuthService {
 
   readonly token = signal<string | null>(localStorage.getItem('nbs_access_token'));
   readonly isAuthenticated = computed(() => this.token() !== null);
+  readonly sessionReady = computed(() => this.isAuthenticated() && this.walletService.isConnected());
 
   private isRetryableChallengeError(err: unknown): boolean {
     if (!(err instanceof HttpErrorResponse)) return false;
@@ -43,7 +44,7 @@ export class AuthService {
     let attempt = 0;
     const maxAttempts = 2;
 
-    while (true) {
+    while (attempt < maxAttempts) {
       attempt += 1;
       const { challenge } = await this.challengeFor(address);
       const signedChallenge = await this.walletService.signChallenge(challenge);

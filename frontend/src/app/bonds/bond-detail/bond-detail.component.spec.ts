@@ -7,8 +7,10 @@ import { Keypair } from '@stellar/stellar-sdk';
 import { BondDetailComponent } from './bond-detail.component';
 import { ApiService, BondDetailResponse } from '../../shared/services/api.service';
 import { WalletService } from '../../auth/wallet.service';
+import { AuthService } from '../../auth/auth.service';
 import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 import { Bond } from '../../shared/interfaces/bond.interface';
 
 // `environment.adminAddress` now defaults to empty (#167), so the admin account

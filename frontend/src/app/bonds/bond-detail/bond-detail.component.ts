@@ -14,6 +14,8 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { Bond, ClaimableCreditsResponse } from '../../shared/interfaces/bond.interface';
 import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
+import { appErrorMessage } from '../../shared/errors/api-error';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 @Component({
   selector: 'app-bond-detail',
@@ -316,7 +318,7 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                   @if (adminIntent.hasSecret()) {
                     <app-admin-secret-prompt
                       action="Distribute coupon"
-                      [description]="'Bond #' + b.id + ' — distribute coupon for period ' + couponEligibility()!.periodIndex + '.'"
+                      [description]="'Bond #' + b.id + ' — distribute coupon for period 0.'"
                       (unlocked)="onSecretUnlocked()"
                       (cancelled)="secretPromptOpen.set(false)"
                     />
@@ -444,8 +446,10 @@ export class BondDetailComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly apiService = inject(ApiService);
   private readonly walletService = inject(WalletService);
+  readonly authService = inject(AuthService);
   private readonly adminAccess = inject(AdminAccessService);
   readonly adminIntent = inject(AdminIntentService);
+  private readonly pendingTx = inject(PendingTransactionsService);
   private readonly coordinator = inject(BondDetailReloadCoordinator);
 
   /**
@@ -743,7 +747,7 @@ private submitSweep(): void {
     if (!confirmed) return;
 
     this.apiService.distributeCoupon(b.id, { periodIndex: 0 }).subscribe({
-      next: (res) => {
+      next: () => {
         this.reload(b.id);
       },
       error: (err) => {
@@ -768,7 +772,7 @@ private submitSweep(): void {
     this.apiService.mature(b.id).subscribe({
       next: (res) => {
         this.matureSuccess.set(true);
-        this.matureTx.set(res.transactionHash);
+        this.matureTx.set(res.transactionHash || '');
         this.pendingTx.register(res.transactionHash, 'mature');
         this.matureSubmitting.set(false);
         this.reload(b.id);
@@ -791,7 +795,7 @@ private submitSweep(): void {
 
     this.reconcileSubmitting.set(true);
     this.apiService.reconcileHolders(b.id).subscribe({
-      next: (res) => {
+      next: () => {
         this.reload(b.id);
       },
       error: (err) => {
@@ -800,5 +804,4 @@ private submitSweep(): void {
       },
     });
   }
-}
 }

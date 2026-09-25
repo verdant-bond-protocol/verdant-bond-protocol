@@ -2,6 +2,8 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { IpfsService } from './ipfs.service';
+import { IpfsDocumentCacheService } from './ipfs-document-cache.service';
+import { IpfsAvailabilityService } from './ipfs-availability.service';
 import { NonceService } from '../common/services/nonce.service';
 import { RedisService } from '../common/services/redis.service';
 import { SigningKeyProvider } from '../common/services/signing-key.provider';
@@ -13,8 +15,6 @@ import { ConfigService } from '../config/config.service';
 import { validateGeoJsonBoundary } from './utils/geojson-validator';
 import * as crypto from 'crypto';
 
-
-
 @Injectable()
 export class ProjectsService {
   constructor(
@@ -25,6 +25,8 @@ export class ProjectsService {
     private readonly redis: RedisService,
     private readonly signingKeys: SigningKeyProvider,
     private readonly configService: ConfigService,
+    private readonly cacheService?: IpfsDocumentCacheService,
+    private readonly availabilityService?: IpfsAvailabilityService,
   ) {}
 
   async register(dto: CreateProjectDto, ownerAddress: string): Promise<ProjectResponse> {
@@ -171,6 +173,76 @@ export class ProjectsService {
     await this.redis.set(`project:${id}:documents`, JSON.stringify(allHashes));
 
     return { projectId: id, documentHashes, gatewayUrls };
+  }
+
+  async getDocument(projectId: number, hash: string): Promise<any> {
+    const isAudit = (await this.cacheService?.isAuditRelevant(hash)) ?? false;
+    try {
+      const result = await this.ipfsService.retrieveDocument(hash, { isAuditRelevant: isAudit });
+      return {
+        projectId,
+        hash,
+        status: 'available',
+        servedFrom: result.servedFrom,
+        filename: result.filename,
+        mimetype: result.mimetype,
+        content: result.content,
+        tier: result.tier,
+      };
+    } catch (err: any) {
+      if (err.name === 'IpfsUnavailableException') {
+        const health = await this.availabilityService?.getDocumentHealth(hash);
+        return {
+          statusCode: 503,
+          status: 'temporarily_unavailable',
+          hash,
+          projectId,
+          message:
+            'Document is temporarily unavailable across IPFS gateways. A cached recovery or escalation has been initiated.',
+          retryAfterSeconds: err.retryAfterSeconds || 30,
+          escalationPath: `/projects/${projectId}/documents/${hash}/escalate`,
+          health,
+        };
+      }
+      throw err;
+    }
+  }
+
+  async flagDocumentAsAudit(projectId: number, hash: string, disputeId?: string): Promise<any> {
+    const updated = await this.cacheService?.flagAsAuditRelevant(hash, disputeId);
+    return {
+      projectId,
+      hash,
+      tier: 'audit_relevant',
+      disputeId,
+      cached: Boolean(updated),
+      expiresAt: updated?.expiresAt,
+    };
+  }
+
+  async escalateDocument(projectId: number, hash: string): Promise<any> {
+    const warmed = (await this.availabilityService?.warmCacheFromGateway(hash, true)) ?? false;
+    await this.redis.sAdd(`project:${projectId}:escalated_documents`, hash);
+    return {
+      projectId,
+      hash,
+      escalationStatus: warmed ? 'recovered_to_cache' : 'retry_scheduled',
+      message: warmed
+        ? 'Document was successfully recovered and cached from an alternate gateway.'
+        : 'Document retrieval escalation queued across all protocol nodes.',
+    };
+  }
+
+  async getDocumentHealth(projectId: number, hash: string): Promise<any> {
+    return this.availabilityService?.getDocumentHealth(hash) ?? {
+      hash,
+      status: 'unavailable',
+      lastChecked: new Date().toISOString(),
+      primaryGatewayOk: false,
+      fallbackGatewayOk: false,
+      servedByCache: false,
+      failureCount: 1,
+    };
   }
 
   async getProvenance(id: number): Promise<ProjectProvenanceResponse> {

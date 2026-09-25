@@ -45,7 +45,7 @@ describe('route guards (issue #168)', () => {
     wallet.address.set(null);
   });
 
-  const expectRedirect = (result: boolean | UrlTree, url: string, reason: string) => {
+  const expectRedirect = (result: unknown, url: string, reason: string) => {
     expect(result instanceof UrlTree).toBeTrue();
     const tree = result as UrlTree;
     expect(TestBed.inject(Router).serializeUrl(tree)).toContain('/auth');

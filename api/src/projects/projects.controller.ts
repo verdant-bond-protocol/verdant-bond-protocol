@@ -10,7 +10,6 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
-import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 
 @Controller('projects')
 export class ProjectsController {
@@ -79,5 +78,41 @@ export class ProjectsController {
   ): Promise<any> {
     const auditorAddress = req.user?.walletAddress || '';
     return this.projectsService.exportProject(id, auditorAddress);
+  }
+
+  @Get(':id/documents/:hash')
+  async getDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('hash') hash: string,
+  ): Promise<any> {
+    return this.projectsService.getDocument(id, hash);
+  }
+
+  @Post(':id/documents/:hash/flag-audit')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async flagDocumentAsAudit(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('hash') hash: string,
+    @Body() body: { disputeId?: string },
+  ): Promise<any> {
+    return this.projectsService.flagDocumentAsAudit(id, hash, body?.disputeId);
+  }
+
+  @Post(':id/documents/:hash/escalate')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async escalateDocument(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('hash') hash: string,
+  ): Promise<any> {
+    return this.projectsService.escalateDocument(id, hash);
+  }
+
+  @Get(':id/documents/:hash/health')
+  async getDocumentHealth(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('hash') hash: string,
+  ): Promise<any> {
+    return this.projectsService.getDocumentHealth(id, hash);
   }
 }

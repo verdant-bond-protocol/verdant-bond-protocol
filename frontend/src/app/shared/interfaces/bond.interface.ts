@@ -33,6 +33,21 @@ export interface HolderResponse {
   balance: string;
 }
 
+export type BondResponse = Bond;
+
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
+}
+
 /**
  * A single period/report/credit-type accrual of claimable credits for a holder
  * (#156). `amount` is in credit minor units (6 decimals, #157).
@@ -94,6 +109,7 @@ export interface Order {
   status: 'Open' | 'PartiallyFilled' | 'Filled' | 'Cancelled' | 'Expired';
   createdAt: string;
   expiresAt: string;
+  transactionHash?: string;
 }
 
 export interface OrderQueryParams {
