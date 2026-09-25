@@ -22,6 +22,6 @@ import { BlueCarbonProvider } from './providers/blue-carbon.provider';
     SatelliteProvider,
     BlueCarbonProvider,
   ],
-  exports: [OracleService, OracleMonitoringService],
+  exports: [OracleService, OracleMonitoringService, OracleIncidentRepository],
 })
 export class OracleModule {}

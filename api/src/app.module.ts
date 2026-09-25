@@ -14,12 +14,14 @@ import { Rfc7807ExceptionFilter } from './common/filters/rfc7807-exception.filte
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
+import { OpsModule } from './ops/ops.module';
 
 @Module({
   imports: [
     CommonModule,
     ConfigModule,
     BondsModule,
+    OpsModule,
     ProjectsModule,
     OracleModule,
     MarketplaceModule,
