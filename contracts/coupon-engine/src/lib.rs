@@ -2471,6 +2471,132 @@ mod test {
                         + (carbon_1 / CREDIT_DIVISOR * CREDIT_MINOR_UNITS)
                 );
             }
+
+            // Audit-readiness (#214): randomized credit-type / tranche /
+            // rounding fuzz. Enforces INV-1..INV-4 for every credit type:
+            // distributed never exceeds the pool, no holder exceeds its
+            // pro-rata cap, distributed + undistributed conserves the total,
+            // and the per-type ledgers reconcile with the combined accrual.
+            #[test]
+            fn credit_type_never_over_distributes(
+                credit_type_idx in 0u8..4u8,
+                carbon in 0i128..1_000_000i128,
+                habitat in 0i128..2_000i128,
+                species in 0i128..2_000i128,
+                units in 0i128..2_000i128,
+                balances in proptest::collection::vec(1i128..10_000i128, 1..5),
+            ) {
+                use nbbs_shared::CreditType;
+                let credit_type = match credit_type_idx {
+                    0 => CreditType::Carbon,
+                    1 => CreditType::BlueCarbon,
+                    2 => CreditType::Biodiversity,
+                    _ => CreditType::Basket,
+                };
+                let biodiversity = match credit_type {
+                    CreditType::Carbon | CreditType::BlueCarbon => {
+                        BiodiversityMetrics::Absent
+                    }
+                    CreditType::Biodiversity | CreditType::Basket => {
+                        BiodiversityMetrics::Present((habitat, species, units))
+                    }
+                };
+
+                let env = Env::default();
+                env.mock_all_auths();
+                let admin = Address::generate(&env);
+                let t = deploy(env, admin);
+                let project_id = create_project_id(&t._env, 9);
+                let total_subscribed: i128 = balances.iter().sum();
+
+                let issuer = nbbs_bond_issuer::BondIssuerClient::new(&t._env, &t.issuer_id);
+                let mut config = make_bond_config_with_type(&t._env, &project_id, credit_type);
+                config.total_supply = total_subscribed;
+                let bond_id = issuer.issue_bond(&t.issuer_admin, &config, &0);
+                let holders: std::vec::Vec<Address> = balances
+                    .iter()
+                    .map(|_| Address::generate(&t._env))
+                    .collect();
+                for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                    issuer.subscribe(holder, &bond_id, &amount, &0);
+                }
+                t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+                let report_id = submit_verified_report(
+                    &t._env,
+                    &t,
+                    &project_id,
+                    carbon,
+                    biodiversity,
+                    0,
+                );
+
+                let mut holders_vec: Vec<Address> = Vec::new(&t._env);
+                for h in &holders {
+                    holders_vec.push_back(h.clone());
+                }
+                let result = t.client.distribute_coupon(
+                    &t.admin,
+                    &bond_id,
+                    &0,
+                    &holders_vec,
+                    &report_id,
+                    &1,
+                );
+
+                // Recompute the expected pool with the contract's own
+                // conversion so the test tracks the audited formula exactly.
+                let carbon_total = carbon / CREDIT_DIVISOR * CREDIT_MINOR_UNITS;
+                let bio_total =
+                    (habitat * HABITAT_CREDIT_RATE + species * SPECIES_CREDIT_RATE + units * UNIT_CREDIT_RATE)
+                        * CREDIT_MINOR_UNITS
+                        / HABITAT_CREDIT_RATE;
+                let total_credits = match credit_type {
+                    CreditType::Carbon | CreditType::BlueCarbon => carbon_total,
+                    CreditType::Biodiversity => bio_total,
+                    CreditType::Basket => carbon_total + bio_total,
+                };
+
+                // INV-1: never distribute more than the pool.
+                prop_assert!(result.total_credits <= total_credits);
+                // INV-3: conservation against the on-chain remainder.
+                let info = t.client.get_period_info(&bond_id, &0);
+                prop_assert_eq!(result.total_credits + info.undistributed, total_credits);
+                prop_assert_eq!(
+                    t.client.get_undistributed_total(&bond_id),
+                    info.undistributed
+                );
+
+                // INV-2 + INV-4: per-holder cap and type-ledger consistency.
+                let mut sum_accrued = 0i128;
+                for (holder, &balance) in holders.iter().zip(balances.iter()) {
+                    let accrued = t.client.accrued_credits(&bond_id, holder);
+                    let carbon_leg =
+                        t.client.accrued_credits_by_type(&bond_id, holder, &CreditType::Carbon);
+                    let bio_leg = t.client.accrued_credits_by_type(
+                        &bond_id,
+                        holder,
+                        &CreditType::Biodiversity,
+                    );
+                    prop_assert_eq!(accrued, carbon_leg + bio_leg);
+                    // Upper bound of the floor-rounded pro-rata share.
+                    let cap = if total_subscribed > 0 {
+                        total_credits.saturating_mul(balance) / total_subscribed
+                    } else {
+                        0
+                    };
+                    prop_assert!(accrued <= cap);
+                    prop_assert!(accrued >= 0);
+                    match credit_type {
+                        CreditType::Carbon | CreditType::BlueCarbon => {
+                            prop_assert_eq!(bio_leg, 0)
+                        }
+                        CreditType::Biodiversity => prop_assert_eq!(carbon_leg, 0),
+                        CreditType::Basket => {}
+                    }
+                    sum_accrued += accrued;
+                }
+                prop_assert_eq!(sum_accrued, result.total_credits);
+            }
         }
     }
 }
