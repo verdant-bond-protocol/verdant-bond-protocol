@@ -6,6 +6,7 @@ import { OracleService } from './oracle.service';
 import { OracleScheduler } from './oracle.scheduler';
 import { OracleMonitoringService } from './oracle.monitoring.service';
 import { OracleIncidentRepository } from './oracle-incident.repository';
+import { GracePeriodService } from './grace-period.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 import { BlueCarbonProvider } from './providers/blue-carbon.provider';
@@ -18,6 +19,7 @@ import { BlueCarbonProvider } from './providers/blue-carbon.provider';
     OracleScheduler,
     OracleMonitoringService,
     OracleIncidentRepository,
+    GracePeriodService,
     VerraProvider,
     SatelliteProvider,
     BlueCarbonProvider,

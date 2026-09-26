@@ -9,11 +9,13 @@ import { HolderIndexService } from '../bonds/holder-index.service';
 import { IntentService } from './services/intent.service';
 import { IntentGuard } from './guards/intent.guard';
 import { IdempotencyService } from './services/idempotency.service';
+import { TelemetryService } from './services/telemetry.service';
+import { TelemetryInterceptor } from './interceptors/telemetry.interceptor';
 
 @Global()
 @Module({
   controllers: [RedisHealthController],
-  providers: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService],
-  exports: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService],
+  providers: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor],
+  exports: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor],
 })
 export class CommonModule {}
