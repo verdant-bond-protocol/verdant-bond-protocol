@@ -5,7 +5,6 @@ import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angula
 import { ApiService } from '../../shared/services/api.service';
 import { appErrorMessage } from '../../shared/errors/api-error';
 import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
-import { METHODOLOGY_CODES } from '../../shared/constants/methodology';
 import {
   countryCodeValidator,
   latitudeRangeValidator,

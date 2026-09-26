@@ -7,12 +7,7 @@ import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { AdminSecretPromptComponent } from '../../shared/components/admin-secret-prompt/admin-secret-prompt.component';
 import { CreateBondDto } from '../../shared/interfaces/bond.interface';
 import { appErrorMessage } from '../../shared/errors/api-error';
-import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
-import {
-  couponScheduleGroupValidator,
-  parseCouponSchedule,
-  toEpochSeconds,
-} from '../../shared/validators/coupon-schedule.validators';
+import { couponScheduleGroupValidator } from '../../shared/validators/coupon-schedule.validators';
 
 @Component({
   selector: 'app-issue-bond',

@@ -10,6 +10,8 @@ import { WalletService } from '../../auth/wallet.service';
 import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { Bond } from '../../shared/interfaces/bond.interface';
+import { AuthService } from '../../auth/auth.service';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 // `environment.adminAddress` now defaults to empty (#167), so the admin account
 // under test is configured explicitly rather than read from the environment.
@@ -20,7 +22,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
   let fixture: ComponentFixture<BondDetailComponent>;
   let apiService: jasmine.SpyObj<ApiService>;
   let walletService: WalletService;
-  let sessionReady: ReturnType<typeof signal<boolean>>;
+  let isAuthenticated: ReturnType<typeof signal<boolean>>;
 
   const bond: Bond = {
     id: 1,
@@ -75,7 +77,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
     apiService.sweepUndistributed.and.returnValue(of({ bondId: 1, swept: '7', transactionHash: '0xabc' }));
     apiService.getCouponEligibility.and.returnValue(of({ projectId: 'a1b2', eligible: true, reasons: [], blockedByReportIds: [] }));
 
-    sessionReady = signal(true); // existing tests expect an authenticated session, matching prior behavior
+    isAuthenticated = signal(true); // existing tests expect an authenticated session, matching prior behavior
 
     await TestBed.configureTestingModule({
       imports: [BondDetailComponent],
@@ -86,7 +88,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
           useValue: { snapshot: { paramMap: { get: () => '1' } } },
         },
         { provide: ApiService, useValue: apiService },
-        { provide: AuthService, useValue: { sessionReady } },
+        { provide: AuthService, useValue: { isAuthenticated } },
         { provide: PendingTransactionsService, useValue: jasmine.createSpyObj('PendingTransactionsService', ['register']) },
         WalletService,
       ],

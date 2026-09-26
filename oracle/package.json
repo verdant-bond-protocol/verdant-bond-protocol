@@ -12,7 +12,8 @@
     "monitor": "ts-node run.ts monitor",
     "test": "jest",
     "test:cov": "jest --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"No linting configured\""
   },
   "dependencies": {
     "axios": "^1.7.0",

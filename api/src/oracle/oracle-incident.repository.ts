@@ -212,6 +212,7 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
   ): Promise<PaginatedResponse<OracleIncident>> {
     let offsetClause = '';
     let offsetParams: any[] = [];
+    const queryParams: any[] = status ? [status] : [];
     let queryParams: any[] = status ? [status] : [];
     
     if (cursor) {

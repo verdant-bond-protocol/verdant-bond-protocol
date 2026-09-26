@@ -13,6 +13,7 @@ import { QuoteBalanceComponent, QuoteBalances } from '../../shared/components/qu
 import { ConnectPromptComponent } from '../../shared/components/connect-prompt/connect-prompt.component';
 import { Order, Bond, QuoteAsset, PaginatedResponse } from '../../shared/interfaces/bond.interface';
 import { appErrorMessage, normalizeApiError } from '../../shared/errors/api-error';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 export const ORDERS_RETRY_COUNT = 3;
 export const ORDERS_RETRY_BASE_DELAY_MS = 500;
@@ -409,7 +410,8 @@ export class MarketplaceListComponent implements OnInit, OnDestroy {
     this.error.set('');
     // defer re-invokes the API call on every (re)subscription, so retries issue a
     // fresh request with a fresh cache-busting param instead of reusing a stale one.
-    return defer(() => this.apiService.getOrders({ bondId: this.filterBondId() ?? undefined, status: this.filterStatus() === 'All' ? undefined : this.filterStatus() }, forceRefresh)).pipe(
+    const s = this.filterStatus();
+    return defer(() => this.apiService.getOrders({ bondId: this.filterBondId() ?? undefined, status: s === 'All' ? undefined : (s as Order['status']) }, forceRefresh)).pipe(
       retry({
         count: ORDERS_RETRY_COUNT,
         delay: (error, attempt) =>

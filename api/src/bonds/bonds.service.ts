@@ -1,3 +1,7 @@
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { ContractService } from '../stellar/contract.service';
+import { ContractException } from '../stellar/contract-errors';
+import { StellarService } from '../stellar/stellar.service';
 import { Injectable, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { ContractException } from '../stellar/contract-errors';
@@ -18,11 +22,19 @@ import { nativeToScVal, scValToNative, Address, xdr } from '@stellar/stellar-sdk
 import * as crypto from 'crypto';
 import {
   BondResponse,
+  BondDetailResponse,
   HeldBondResponse,
   SubscriptionResponse,
   HolderListResponse,
   CouponDistributionResponse,
   ClaimCreditsResponse,
+  ClaimableCreditsResponse,
+  TransferResponse,
+  UndistributedTotalResponse,
+  SweepUndistributedResponse,
+  BondStatusEnum,
+  BondMaturityStatusEnum,
+  CreditTypeEnum,
   TransferResponse,
   UndistributedTotalResponse,
   SweepUndistributedResponse,
@@ -37,6 +49,8 @@ import { toBigIntString } from '../common/utils';
 import { ConfigService } from '../config/config.service';
 import { OracleService } from '../oracle/oracle.service';
 import { ReportStatus } from '../oracle/interfaces/oracle.interface';
+
+import { Optional } from '@nestjs/common';
 
 const BOND_ERROR_CODE = {
   NotInitialized: 1,
@@ -69,6 +83,10 @@ export class BondsService {
   async create(dto: CreateBondDto): Promise<BondResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
+
+    const configScVal = this.encodeBondConfig(dto);
+
+    const { result } = await this.contractService.invokeContractMethod(
     const nonce = await this.nonceService.next(this.configService.getBondIssuerAddress(), adminAddress);
 
     const configScVal = this.encodeBondConfig(dto);
@@ -82,6 +100,7 @@ export class BondsService {
     const bondId = Number(scValToNative(result));
     const bond = await this.buildBondResponse(bondId);
     await this.redis.setEx(`bond:${bondId}`, 300, JSON.stringify(bond));
+    return bond;
     return { ...bond, transactionHash };
   }
 
@@ -164,6 +183,7 @@ export class BondsService {
   }
 
   async subscribe(id: number, dto: SubscribeDto): Promise<SubscriptionResponse> {
+    const investorSecret = this.signingKeys.investorSecret();
     await this.verifySubscriptionEligibility(id, dto);
 
     const investorSecret = this.signingKeys.investorSecret();
@@ -185,6 +205,20 @@ export class BondsService {
     return { bondId: id, investorAddress: dto.investorAddress, amount: toBigIntString(dto.amount), transactionHash: transactionHash || '' };
   }
 
+  async previewSubscribe(id: number, amount: number): Promise<{remaining_supply: number; requested_amount: number; expected_failure: string | null}> {
+    const bond = await this.findOne(id);
+    let expected_failure = null;
+    const remaining_supply = Number(bond.totalSupply) - Number(bond.totalSubscribed);
+    if (bond.status !== BondStatusEnum.Active) {
+      expected_failure = 'Bond is not active';
+    } else if (remaining_supply < amount) {
+      expected_failure = 'Insufficient supply';
+    }
+    return {
+      remaining_supply,
+      requested_amount: Number(amount),
+      expected_failure
+    };
   private async verifySubscriptionEligibility(bondId: number, dto: SubscribeDto): Promise<void> {
     const isRestrictedTranche = dto.tranche === TrancheType.RESTRICTED_ACCREDITED;
 
@@ -307,6 +341,8 @@ export class BondsService {
         throw new BadRequestException(`Cannot distribute coupon: report ${report.id} was Rejected.`);
       }
     }
+
+
 
     const { result } = await this.contractService.invokeContractMethod(
       this.configService.getCouponEngineAddress(), 'distribute_coupon', adminSecret,
@@ -439,6 +475,8 @@ export class BondsService {
       try {
         const scVal = await this.contractService.simulateCall({
           contractAddress: this.configService.getCouponEngineAddress(),
+          method: 'get_claimable_credits',
+          args: [Address.fromString(address).toScVal(), nativeToScVal(BigInt(bond.id), { type: 'u64' })],
           method: 'claimable_credits',
           args: [nativeToScVal(BigInt(bond.id), { type: 'u64' }), Address.fromString(address).toScVal()],
         });
@@ -449,6 +487,8 @@ export class BondsService {
     return out;
   }
 
+  async getClaimableCreditDetails(id: number, address?: string): Promise<ClaimableCreditsResponse> {
+    if (!address) throw new BadRequestException('Invalid wallet address');
   /**
    * Itemized claimable-credit provenance for a single holder on a single bond
    * (issue #156). Surfaces every period/report/type line so the UI can group
@@ -470,6 +510,36 @@ export class BondsService {
     const scVal = await this.contractService.simulateCall({
       contractAddress: this.configService.getCouponEngineAddress(),
       method: 'claimable_credit_details',
+      args: [nativeToScVal(BigInt(id), { type: 'u64' }), Address.fromString(address).toScVal()],
+    });
+
+    const nativeResult = scValToNative(scVal) as any[];
+    if (!nativeResult || !nativeResult.length) {
+      return { bondId: id, address, total: '0', details: [] };
+    }
+
+    let total = 0n;
+    const details = [];
+
+    for (const item of nativeResult) {
+      const amount = BigInt(item[5]);
+      details.push({
+        periodIndex: Number(item[0]),
+        reportId: Number(item[1]),
+        startTime: Number(item[2]),
+        endTime: Number(item[3]),
+        creditType: String(item[4]),
+        amount: amount.toString(),
+      });
+      total += amount;
+    }
+
+    return {
+      bondId: id,
+      address,
+      total: total.toString(),
+      details,
+    };
       args: [nativeToScVal(BigInt(bondId), { type: 'u64' }), Address.fromString(address).toScVal()],
     });
 

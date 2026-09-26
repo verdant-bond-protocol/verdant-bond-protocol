@@ -45,9 +45,14 @@ describe('route guards (issue #168)', () => {
     wallet.address.set(null);
   });
 
-  const expectRedirect = (result: boolean | UrlTree, url: string, reason: string) => {
-    expect(result instanceof UrlTree).toBeTrue();
-    const tree = result as UrlTree;
+  const expectRedirect = (result: boolean | UrlTree | RedirectCommand, url: string, reason: string) => {
+    let tree: UrlTree;
+    if (result instanceof RedirectCommand) {
+      tree = result.redirectTo;
+    } else {
+      expect(result instanceof UrlTree).toBeTrue();
+      tree = result as UrlTree;
+    }
     expect(TestBed.inject(Router).serializeUrl(tree)).toContain('/auth');
     expect(tree.queryParams[RETURN_URL_PARAM]).toBe(url);
     expect(tree.queryParams[AUTH_REASON_PARAM]).toBe(reason);

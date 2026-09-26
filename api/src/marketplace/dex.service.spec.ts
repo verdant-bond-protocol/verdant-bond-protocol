@@ -10,6 +10,7 @@ import { SigningKeyProvider } from '../common/services/signing-key.provider';
 import { ConfigService } from '../config/config.service';
 import { FeatureFlagsService } from '../config/feature-flags.service';
 import { OrderStatus } from './interfaces/marketplace.interface';
+import { HolderIndexService } from '../bonds/holder-index.service';
 
 const configServiceStub = { getDexRouterAddress: () => 'CDEXROUTERADDRESSPLACEHOLDER' };
 
@@ -114,6 +115,7 @@ describe('DexService', () => {
           useValue: { adminSecret: jest.fn().mockReturnValue('SADMIN') },
         },
         { provide: ConfigService, useValue: configServiceStub },
+        { provide: HolderIndexService, useValue: { recordTransfer: jest.fn().mockResolvedValue(undefined) } },
         { provide: FeatureFlagsService, useValue: { isEnabled: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile();
@@ -536,6 +538,7 @@ describe('DexService', () => {
 
 describe('DexService — mapDexError (unit)', () => {
   it('maps InsufficientFunds contract error to PAYMENT_REQUIRED HttpException', () => {
+    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('DEX_INSUFFICIENT_FUNDS', 'insufficient', undefined, undefined, 10);
     const mapped = (svc as any).mapDexError(err);
@@ -546,6 +549,7 @@ describe('DexService — mapDexError (unit)', () => {
   });
 
   it('falls back to BadRequestException for unknown contract codes', () => {
+    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('SOME_CODE', 'some detail', undefined, undefined, 999);
     const mapped = (svc as any).mapDexError(err);
@@ -600,6 +604,7 @@ describe('DexService — cache staleness (in-memory Redis)', () => {
           useValue: { adminSecret: jest.fn().mockReturnValue('SADMIN') },
         },
         { provide: ConfigService, useValue: configServiceStub },
+        { provide: HolderIndexService, useValue: { recordTransfer: jest.fn().mockResolvedValue(undefined) } },
         { provide: FeatureFlagsService, useValue: { isEnabled: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile();
