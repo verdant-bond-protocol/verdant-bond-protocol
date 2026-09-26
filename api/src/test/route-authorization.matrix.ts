@@ -8,6 +8,7 @@ import { BondsController } from '../bonds/bonds.controller';
 import { OracleController } from '../oracle/oracle.controller';
 import { ProjectsController } from '../projects/projects.controller';
 import { MarketplaceController } from '../marketplace/marketplace.controller';
+import { ValuationController } from '../valuation/valuation.controller';
 
 /**
  * Single source of truth for the API route authorization matrix (issue #X part 1).
@@ -122,4 +123,6 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: MarketplaceController, method: 'runReconciliation', httpMethod: 'POST', path: 'marketplace/reconciliation/run', guards: [], role: 'wallet-header', mutation: true },
   { controller: MarketplaceController, method: 'listReconciliationMismatches', httpMethod: 'GET', path: 'marketplace/reconciliation/mismatches', guards: [], role: 'wallet-header', mutation: false },
   { controller: MarketplaceController, method: 'repairReconciliation', httpMethod: 'POST', path: 'marketplace/reconciliation/repair', guards: [], role: 'wallet-header', mutation: true },
+  // ---- Valuations (#204) ----
+  { controller: ValuationController, method: 'getValuations', httpMethod: 'GET', path: 'valuations', guards: [], role: 'public', mutation: false },
 ];

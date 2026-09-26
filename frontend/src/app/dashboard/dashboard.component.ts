@@ -8,6 +8,7 @@ import { WalletService } from '../auth/wallet.service';
 import { BondCardComponent } from '../shared/components/bond-card/bond-card.component';
 import { ProjectCardComponent } from '../shared/components/project-card/project-card.component';
 import { LoadingSpinnerComponent } from '../shared/components/loading-spinner/loading-spinner.component';
+import { AccessibleChartComponent, ChartDatum } from '../shared/components/accessible-chart/accessible-chart.component';
 import { Bond, Project, PaginatedResponse } from '../shared/interfaces/bond.interface';
 import { appErrorMessage } from '../shared/errors/api-error';
 
@@ -20,7 +21,7 @@ type SectionState = 'loading' | 'error' | 'empty' | 'ready';
 @Component({
   selector: 'app-dashboard',
   standalone: true,
-  imports: [CommonModule, RouterModule, BondCardComponent, ProjectCardComponent, LoadingSpinnerComponent],
+  imports: [CommonModule, RouterModule, BondCardComponent, ProjectCardComponent, LoadingSpinnerComponent, AccessibleChartComponent],
   template: `
     <div class="dashboard">
       <h1 class="page-title">Dashboard</h1>
@@ -81,6 +82,18 @@ type SectionState = 'loading' | 'error' | 'empty' | 'ready';
           }
         }
       </section>
+
+      @if (projectsState() === 'ready') {
+        <section class="section chart-section">
+          <app-accessible-chart
+            title="Estimated carbon sequestration by project"
+            labelHeader="Project"
+            unit="tCO₂e"
+            unitSpoken="tonnes of CO₂ equivalent"
+            [data]="sequestrationChart()"
+          />
+        </section>
+      }
 
       <section class="section">
         <div class="section-header">
@@ -227,10 +240,11 @@ type SectionState = 'loading' | 'error' | 'empty' | 'ready';
     .stat-label { display: block; font-size: 0.75rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
     .stat-value { display: block; font-size: 1.75rem; font-weight: 700; color: #1a1a2e; }
     .section { margin-bottom: 32px; }
+    .chart-section { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
     .section-header h2 { font-size: 1.125rem; font-weight: 600; }
     .header-actions { display: flex; align-items: center; gap: 12px; }
-    .section-link { font-size: 0.875rem; color: #3b82f6; text-decoration: none; }
+    .section-link { font-size: 0.875rem; color: #1d4ed8; text-decoration: none; }
     .section-link:hover { text-decoration: underline; }
     .section-empty { color: #6b7280; font-size: 0.875rem; padding: 16px 0; }
     .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
@@ -240,7 +254,7 @@ type SectionState = 'loading' | 'error' | 'empty' | 'ready';
     .skeleton-block.short { width: 55%; }
     .stats-skeleton { }
     .section-error { background: #fef2f2; color: #ef4444; padding: 16px; border-radius: 8px; font-size: 0.875rem; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
-    .empty-section { text-align: center; padding: 48px 0; color: #6b7280; }
+    .empty-section { text-align: center; padding: 48px 0; color: #4b5563; }
     .btn { display: inline-block; padding: 10px 20px; border-radius: 8px; font-size: 0.875rem; font-weight: 500; text-decoration: none; cursor: pointer; border: none; }
     .btn-sm { padding: 6px 12px; font-size: 0.8125rem; }
     .btn-primary { background: #1a1a2e; color: #fff; }
@@ -279,6 +293,11 @@ export class DashboardComponent implements OnInit, OnDestroy {
   private readonly bondsRefresh$ = new Subject<void>();
   private readonly projectsRefresh$ = new Subject<void>();
   private readonly destroy$ = new Subject<void>();
+
+  /** Chart and its data table share this one model (#206). */
+  readonly sequestrationChart = computed<ChartDatum[]>(() =>
+    this.projects().map((p) => ({ label: p.name, value: p.carbonSequestrationEstimate })),
+  );
 
   readonly overallError = computed(() => {
     if (this.bondsState() === 'error' && this.projectsState() === 'error') {

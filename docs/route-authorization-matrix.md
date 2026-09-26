@@ -106,6 +106,12 @@ header (`wallet-header`). No JWT/KYC guard is applied at the API boundary.
 | GET | `/marketplace/reconciliation/mismatches` | wallet-header | — | (issue #2: list detected mismatches) |
 | POST | `/marketplace/reconciliation/repair` | wallet-header | — | (issue #2: repair a mismatch) |
 
+## Valuations (`/valuations`)
+
+| Method | Path | Role | Guards |
+| --- | --- | --- | --- |
+| GET | `/valuations` | public | — | (issue #204: credit valuations with staleness metadata) |
+
 ## How the tests protect this contract
 
 - `route-authorization.matrix.spec.ts` walks every controller at runtime, reads

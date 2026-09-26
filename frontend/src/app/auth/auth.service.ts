@@ -10,6 +10,10 @@ export class AuthService {
 
   readonly token = signal<string | null>(localStorage.getItem('nbs_access_token'));
   readonly isAuthenticated = computed(() => this.token() !== null);
+  /** JWT session present AND wallet connected — required for any signed action.
+   *  Single source of truth for gating protected routes/actions (see
+   *  auth/guards/wallet-auth.guard.ts). */
+  readonly sessionReady = computed(() => this.isAuthenticated() && this.walletService.isConnected());
 
   private isRetryableChallengeError(err: unknown): boolean {
     if (!(err instanceof HttpErrorResponse)) return false;

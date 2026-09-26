@@ -10,6 +10,7 @@ import { PortfolioModule } from './portfolio/portfolio.module';
 import { StellarModule } from './stellar/stellar.module';
 import { SeedModule } from './seed/seed.module';
 import { ConfigModule } from './config/config.module';
+import { ValuationModule } from './valuation/valuation.module';
 import { Rfc7807ExceptionFilter } from './common/filters/rfc7807-exception.filter';
 import { RequestLoggingInterceptor } from './common/interceptors/request-logging.interceptor';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
@@ -31,6 +32,7 @@ import { ExportsModule } from './exports/exports.module';
     PortfolioModule,
     StellarModule,
     SeedModule,
+    ValuationModule,
     WorkersModule,
     ReconciliationModule,
     ExportsModule,
