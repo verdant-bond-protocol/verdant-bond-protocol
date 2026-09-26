@@ -22,6 +22,8 @@ pub enum BondError {
     PerformanceFlagged = 15,
     /// Fewer independent verifiers than the coupon-level minimum (#186).
     InsufficientAttestations = 16,
+    /// Coupon writes are paused while a migration window is open (#188).
+    MigrationInProgress = 17,
 }
 
 #[derive(Clone, Debug, PartialEq)]

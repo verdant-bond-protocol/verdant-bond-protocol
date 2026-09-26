@@ -31,6 +31,11 @@ pub const MIN_PERFORMANCE_ATTESTATIONS: u32 = 2;
 /// Number of trailing periods kept for rate-of-change checks.
 pub const TRAILING_HISTORY_PERIODS: u32 = 8;
 
+/// Issue #188: versioned-interface convention. Bump on a breaking storage
+/// layout or interface change; see docs/upgrade-migrations.md.
+pub const SCHEMA_VERSION: u32 = 1;
+
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -50,6 +55,8 @@ pub enum DataKey {
     /// Per-period, per-type holder accrual ledger backing the itemized
     /// claimable-credit provenance view (#156).
     PeriodHolder(u64, u32, Address, CreditType),
+    /// Open migration window pausing coupon writes for a bond (#188).
+    MigrationWindow(u64),
     /// Trailing verified performance observations per bond (#186).
     PerformanceHistory(u64),
     /// Active performance flag pausing coupon distribution for a bond (#186).
@@ -125,6 +132,17 @@ pub struct PerformanceFlag {
     pub reported_value: i128,
     pub flagged_at: u64,
 }
+
+/// Open migration window for a bond (#188): coupon writes are paused and the
+/// in-flight state is snapshotted so a rollback can prove nothing was lost.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct MigrationWindow {
+    pub started_at: u64,
+    pub snapshot_undistributed: i128,
+    pub snapshot_period_count: u32,
+}
+
 
 #[contract]
 pub struct CouponEngine;
@@ -239,6 +257,10 @@ impl CouponEngine {
         set_nonce(&env, &caller, expected_nonce + 1);
 
         require_admin(&env, &caller)?;
+
+        // Issue #188: pause coupon distribution while a migration window is
+        // open for this bond.
+        require_no_migration_window(&env, bond_id)?;
 
         let project_id: BytesN<32> = env
             .storage()
@@ -650,6 +672,9 @@ impl CouponEngine {
         }
         set_nonce(&env, &caller, expected_nonce + 1);
 
+        // Issue #188: claims are paused while a migration window is open.
+        require_no_migration_window(&env, bond_id)?;
+
         let key = DataKey::AccruedCredits(bond_id, caller.clone());
         let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &0i128);
@@ -717,6 +742,9 @@ impl CouponEngine {
         if amount <= 0 {
             return Err(BondError::ZeroAmount);
         }
+
+        // Issue #188: consumption is paused while a migration window is open.
+        require_no_migration_window(&env, bond_id)?;
 
         let key = DataKey::AccruedCredits(bond_id, holder.clone());
         let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -942,7 +970,167 @@ impl CouponEngine {
         Ok(())
     }
 
+    // ── Migration window (issue #188) ────────────────────────────────────────
 
+    /// Issue #188: whether a migration window is open for this bond.
+    pub fn get_migration_window(env: Env, bond_id: u64) -> Option<MigrationWindow> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MigrationWindow(bond_id))
+    }
+
+    /// Issue #188: open a migration window for a bond. Coupon distribution,
+    /// claims and consumption are paused and the in-flight state
+    /// (undistributed total, period count) is snapshotted so a rollback can
+    /// prove nothing was lost or double-processed.
+    pub fn begin_migration(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<MigrationWindow, BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::MigrationWindow(bond_id))
+        {
+            return Err(BondError::Overflow);
+        }
+
+        let window = MigrationWindow {
+            started_at: env.ledger().timestamp(),
+            snapshot_undistributed: env
+                .storage()
+                .persistent()
+                .get(&DataKey::UndistributedTotal(bond_id))
+                .unwrap_or(0),
+            snapshot_period_count: env
+                .storage()
+                .persistent()
+                .get(&DataKey::PeriodCount(bond_id))
+                .unwrap_or(0),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationWindow(bond_id), &window);
+        env.events().publish(
+            (Symbol::new(&env, "migration_started"),),
+            (bond_id,),
+        );
+
+        Ok(window)
+    }
+
+    /// Issue #188: close the migration window after the upgrade succeeded,
+    /// resuming normal coupon flow.
+    pub fn finalize_migration(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::MigrationWindow(bond_id))
+        {
+            return Err(BondError::BondNotFound);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::MigrationWindow(bond_id));
+        env.events().publish(
+            (Symbol::new(&env, "migration_finalized"),),
+            (bond_id,),
+        );
+
+        Ok(())
+    }
+
+    /// Issue #188: abort an open migration window and prove the in-flight
+    /// state was preserved: the snapshot taken at `begin_migration` must
+    /// still match the live undistributed total and period count (writes are
+    /// paused while the window is open, so a mismatch means tampering).
+    /// Returns the restored snapshot on success.
+    pub fn rollback_migration(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<MigrationWindow, BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+
+        let window: MigrationWindow = env
+            .storage()
+            .instance()
+            .get(&DataKey::MigrationWindow(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
+        let live_undistributed: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UndistributedTotal(bond_id))
+            .unwrap_or(0);
+        let live_period_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PeriodCount(bond_id))
+            .unwrap_or(0);
+
+        if live_undistributed != window.snapshot_undistributed
+            || live_period_count != window.snapshot_period_count
+        {
+            return Err(BondError::Overflow);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::MigrationWindow(bond_id));
+        env.events().publish(
+            (Symbol::new(&env, "migration_rolled_back"),),
+            (bond_id,),
+        );
+
+        Ok(window)
+    }
+
+    /// Issue #188: versioned-interface convention — bump when the contract's
+    /// storage layout or callable interface changes in a breaking way. See
+    /// docs/upgrade-migrations.md.
+    pub fn schema_version(env: Env) -> u32 {
+        let _ = env;
+        SCHEMA_VERSION
+    }
+}
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
     let admin: Address = env
@@ -1041,6 +1229,16 @@ fn checked_ratio(value: i128, multiplier: i128, divisor: i128) -> Result<i128, B
         .checked_div(divisor)
         .ok_or(BondError::Overflow)
 }
+
+/// Issue #188: coupon writes for a bond with an open migration window are
+/// paused so in-flight state cannot be mutated mid-cutover.
+fn require_no_migration_window(env: &Env, bond_id: u64) -> Result<(), BondError> {
+    if env.storage().instance().has(&DataKey::MigrationWindow(bond_id)) {
+        return Err(BondError::MigrationInProgress);
+    }
+    Ok(())
+}
+
 
 /// Issue #186: bound a report's performance against the trailing history.
 ///
@@ -2581,6 +2779,192 @@ mod test {
             t.client.try_clear_performance_flag(&other, &bond_id, &0),
             Err(Ok(BondError::Unauthorized))
         );
+    }
+
+    /// Issue #188: an open migration window pauses distribution, claims and
+    /// consumption so in-flight state cannot be mutated mid-cutover.
+    #[test]
+    fn test_migration_window_pauses_coupons_and_claims() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+        assert!(t.client.accrued_credits(&bond_id, &holder) > 0);
+
+        t.client.begin_migration(&t.admin, &bond_id, &2);
+        assert!(t.client.get_migration_window(&bond_id).is_some());
+
+        assert_eq!(
+            t.client
+                .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id, &3),
+            Err(Ok(BondError::MigrationInProgress))
+        );
+        assert_eq!(
+            t.client.try_claim_credits(&holder, &bond_id, &0),
+            Err(Ok(BondError::MigrationInProgress))
+        );
+        assert_eq!(
+            t.client.try_consume_credits(&holder, &bond_id, &1),
+            Err(Ok(BondError::MigrationInProgress))
+        );
+    }
+
+    /// Issue #188: rolling back a migration window proves the in-flight state
+    /// (unclaimed coupons, undistributed total, period count) was preserved.
+    #[test]
+    fn test_rollback_preserves_in_flight_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+
+        let undistributed_before = t.client.get_undistributed_total(&bond_id);
+        let claimable_before = t.client.claimable_credits(&bond_id, &holder);
+        assert!(claimable_before > 0);
+
+        let window = t.client.begin_migration(&t.admin, &bond_id, &2);
+        assert_eq!(window.snapshot_undistributed, undistributed_before);
+
+        let restored = t.client.rollback_migration(&t.admin, &bond_id, &3);
+        assert_eq!(restored.snapshot_undistributed, undistributed_before);
+        assert!(t.client.get_migration_window(&bond_id).is_none());
+
+        // In-flight state was not lost and is fully usable after rollback.
+        assert_eq!(t.client.get_undistributed_total(&bond_id), undistributed_before);
+        assert_eq!(
+            t.client.claimable_credits(&bond_id, &holder),
+            claimable_before
+        );
+        let claimed = t.client.claim_credits(&holder, &bond_id, &0);
+        assert_eq!(claimed, claimable_before);
+    }
+
+    /// Issue #188: finalizing a migration window resumes the normal flow.
+    #[test]
+    fn test_finalize_migration_resumes_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_0 = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_0, &1);
+
+        t.client.begin_migration(&t.admin, &bond_id, &2);
+        t.client.finalize_migration(&t.admin, &bond_id, &3);
+        assert!(t.client.get_migration_window(&bond_id).is_none());
+
+        let report_1 = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            110_000,
+            BiodiversityMetrics::Absent,
+            3,
+            2_000,
+            3_000,
+        );
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_1, &4);
+        assert_eq!(t.client.get_period_count(&bond_id), 2);
+    }
+
+    /// Issue #188: a second begin while a window is open is rejected, and
+    /// migration calls are admin-only.
+    #[test]
+    fn test_migration_window_admin_and_single_window() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let other = Address::generate(&t._env);
+        assert_eq!(
+            t.client.try_begin_migration(&other, &bond_id, &0),
+            Err(Ok(BondError::Unauthorized))
+        );
+
+        // register_bond consumed the admin's coupon-engine nonce 0.
+        t.client.begin_migration(&t.admin, &bond_id, &1);
+        assert_eq!(
+            t.client.try_begin_migration(&t.admin, &bond_id, &2),
+            Err(Ok(BondError::Overflow))
+        );
+    }
+
+    /// Issue #188: every contract exposes its interface/schema version.
+    #[test]
+    fn test_schema_version() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        assert_eq!(t.client.schema_version(), SCHEMA_VERSION);
     }
 
     mod property {
