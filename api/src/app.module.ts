@@ -19,6 +19,10 @@ import { WorkersModule } from './workers/workers.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { ExportsModule } from './exports/exports.module';
 import { ComplianceModule } from './compliance/compliance.module';
+import { AuditModule } from './audit/audit.module';
+import { RecoveryModule } from './recovery/recovery.module';
+import { MigrationSafetyModule } from './migrations/migration-safety.module';
+import { ImpersonationModule } from './impersonation/impersonation.module';
 
 @Module({
   imports: [
@@ -36,6 +40,10 @@ import { ComplianceModule } from './compliance/compliance.module';
     ReconciliationModule,
     ExportsModule,
     ComplianceModule,
+    AuditModule,
+    RecoveryModule,
+    MigrationSafetyModule,
+    ImpersonationModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },
