@@ -17,6 +17,11 @@ pub enum BondError {
     InvalidSupply = 12,
     RedemptionUnderfunded = 13,
     IncompatibleMethodologyCreditType = 14,
+    /// A report's performance change is outside the documented bounds; coupon
+    /// distribution is paused pending dispute resolution (#186).
+    PerformanceFlagged = 15,
+    /// Fewer independent verifiers than the coupon-level minimum (#186).
+    InsufficientAttestations = 16,
 }
 
 #[derive(Clone, Debug, PartialEq)]

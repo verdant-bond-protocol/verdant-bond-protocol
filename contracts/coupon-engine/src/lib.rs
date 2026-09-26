@@ -18,6 +18,19 @@ pub const SPECIES_CREDIT_RATE: i128 = 100_000;
 pub const UNIT_CREDIT_RATE: i128 = 1_000_000;
 pub const MAX_COUPON_BATCH_SIZE: u32 = 100;
 
+// Issue #186 — oracle-fed performance validation bounds. Rationale is
+// documented in docs/coupon-performance-validation.md.
+/// Maximum period-over-period increase, in basis points (+100%).
+pub const MAX_PERFORMANCE_INCREASE_BPS: i128 = 10_000;
+/// Maximum period-over-period drop, in basis points (-90%). Genuine sudden
+/// ecological collapse is possible, so drops are flagged for review rather
+/// than silently clamped.
+pub const MAX_PERFORMANCE_DECREASE_BPS: i128 = 9_000;
+/// Independent verifiers required before a report may drive coupon payouts.
+pub const MIN_PERFORMANCE_ATTESTATIONS: u32 = 2;
+/// Number of trailing periods kept for rate-of-change checks.
+pub const TRAILING_HISTORY_PERIODS: u32 = 8;
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -37,6 +50,12 @@ pub enum DataKey {
     /// Per-period, per-type holder accrual ledger backing the itemized
     /// claimable-credit provenance view (#156).
     PeriodHolder(u64, u32, Address, CreditType),
+    /// Trailing verified performance observations per bond (#186).
+    PerformanceHistory(u64),
+    /// Active performance flag pausing coupon distribution for a bond (#186).
+    PerformanceFlag(u64),
+    /// Minimum independent attestations required before distribution (#186).
+    MinPerformanceAttestations,
 }
 
 #[derive(Clone)]
@@ -73,6 +92,38 @@ pub struct ClaimableCreditDetail {
     pub end_time: u64,
     pub credit_type: CreditType,
     pub amount: i128,
+}
+
+/// One verified performance observation kept in the trailing history (#186).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PerformanceRecord {
+    pub period_index: u32,
+    pub report_id: u64,
+    pub carbon_sequestered: i128,
+}
+
+/// Why an update was flagged (#186).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub enum PerformanceAnomaly {
+    /// Increase beyond `MAX_PERFORMANCE_INCREASE_BPS` — consistent with a
+    /// manipulated or erroneous feed.
+    Spike,
+    /// Drop beyond `MAX_PERFORMANCE_DECREASE_BPS` — either a genuine
+    /// catastrophic event or a bad feed; routed to review either way.
+    Drop,
+}
+
+/// A flagged update pausing automatic coupon distribution for a bond (#186).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PerformanceFlag {
+    pub report_id: u64,
+    pub reason: PerformanceAnomaly,
+    pub previous_value: i128,
+    pub reported_value: i128,
+    pub flagged_at: u64,
 }
 
 #[contract]
@@ -213,6 +264,40 @@ impl CouponEngine {
         if report.project_id != project_id {
             return Err(BondError::BondNotFound);
         }
+
+        // Issue #186: an active flag pauses automatic coupon distribution for
+        // this bond until an admin clears it after dispute resolution — a
+        // flagged update is never silently clamped.
+        if env.storage().instance().has(&DataKey::PerformanceFlag(bond_id)) {
+            return Err(BondError::PerformanceFlagged);
+        }
+
+        // Issue #186: require a minimum number of independent attestations
+        // before a report may drive payouts (mirrors the multi-source
+        // guarantee in docs/oracle-design.md).
+        let min_attestations: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinPerformanceAttestations)
+            .unwrap_or(MIN_PERFORMANCE_ATTESTATIONS);
+        let attestation_count: u32 = env.invoke_contract(
+            &oracle_consumer,
+            &Symbol::new(&env, "get_verification_count"),
+            vec![&env, report_id.into_val(&env)],
+        );
+        if attestation_count < min_attestations {
+            return Err(BondError::InsufficientAttestations);
+        }
+
+        // Issue #186: bound the report against the trailing history before it
+        // can affect any payout math.
+        validate_performance_update(
+            &env,
+            bond_id,
+            report_id,
+            period_index,
+            report.carbon_sequestered,
+        )?;
 
         let existing: Option<PeriodInfo> = env
             .storage()
@@ -447,6 +532,16 @@ impl CouponEngine {
             env.storage()
                 .persistent()
                 .set(&DataKey::PeriodCount(bond_id), &(count + 1));
+
+            // Issue #186: record the accepted performance observation in the
+            // trailing history used by future rate-of-change checks.
+            append_performance_record(
+                &env,
+                bond_id,
+                period_index,
+                report_id,
+                report.carbon_sequestered,
+            );
         }
 
         env.events().publish(
@@ -752,7 +847,102 @@ impl CouponEngine {
             .get(&DataKey::Admin)
             .ok_or(BondError::NotInitialized)
     }
-}
+
+    /// Issue #186: minimum independent attestations a report needs before it
+    /// may drive coupon payouts.
+    pub fn get_min_performance_attestations(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinPerformanceAttestations)
+            .unwrap_or(MIN_PERFORMANCE_ATTESTATIONS)
+    }
+
+    /// Issue #186: admin override for the coupon-level attestation minimum.
+    pub fn set_min_performance_attestations(
+        env: Env,
+        caller: Address,
+        min_attestations: u32,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+        if min_attestations == 0 {
+            return Err(BondError::ZeroAmount);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::MinPerformanceAttestations, &min_attestations);
+        env.events().publish(
+            (Symbol::new(&env, "min_attestations_changed"),),
+            (min_attestations,),
+        );
+
+        Ok(())
+    }
+
+    /// Issue #186: whether an out-of-bound performance update is currently
+    /// pausing coupon distribution for this bond.
+    pub fn is_performance_flagged(env: Env, bond_id: u64) -> bool {
+        env.storage().instance().has(&DataKey::PerformanceFlag(bond_id))
+    }
+
+    /// Issue #186: details of the active performance flag, if any.
+    pub fn get_performance_flag(env: Env, bond_id: u64) -> Option<PerformanceFlag> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PerformanceFlag(bond_id))
+    }
+
+    /// Issue #186: trailing verified performance observations (oldest first).
+    pub fn get_performance_history(env: Env, bond_id: u64) -> Vec<PerformanceRecord> {
+        env.storage()
+            .instance()
+            .get(&DataKey::PerformanceHistory(bond_id))
+            .unwrap_or(vec![&env])
+    }
+
+    /// Issue #186: clear the performance flag after the dispute mechanism has
+    /// reviewed it, resuming automatic coupon distribution for the bond.
+    pub fn clear_performance_flag(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+
+        if !env.storage().instance().has(&DataKey::PerformanceFlag(bond_id)) {
+            return Err(BondError::BondNotFound);
+        }
+
+        env.storage()
+            .instance()
+            .remove(&DataKey::PerformanceFlag(bond_id));
+        env.events().publish(
+            (Symbol::new(&env, "performance_unflagged"),),
+            (bond_id,),
+        );
+
+        Ok(())
+    }
+
+
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
     let admin: Address = env
@@ -850,6 +1040,106 @@ fn checked_ratio(value: i128, multiplier: i128, divisor: i128) -> Result<i128, B
         .ok_or(BondError::Overflow)?
         .checked_div(divisor)
         .ok_or(BondError::Overflow)
+}
+
+/// Issue #186: bound a report's performance against the trailing history.
+///
+/// The first accepted observation is the baseline (nothing to compare yet).
+/// Afterwards, an increase beyond `MAX_PERFORMANCE_INCREASE_BPS` or a drop
+/// beyond `MAX_PERFORMANCE_DECREASE_BPS` sets a `PerformanceFlag` — which
+/// pauses coupon distribution for the bond until an admin clears it after
+/// dispute resolution — and the update is rejected, never silently clamped.
+fn validate_performance_update(
+    env: &Env,
+    bond_id: u64,
+    report_id: u64,
+    period_index: u32,
+    carbon_sequestered: i128,
+) -> Result<(), BondError> {
+    let history: Vec<PerformanceRecord> = env
+        .storage()
+        .instance()
+        .get(&DataKey::PerformanceHistory(bond_id))
+        .unwrap_or(vec![env]);
+    let previous = match history.len() {
+        0 => return Ok(()), // no history yet: this observation is the baseline
+        len => history.get(len - 1).ok_or(BondError::Overflow)?,
+    };
+
+    if previous.carbon_sequestered <= 0 {
+        // A non-positive baseline cannot bound a ratio; accept the update.
+        return Ok(());
+    }
+
+    let reason = if carbon_sequestered > previous.carbon_sequestered {
+        let delta = carbon_sequestered - previous.carbon_sequestered;
+        let increase_bps = delta
+            .checked_mul(10_000)
+            .ok_or(BondError::Overflow)?
+            .checked_div(previous.carbon_sequestered)
+            .ok_or(BondError::Overflow)?;
+        if increase_bps <= MAX_PERFORMANCE_INCREASE_BPS {
+            return Ok(());
+        }
+        PerformanceAnomaly::Spike
+    } else if carbon_sequestered < previous.carbon_sequestered {
+        let drop = previous.carbon_sequestered - carbon_sequestered;
+        let drop_bps = drop
+            .checked_mul(10_000)
+            .ok_or(BondError::Overflow)?
+            .checked_div(previous.carbon_sequestered)
+            .ok_or(BondError::Overflow)?;
+        if drop_bps <= MAX_PERFORMANCE_DECREASE_BPS {
+            return Ok(());
+        }
+        PerformanceAnomaly::Drop
+    } else {
+        return Ok(());
+    };
+
+    env.storage().instance().set(
+        &DataKey::PerformanceFlag(bond_id),
+        &PerformanceFlag {
+            report_id,
+            reason,
+            previous_value: previous.carbon_sequestered,
+            reported_value: carbon_sequestered,
+            flagged_at: env.ledger().timestamp(),
+        },
+    );
+    env.events().publish(
+        (Symbol::new(&env, "performance_flagged"),),
+        (bond_id, report_id),
+    );
+
+    Err(BondError::PerformanceFlagged)
+}
+
+/// Issue #186: append an accepted observation to the trailing history,
+/// keeping at most `TRAILING_HISTORY_PERIODS` records.
+fn append_performance_record(
+    env: &Env,
+    bond_id: u64,
+    period_index: u32,
+    report_id: u64,
+    carbon_sequestered: i128,
+) {
+    let mut history: Vec<PerformanceRecord> = env
+        .storage()
+        .instance()
+        .get(&DataKey::PerformanceHistory(bond_id))
+        .unwrap_or(vec![env]);
+    history.push_back(PerformanceRecord {
+        period_index,
+        report_id,
+        carbon_sequestered,
+    });
+    while history.len() > TRAILING_HISTORY_PERIODS {
+        history.pop_front();
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::PerformanceHistory(bond_id), &history);
 }
 
 fn appears_before(holders: &Vec<Address>, holder: &Address, end_exclusive: u32) -> bool {
@@ -1944,6 +2234,353 @@ mod test {
             Err(Ok(BondError::Overflow))
         );
         assert_eq!(t.client.accrued_credits(&bond_id, &holder), accrued);
+    }
+
+    /// Same as `submit_verified_report` but with explicit reporting periods so
+    /// multiple non-overlapping reports can be submitted for one project.
+    fn submit_verified_report_with_period(
+        env: &Env,
+        t: &TestEnv,
+        project_id: &BytesN<32>,
+        carbon: i128,
+        biodiversity: BiodiversityMetrics,
+        admin_nonce: u64,
+        period_start: u64,
+        period_end: u64,
+    ) -> u64 {
+        let oc = nbbs_oracle_consumer::OracleConsumerClient::new(env, &t.oracle_id);
+        let provider = Address::generate(env);
+        oc.register_provider(
+            &t.admin,
+            &provider,
+            &Symbol::new(env, "verra_vcs"),
+            &admin_nonce,
+        );
+        let report_id = oc.submit_report(
+            &provider,
+            project_id,
+            &period_start,
+            &period_end,
+            &carbon,
+            &biodiversity,
+            &Symbol::new(env, "verra_vcs"),
+            &make_ipfs_hash(env, 1),
+            &0,
+        );
+        oc.verify_report(&t.admin, &report_id, &(admin_nonce + 1));
+
+        let second_verifier = Address::generate(env);
+        oc.register_provider(
+            &t.admin,
+            &second_verifier,
+            &Symbol::new(env, "satellite"),
+            &(admin_nonce + 2),
+        );
+        oc.add_stake(
+            &second_verifier,
+            &nbbs_oracle_consumer::DEFAULT_MIN_VERIFIER_STAKE,
+            &0,
+        );
+        oc.verify_report(&second_verifier, &report_id, &1);
+
+        report_id
+    }
+
+    /// Issue #186: the first accepted observation is the baseline.
+    #[test]
+    fn test_first_performance_baseline_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+
+        let history = t.client.get_performance_history(&bond_id);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get(0).unwrap().carbon_sequestered, 100_000);
+        assert!(!t.client.is_performance_flagged(&bond_id));
+    }
+
+    /// Issue #186: a manipulated spike (+200%) is flagged, pauses coupon
+    /// distribution, and resumes only after an admin clears the flag.
+    #[test]
+    fn test_performance_spike_flags_and_pauses_coupons() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let baseline_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &baseline_report, &1);
+
+        // 100k → 300k is a +200% jump: outside the documented +100% bound.
+        let spike_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            300_000,
+            BiodiversityMetrics::Absent,
+            3,
+            2_000,
+            3_000,
+        );
+        assert_eq!(
+            t.client
+                .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &spike_report, &2),
+            Err(Ok(BondError::PerformanceFlagged))
+        );
+
+        // The flag pauses every subsequent distribution attempt.
+        assert!(t.client.is_performance_flagged(&bond_id));
+        let flag = t.client.get_performance_flag(&bond_id).unwrap();
+        assert_eq!(flag.reason, PerformanceAnomaly::Spike);
+        assert_eq!(flag.previous_value, 100_000);
+        assert_eq!(flag.reported_value, 300_000);
+        assert_eq!(
+            t.client
+                .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &spike_report, &3),
+            Err(Ok(BondError::PerformanceFlagged))
+        );
+
+        // Nothing was silently clamped: no accruals for the flagged period.
+        assert_eq!(t.client.get_period_count(&bond_id), 1);
+
+        // After dispute resolution an admin clears the flag and a corrected
+        // report (within bounds) distributes normally.
+        t.client.clear_performance_flag(&t.admin, &bond_id, &4);
+        assert!(!t.client.is_performance_flagged(&bond_id));
+
+        let corrected_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            120_000,
+            BiodiversityMetrics::Absent,
+            6,
+            2_000,
+            3_000,
+        );
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &1, &holders, &corrected_report, &5);
+
+        let history = t.client.get_performance_history(&bond_id);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.get(1).unwrap().carbon_sequestered, 120_000);
+    }
+
+    /// Issue #186: a genuine extreme event inside the bounds (-80%) is
+    /// accepted rather than flagged.
+    #[test]
+    fn test_legitimate_extreme_drop_within_bounds() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let baseline_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &baseline_report, &1);
+
+        // -80% is within the -90% bound: a genuine collapse is accepted.
+        let drop_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            20_000,
+            BiodiversityMetrics::Absent,
+            3,
+            2_000,
+            3_000,
+        );
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &1, &holders, &drop_report, &2);
+
+        assert!(!t.client.is_performance_flagged(&bond_id));
+        assert_eq!(t.client.get_performance_history(&bond_id).len(), 2);
+    }
+
+    /// Issue #186: a beyond-bound drop (consistent with a manipulated or
+    /// erroneous feed) is flagged for review instead of being applied.
+    #[test]
+    fn test_erroneous_drop_flags_distribution() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let baseline_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Absent,
+            0,
+            1_000,
+            2_000,
+        );
+        let holders = vec![&t._env, holder.clone()];
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &baseline_report, &1);
+
+        // -97% is outside the -90% bound.
+        let drop_report = submit_verified_report_with_period(
+            &t._env,
+            &t,
+            &project_id,
+            3_000,
+            BiodiversityMetrics::Absent,
+            3,
+            2_000,
+            3_000,
+        );
+        assert_eq!(
+            t.client
+                .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &drop_report, &2),
+            Err(Ok(BondError::PerformanceFlagged))
+        );
+
+        let flag = t.client.get_performance_flag(&bond_id).unwrap();
+        assert_eq!(flag.reason, PerformanceAnomaly::Drop);
+        assert_eq!(flag.reported_value, 3_000);
+    }
+
+    /// Issue #186: fewer independent attestations than the coupon minimum
+    /// blocks distribution even for a Verified report.
+    #[test]
+    fn test_insufficient_attestations_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        // Relax the verification threshold to 1 so a single-verifier report
+        // reaches Verified while staying under the coupon minimum of 2.
+        let oc = nbbs_oracle_consumer::OracleConsumerClient::new(&t._env, &t.oracle_id);
+        oc.set_signature_threshold(&t.admin, &1, &0);
+
+        let provider = Address::generate(&t._env);
+        oc.register_provider(&t.admin, &provider, &Symbol::new(&t._env, "verra_vcs"), &1);
+        let report_id = oc.submit_report(
+            &provider,
+            &project_id,
+            &1_000u64,
+            &2_000u64,
+            &100_000i128,
+            &BiodiversityMetrics::Absent,
+            &Symbol::new(&t._env, "verra_vcs"),
+            &make_ipfs_hash(&t._env, 1),
+            &0,
+        );
+        oc.verify_report(&t.admin, &report_id, &2);
+        assert_eq!(
+            oc.get_verification_count(&report_id),
+            1
+        );
+
+        let holders = vec![&t._env, holder.clone()];
+        assert_eq!(
+            t.client
+                .try_distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1),
+            Err(Ok(BondError::InsufficientAttestations))
+        );
+
+        // A second independent verifier restores eligibility.
+        let second_verifier = Address::generate(&t._env);
+        oc.register_provider(&t.admin, &second_verifier, &Symbol::new(&t._env, "satellite"), &3);
+        oc.add_stake(
+            &second_verifier,
+            &nbbs_oracle_consumer::DEFAULT_MIN_VERIFIER_STAKE,
+            &0,
+        );
+        oc.verify_report(&second_verifier, &report_id, &1);
+
+        t.client
+            .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &2);
+    }
+
+    /// Issue #186: only the admin can clear a performance flag.
+    #[test]
+    fn test_clear_performance_flag_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 42);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let other = Address::generate(&t._env);
+        assert_eq!(
+            t.client.try_clear_performance_flag(&other, &bond_id, &0),
+            Err(Ok(BondError::Unauthorized))
+        );
     }
 
     mod property {
