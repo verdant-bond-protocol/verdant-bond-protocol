@@ -160,7 +160,7 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   onApprove(): void {
-    if (!confirm('Approve project #'' + this.project()?.id + '?')) return;
+    if (!confirm(`Approve project #${this.project()?.id}?`)) return;
     this.apiService.approveProject(this.project()!.id).subscribe({
       next: () => {
         this.loadProjects();
@@ -172,7 +172,7 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   onReject(): void {
-    if (!confirm('Reject project #'' + this.project()?.id + '?')) return;
+    if (!confirm(`Reject project #${this.project()?.id}?`)) return;
     this.apiService.rejectProject(this.project()!.id).subscribe({
       next: () => {
         this.loadProjects();

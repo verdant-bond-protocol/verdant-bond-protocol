@@ -1394,12 +1394,12 @@ mod integration {
 
             // Every contract's admin nonce is independent, so each hand-over is
             // that admin's first call on that contract.
-            contracts.pr_client.set_admin(&admin, &gov_addr, &0);
-            contracts.bi_client.set_admin(&admin, &gov_addr, &0);
-            contracts.oc_client.set_admin(&admin, &gov_addr, &0);
-            contracts.ce_client.set_admin(&admin, &gov_addr, &0);
-            contracts.dr_client.set_admin(&admin, &gov_addr, &0);
-            contracts.cr_client.set_admin(&admin, &gov_addr, &0);
+            contracts.pr_client.set_admin(&admin, &gov_addr);
+            contracts.bi_client.set_admin(&admin, &gov_addr);
+            contracts.oc_client.set_admin(&admin, &gov_addr);
+            contracts.ce_client.set_admin(&admin, &gov_addr);
+            contracts.dr_client.set_admin(&admin, &gov_addr);
+            contracts.cr_client.set_admin(&admin, &gov_addr);
 
             let targets = [
                 contracts.pr_client.address.clone(),

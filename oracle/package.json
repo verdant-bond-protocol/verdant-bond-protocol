@@ -11,6 +11,7 @@
     "ingest": "ts-node run.ts all",
     "monitor": "ts-node run.ts monitor",
     "test": "jest",
+    "lint": "tsc --noEmit",
     "test:cov": "jest --coverage",
     "typecheck": "tsc --noEmit"
   },

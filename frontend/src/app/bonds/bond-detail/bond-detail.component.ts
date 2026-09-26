@@ -801,4 +801,3 @@ private submitSweep(): void {
     });
   }
 }
-}
