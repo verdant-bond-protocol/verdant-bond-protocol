@@ -5,6 +5,11 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
+/// Issue #188: versioned-interface convention. Bump on a breaking storage
+/// layout or interface change; see docs/upgrade-migrations.md.
+pub const SCHEMA_VERSION: u32 = 1;
+
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -285,6 +290,12 @@ impl CreditRetirement {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(CreditError::NotInitialized)
+    /// Issue #188: versioned-interface convention — bump when the contract's
+    /// storage layout or callable interface changes in a breaking way. See
+    /// docs/upgrade-migrations.md.
+    pub fn schema_version(env: Env) -> u32 {
+        let _ = env;
+        SCHEMA_VERSION
     }
 }
 

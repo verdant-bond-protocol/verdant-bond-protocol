@@ -8,6 +8,7 @@ import { NonceService } from '../common/services/nonce.service';
 import { RedisService } from '../common/services/redis.service';
 import { SigningKeyProvider } from '../common/services/signing-key.provider';
 import { ConfigService } from '../config/config.service';
+import { FeatureFlagsService } from '../config/feature-flags.service';
 import { OrderStatus } from './interfaces/marketplace.interface';
 
 const configServiceStub = { getDexRouterAddress: () => 'CDEXROUTERADDRESSPLACEHOLDER' };
@@ -113,6 +114,7 @@ describe('DexService', () => {
           useValue: { adminSecret: jest.fn().mockReturnValue('SADMIN') },
         },
         { provide: ConfigService, useValue: configServiceStub },
+        { provide: FeatureFlagsService, useValue: { isEnabled: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile();
 
@@ -209,6 +211,7 @@ describe('DexService', () => {
         quoteAsset: 'USDC',
         status: OrderStatus.Open,
         createdAt: new Date(1700000000 * 1000).toISOString(),
+        expiresAt: new Date(Number(FUTURE_EXPIRY) * 1000).toISOString(),
       });
     });
 
@@ -533,7 +536,7 @@ describe('DexService', () => {
 
 describe('DexService — mapDexError (unit)', () => {
   it('maps InsufficientFunds contract error to PAYMENT_REQUIRED HttpException', () => {
-    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('DEX_INSUFFICIENT_FUNDS', 'insufficient', undefined, undefined, 10);
     const mapped = (svc as any).mapDexError(err);
     expect(mapped).toBeInstanceOf(Object);
@@ -543,7 +546,7 @@ describe('DexService — mapDexError (unit)', () => {
   });
 
   it('falls back to BadRequestException for unknown contract codes', () => {
-    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('SOME_CODE', 'some detail', undefined, undefined, 999);
     const mapped = (svc as any).mapDexError(err);
     expect(mapped).toBeInstanceOf(Object);
@@ -597,6 +600,7 @@ describe('DexService — cache staleness (in-memory Redis)', () => {
           useValue: { adminSecret: jest.fn().mockReturnValue('SADMIN') },
         },
         { provide: ConfigService, useValue: configServiceStub },
+        { provide: FeatureFlagsService, useValue: { isEnabled: jest.fn().mockResolvedValue(true) } },
       ],
     }).compile();
 

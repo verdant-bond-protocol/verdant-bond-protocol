@@ -45,7 +45,7 @@ describe('ExportService', () => {
         id: 'export-1',
         userId: 'user-123',
         status: 'completed',
-        expiresAt: new Date(Date.now() + 1000000),
+        expiresAt: new Date(Date.now() + 1000000).toISOString(),
       };
 
       (redisService.get as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockExport));

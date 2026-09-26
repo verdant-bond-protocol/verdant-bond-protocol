@@ -1,0 +1,11 @@
+[package]
+name = "credit-registry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soroban-sdk = { version = "20.4.0", features = ["contract"] }
+nbbs-shared = { path = "../shared" }
+
+[lib]
+crate-type = ["cdylib"]

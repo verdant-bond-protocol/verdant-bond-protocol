@@ -57,8 +57,8 @@ describe('GracePeriodService', () => {
       };
 
       (redis.get as jest.Mock)
-        .mockResolvedValueOnce(null)
-        .mockResolvedValueOnce(JSON.stringify(mockState));
+        .mockResolvedValueOnce(JSON.stringify(mockState))
+        .mockResolvedValueOnce(null);
       (redis.setEx as jest.Mock).mockResolvedValue('OK');
 
       const extended = await service.extendGracePeriod(1, 0);
@@ -106,7 +106,9 @@ describe('GracePeriodService', () => {
         delayedPaymentEventEmitted: false,
       };
 
-      (redis.get as jest.Mock).mockResolvedValue(JSON.stringify(mockState));
+      (redis.get as jest.Mock)
+        .mockResolvedValueOnce(JSON.stringify(mockState))
+        .mockResolvedValueOnce(null);
 
       const result = await service.isGracePeriodActive(1, 0);
 
