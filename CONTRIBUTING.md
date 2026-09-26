@@ -147,6 +147,13 @@ chore(ci): add cargo-audit to workflow
 - Verify dialogs, menus, and dropdowns can be opened, used, and dismissed without losing focus.
 - Add or update automated accessibility assertions for shared controls when changing core workflows.
 
+### Feature Flags
+
+- Use feature flags for high-risk changes and large new feature rollouts.
+- Maintain safe defaults in `FeatureFlagsService` so that missing config safely disables or falls back to standard behavior.
+- Document rollout and rollback steps in [docs/feature_flags.md](docs/feature_flags.md).
+- Do not introduce breaking changes without a feature flag that can disable the new path.
+
 ## Testing
 
 ### Smart Contracts

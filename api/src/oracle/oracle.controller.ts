@@ -144,7 +144,7 @@ export class OracleController {
   async listIncidents(
     @Query() query: ListOracleIncidentsDto,
   ): Promise<PaginatedResponse<OracleIncident>> {
-    return this.incidents.findMany(query.page, query.limit, query.status);
+    return this.incidents.findMany(query.page, query.limit, query.status, query.cursor);
   }
 
   @Post('incidents/:id/acknowledge')

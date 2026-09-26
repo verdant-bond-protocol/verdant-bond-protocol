@@ -6,6 +6,7 @@ import { DexScheduler } from './dex.scheduler';
 import { DexReconciliationService } from './dex.reconciliation.service';
 import { DexReconciliationScheduler } from './dex.reconciliation.scheduler';
 import { LiquidityService } from './liquidity.service';
+import { OrderStateService } from './order-state.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
@@ -13,10 +14,11 @@ import { LiquidityService } from './liquidity.service';
   providers: [
     DexService,
     LiquidityService,
+    OrderStateService,
     DexScheduler,
     DexReconciliationService,
     DexReconciliationScheduler,
   ],
-  exports: [DexService, LiquidityService, DexReconciliationService],
+  exports: [DexService, LiquidityService, DexReconciliationService, OrderStateService],
 })
 export class MarketplaceModule {}

@@ -55,6 +55,7 @@ export class MarketplaceController {
       status,
       pagination.page ?? 1,
       pagination.limit ?? 20,
+      pagination.cursor,
     );
   }
 
@@ -125,6 +126,7 @@ export class MarketplaceController {
   }
 
   @Delete('orders/:id')
+  @Idempotent()
   @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.NO_CONTENT)
   async cancelOrder(

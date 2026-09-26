@@ -208,28 +208,44 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
     page = 1,
     limit = 20,
     status?: OracleIncidentStatus,
+    cursor?: string,
   ): Promise<PaginatedResponse<OracleIncident>> {
-    const offset = (page - 1) * limit;
-    const whereClause = status ? 'WHERE status = $1' : '';
-    const params = status ? [status] : [];
+    let offsetClause = '';
+    let offsetParams: any[] = [];
+    let queryParams = status ? [status] : [];
+    
+    if (cursor) {
+      const cursorDate = new Date(cursor).toISOString();
+      offsetClause = `AND last_detected_at < $${queryParams.length + 1}`;
+      queryParams.push(cursorDate);
+      offsetParams = [limit];
+    } else {
+      const offset = (page - 1) * limit;
+      offsetParams = [limit, offset];
+    }
+    
+    const whereClause = status ? `WHERE status = $1 ${offsetClause}` : (cursor ? `WHERE last_detected_at < $1` : '');
 
     const [rowsResult, countResult] = await Promise.all([
       this.pool.query<IncidentRow>(
         `SELECT * FROM oracle_incidents ${whereClause}
          ORDER BY last_detected_at DESC
-         LIMIT $${params.length + 1} OFFSET $${params.length + 2};`,
-        [...params, limit, offset],
+         LIMIT $${queryParams.length + 1} ${cursor ? '' : `OFFSET $${queryParams.length + 2}`};`,
+        [...queryParams, ...offsetParams],
       ),
       this.pool.query<{ count: string }>(
-        `SELECT COUNT(*) FROM oracle_incidents ${whereClause};`,
-        params,
+        `SELECT COUNT(*) FROM oracle_incidents ${status ? 'WHERE status = $1' : ''};`,
+        status ? [status] : [],
       ),
     ]);
 
     const total = Number(countResult.rows[0].count);
+    const data = rowsResult.rows.map((row) => this.toIncident(row));
+    const nextCursor = data.length > 0 ? data[data.length - 1].lastDetectedAt : undefined;
+
     return {
-      data: rowsResult.rows.map((row) => this.toIncident(row)),
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      data,
+      meta: cursor ? { limit, total, nextCursor, totalPages: Math.ceil(total / limit) } : { page, limit, total, totalPages: Math.ceil(total / limit) },
     };
   }
 

@@ -25,7 +25,7 @@ export class ProjectsController {
 
   @Get()
   async findAll(@Query() query: PaginationDto) {
-    return this.projectsService.findAll(query.page, query.limit);
+    return this.projectsService.findAll(query.page, query.limit, query.cursor);
   }
 
   @Get(':id')
