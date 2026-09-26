@@ -1,5 +1,5 @@
 export interface ReconciliationDrift {
-  type: 'missing' | 'duplicate' | 'stale' | 'inconsistent';
+  type: 'missing' | 'orphaned' | 'duplicate' | 'stale' | 'inconsistent';
   entityType: string;
   entityId: string;
   description: string;
@@ -7,15 +7,19 @@ export interface ReconciliationDrift {
   expectedValue?: any;
   actualValue?: any;
   repairSuggestion?: string;
+  severity?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 }
 
 export interface ReconciliationReport {
   timestamp: Date;
   dryRun: boolean;
   totalEntitiesChecked: number;
+  status?: 'HEALTHY' | 'DEGRADED' | 'CRITICAL';
+  durationMs?: number;
   driftsFound: ReconciliationDrift[];
   summary: {
     missingCount: number;
+    orphanedCount?: number;
     duplicateCount: number;
     staleCount: number;
     inconsistentCount: number;

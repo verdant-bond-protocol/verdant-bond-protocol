@@ -140,6 +140,34 @@ pub fn generate_storage_fixtures(
         fx("Admin", encode(env, CouponEngineKey::Admin)),
     );
     coupon_engine.insert(
+        "PerformanceHistory(1)".to_string(),
+        fx(
+            "PerformanceHistory(1)",
+            encode(env, CouponEngineKey::PerformanceHistory(1)),
+        ),
+    );
+    coupon_engine.insert(
+        "PerformanceFlag(1)".to_string(),
+        fx(
+            "PerformanceFlag(1)",
+            encode(env, CouponEngineKey::PerformanceFlag(1)),
+        ),
+    );
+    coupon_engine.insert(
+        "MinPerformanceAttestations".to_string(),
+        fx(
+            "MinPerformanceAttestations",
+            encode(env, CouponEngineKey::MinPerformanceAttestations),
+        ),
+    );
+    coupon_engine.insert(
+        "MigrationWindow(1)".to_string(),
+        fx(
+            "MigrationWindow(1)",
+            encode(env, CouponEngineKey::MigrationWindow(1)),
+        ),
+    );
+    coupon_engine.insert(
         "PeriodInfo(1, 1)".to_string(),
         fx(
             "PeriodInfo(1, 1)",

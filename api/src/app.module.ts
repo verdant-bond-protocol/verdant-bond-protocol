@@ -32,6 +32,13 @@ import { OpsModule } from './ops/ops.module';
     WorkersModule,
     ReconciliationModule,
     ExportsModule,
+    ComplianceModule,
+    AuditModule,
+    RecoveryModule,
+    MigrationSafetyModule,
+    ImpersonationModule,
+    InvitationsModule,
+    FailuresModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },

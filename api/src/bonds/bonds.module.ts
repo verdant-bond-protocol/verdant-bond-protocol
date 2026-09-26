@@ -6,7 +6,7 @@ import { OracleModule } from '../oracle/oracle.module';
 import { HolderIndexService } from './holder-index.service';
 
 @Module({
-  imports: [OracleModule],
+  imports: [OracleModule, ComplianceModule],
   controllers: [BondsController],
   providers: [BondsService, HolderIndexService],
   exports: [BondsService, HolderIndexService],

@@ -28,6 +28,7 @@ export class ReconciliationService {
       driftsFound: [],
       summary: {
         missingCount: 0,
+        orphanedCount: 0,
         duplicateCount: 0,
         staleCount: 0,
         inconsistentCount: 0,
@@ -45,6 +46,7 @@ export class ReconciliationService {
 
         for (const drift of drifts) {
           if (drift.type === 'missing') report.summary.missingCount++;
+          else if (drift.type === 'orphaned') (report.summary.orphanedCount = (report.summary.orphanedCount ?? 0) + 1);
           else if (drift.type === 'duplicate') report.summary.duplicateCount++;
           else if (drift.type === 'stale') report.summary.staleCount++;
           else if (drift.type === 'inconsistent') report.summary.inconsistentCount++;
@@ -62,8 +64,15 @@ export class ReconciliationService {
     }
 
     const duration = Date.now() - startTime;
+    report.durationMs = duration;
+    report.status = report.driftsFound.length === 0
+      ? 'HEALTHY'
+      : report.driftsFound.some((d) => d.severity === 'CRITICAL' || d.type === 'inconsistent')
+      ? 'CRITICAL'
+      : 'DEGRADED';
+
     this.logger.log(
-      `Reconciliation ${dryRun ? 'dry-run' : 'complete'} in ${duration}ms. Found ${report.driftsFound.length} drifts.`,
+      `Reconciliation ${dryRun ? 'dry-run' : 'complete'} in ${duration}ms. Status: ${report.status}. Found ${report.driftsFound.length} drifts.`,
     );
 
     return report;

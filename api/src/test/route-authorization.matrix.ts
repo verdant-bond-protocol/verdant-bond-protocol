@@ -71,6 +71,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: BondsController, method: 'distributeCoupon', httpMethod: 'POST', path: 'bonds/:id/coupon', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: BondsController, method: 'claimCredits', httpMethod: 'POST', path: 'bonds/:id/claim', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
   { controller: BondsController, method: 'getUndistributedTotal', httpMethod: 'GET', path: 'bonds/:id/undistributed', guards: [], role: 'public', mutation: false },
+  { controller: BondsController, method: 'previewSubscribe', httpMethod: 'GET', path: 'bonds/:id/preview-subscribe', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'getClaimableCredits', httpMethod: 'GET', path: 'bonds/:id/claimable-credits', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'sweepUndistributed', httpMethod: 'POST', path: 'bonds/:id/sweep-undistributed', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: BondsController, method: 'transfer', httpMethod: 'POST', path: 'bonds/:id/transfer', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
