@@ -23,6 +23,8 @@ import { AuditModule } from './audit/audit.module';
 import { RecoveryModule } from './recovery/recovery.module';
 import { MigrationSafetyModule } from './migrations/migration-safety.module';
 import { ImpersonationModule } from './impersonation/impersonation.module';
+import { InvitationsModule } from './invitations/invitations.module';
+import { FailuresModule } from './failures/failures.module';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { ImpersonationModule } from './impersonation/impersonation.module';
     RecoveryModule,
     MigrationSafetyModule,
     ImpersonationModule,
+    InvitationsModule,
+    FailuresModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },
