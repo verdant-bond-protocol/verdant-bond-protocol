@@ -154,6 +154,18 @@ chore(ci): add cargo-audit to workflow
 - Document rollout and rollback steps in [docs/feature_flags.md](docs/feature_flags.md).
 - Do not introduce breaking changes without a feature flag that can disable the new path.
 
+### Operational Health & Dashboard
+
+Maintainers monitor the health of Verdant Bond Protocol via the **Ops Dashboard** (`GET /ops/dashboard`), which aggregates:
+- **Oracle Incidents**: Unresolved or escalating exceptions from data providers.
+- **Marketplace Reconciliation Drift**: Discrepancies between off-chain cache and on-chain balances.
+- **Bond Holder Index Staleness**: Bonds that have not been reconciled against on-chain records recently.
+
+When adding new background workers, external integrations, or caching mechanisms, contributors **must**:
+1. Surface relevant failures as aggregated metrics rather than just logging.
+2. Ensure counts match underlying records in tests or validation scripts.
+3. Hook these indicators into the `OpsModule` to keep the maintainer dashboard comprehensive.
+
 ## Testing
 
 ### Smart Contracts
