@@ -12,8 +12,11 @@ import { IdempotencyService } from './services/idempotency.service';
 import { TelemetryService } from './services/telemetry.service';
 import { TelemetryInterceptor } from './interceptors/telemetry.interceptor';
 
+import { StellarModule } from '../stellar/stellar.module';
+
 @Global()
 @Module({
+  imports: [StellarModule],
   controllers: [RedisHealthController],
   providers: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor],
   exports: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor],

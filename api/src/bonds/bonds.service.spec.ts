@@ -1,6 +1,10 @@
 import { Test } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { xdr, scValToNative, nativeToScVal, Address } from '@stellar/stellar-sdk';
+import { ComplianceAttestationService } from '../compliance/services/compliance-attestation.service';
+import { ComplianceRulesEngine } from '../compliance/services/compliance-rules.engine';
+import { TrancheType } from '../compliance/interfaces/compliance.interface';
+import { KycStatus } from '../common/interfaces/authenticated-request.interface';
 
 jest.mock('@redis/client', () => {
   const mockClient = {
@@ -694,4 +698,202 @@ describe('BondsService', () => {
       expect(contractService.simulateCall).not.toHaveBeenCalled();
     });
   });
+
+  describe('subscribe with compliance and attestations', () => {
+    const COMPLIANCE_WALLET = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+
+    it('rejects restricted-tranche purchase attempt without attestation', async () => {
+      const contractService = { invokeContractMethod: jest.fn() };
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          { provide: NonceService, useValue: { next: jest.fn().mockResolvedValue(1) } },
+          redisProvider,
+          signingProvider,
+          configProvider,
+          holderIndexProvider,
+          {
+            provide: ComplianceAttestationService,
+            useValue: { verifyAttestation: jest.fn() },
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+
+      await expect(
+        svc.subscribe(1, {
+          amount: 500,
+          investorAddress: COMPLIANCE_WALLET,
+          tranche: TrancheType.RESTRICTED_ACCREDITED,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(contractService.invokeContractMethod).not.toHaveBeenCalled();
+    });
+
+    it('rejects restricted-tranche purchase when attestation is invalid or expired', async () => {
+      const contractService = { invokeContractMethod: jest.fn() };
+      const attestationServiceMock = {
+        verifyAttestation: jest.fn().mockReturnValue({
+          valid: false,
+          reason: 'Cryptographic signature verification failed',
+        }),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          { provide: NonceService, useValue: { next: jest.fn().mockResolvedValue(1) } },
+          redisProvider,
+          signingProvider,
+          configProvider,
+          holderIndexProvider,
+          {
+            provide: ComplianceAttestationService,
+            useValue: attestationServiceMock,
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+
+      await expect(
+        svc.subscribe(1, {
+          amount: 500,
+          investorAddress: COMPLIANCE_WALLET,
+          tranche: TrancheType.RESTRICTED_ACCREDITED,
+          attestation: {
+            payload: {
+              investorAddress: COMPLIANCE_WALLET,
+              bondId: 1,
+              tranche: TrancheType.RESTRICTED_ACCREDITED,
+              jurisdiction: 'US',
+              kycStatus: KycStatus.ACCREDITED,
+              rulesetVersion: '2026.1',
+              issuedAt: 1000,
+              expiresAt: 2000,
+              nonce: 'abcd',
+            },
+            signature: 'deadbeef',
+            signerPublicKey: 'GCOMPLIANCE',
+          },
+        }),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(attestationServiceMock.verifyAttestation).toHaveBeenCalled();
+      expect(contractService.invokeContractMethod).not.toHaveBeenCalled();
+    });
+
+    it('allows restricted-tranche purchase when valid signed attestation is provided', async () => {
+      const contractService = {
+        invokeContractMethod: jest.fn().mockResolvedValue({
+          result: nativeToScVal(true),
+          transactionHash: '0xhash123',
+        }),
+      };
+      const attestationServiceMock = {
+        verifyAttestation: jest.fn().mockReturnValue({
+          valid: true,
+          payload: {
+            investorAddress: COMPLIANCE_WALLET,
+            bondId: 1,
+            tranche: TrancheType.RESTRICTED_ACCREDITED,
+            jurisdiction: 'US',
+            kycStatus: KycStatus.ACCREDITED,
+            rulesetVersion: '2026.1',
+            issuedAt: 1000,
+            expiresAt: 2000,
+            nonce: 'abcd',
+          },
+        }),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          { provide: NonceService, useValue: { next: jest.fn().mockResolvedValue(1) } },
+          redisProvider,
+          signingProvider,
+          configProvider,
+          holderIndexProvider,
+          {
+            provide: ComplianceAttestationService,
+            useValue: attestationServiceMock,
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+
+      const res = await svc.subscribe(1, {
+        amount: 500,
+        investorAddress: COMPLIANCE_WALLET,
+        tranche: TrancheType.RESTRICTED_ACCREDITED,
+        attestation: {
+          payload: {
+            investorAddress: COMPLIANCE_WALLET,
+            bondId: 1,
+            tranche: TrancheType.RESTRICTED_ACCREDITED,
+            jurisdiction: 'US',
+            kycStatus: KycStatus.ACCREDITED,
+            rulesetVersion: '2026.1',
+            issuedAt: 1000,
+            expiresAt: 2000,
+            nonce: 'abcd',
+          },
+          signature: 'validsig',
+          signerPublicKey: 'GCOMPLIANCE',
+        },
+      });
+
+      expect(res.bondId).toBe(1);
+      expect(res.investorAddress).toBe(COMPLIANCE_WALLET);
+      expect(contractService.invokeContractMethod).toHaveBeenCalled();
+    });
+
+    it('blocks purchase attempt from sanctioned address', async () => {
+      const contractService = { invokeContractMethod: jest.fn() };
+      const rulesEngineMock = {
+        getSanctionsService: jest.fn().mockReturnValue({
+          isSanctioned: jest.fn().mockReturnValue(true),
+        }),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          { provide: NonceService, useValue: { next: jest.fn().mockResolvedValue(1) } },
+          redisProvider,
+          signingProvider,
+          configProvider,
+          holderIndexProvider,
+          {
+            provide: ComplianceRulesEngine,
+            useValue: rulesEngineMock,
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+
+      await expect(
+        svc.subscribe(1, {
+          amount: 500,
+          investorAddress: COMPLIANCE_WALLET,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(contractService.invokeContractMethod).not.toHaveBeenCalled();
+    });
+  });
+});
 });

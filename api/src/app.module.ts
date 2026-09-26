@@ -18,6 +18,7 @@ import { TelemetryInterceptor } from './common/interceptors/telemetry.intercepto
 import { WorkersModule } from './workers/workers.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { ExportsModule } from './exports/exports.module';
+import { ComplianceModule } from './compliance/compliance.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { ExportsModule } from './exports/exports.module';
     WorkersModule,
     ReconciliationModule,
     ExportsModule,
+    ComplianceModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },

@@ -1,5 +1,6 @@
 import { Controller, Post, Get, UseGuards, Body } from '@nestjs/common';
 import { ReconciliationService } from '../services/reconciliation.service';
+import { DomainInvariantsService } from '../services/domain-invariants.service';
 import { ReconciliationReport } from '../interfaces/reconciliation.interface';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../../common/guards/admin.guard';
@@ -12,12 +13,18 @@ import { Job } from '../../workers/interfaces/job.interface';
 export class ReconciliationController {
   constructor(
     private readonly reconciliation: ReconciliationService,
+    private readonly domainInvariants: DomainInvariantsService,
     private readonly jobQueue: JobQueueService,
   ) {}
 
   @Post('dry-run')
   async runDryRun(): Promise<ReconciliationReport> {
     return this.reconciliation.runDryRun();
+  }
+
+  @Get('validate-restore')
+  async validateRestore(): Promise<ReconciliationReport> {
+    return this.domainInvariants.validateDomainInvariants();
   }
 
   @Post('enqueue-job')

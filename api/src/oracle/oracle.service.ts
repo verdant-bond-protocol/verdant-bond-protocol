@@ -17,6 +17,7 @@ import {
   ChallengeStateResponse,
   ChallengedReportSummary,
   CouponEligibility,
+  SlashPreview,
 } from './interfaces/oracle.interface';
 import { RedisService } from '../common/services/redis.service';
 import { SigningKeyProvider } from '../common/services/signing-key.provider';
