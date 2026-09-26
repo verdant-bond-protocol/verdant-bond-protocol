@@ -90,4 +90,7 @@ pub enum GovernanceError {
     TimelockNotElapsed = 8,
     NotQueued = 9,
     AlreadyExecuted = 10,
+    InvalidTrack = 11,
+    InsufficientVotingPower = 12,
+    QuorumNotReached = 13,
 }
