@@ -125,6 +125,7 @@ export class MarketplaceController {
   }
 
   @Delete('orders/:id')
+  @Idempotent()
   @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.NO_CONTENT)
   async cancelOrder(
