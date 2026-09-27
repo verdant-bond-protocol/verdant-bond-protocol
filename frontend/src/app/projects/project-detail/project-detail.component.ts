@@ -1,5 +1,6 @@
 import { Component, inject, OnInit, ChangeDetectionStrategy, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { SafeUrlPipe } from '../../shared/pipes/safe-url.pipe';
 import { RouterModule, ActivatedRoute } from '@angular/router';
 import { ApiService } from '../../shared/services/api.service';
 import { StatusBadgeComponent } from '../../shared/components/status-badge/status-badge.component';
@@ -12,7 +13,7 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
 @Component({
   selector: 'app-project-detail',
   standalone: true,
-  imports: [CommonModule, RouterModule, StatusBadgeComponent, LoadingSpinnerComponent, ChallengedReportsComponent],
+  imports: [CommonModule, RouterModule, StatusBadgeComponent, LoadingSpinnerComponent, ChallengedReportsComponent, SafeUrlPipe],
   template: `
     <div class="detail-page">
       <a class="back-link" routerLink="/projects">← Back to Projects</a>
@@ -55,7 +56,7 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
             </div>
             <div class="detail-field">
               <span class="field-label">Metadata</span>
-              <a class="field-value link" [href]="metadataUrl()" target="_blank" rel="noopener noreferrer">View on IPFS →</a>
+              <a class="field-value link" [href]="metadataUrl() | safeUrl" target="_blank" rel="noopener noreferrer">View on IPFS →</a>
             </div>
           </div>
         </div>
@@ -71,7 +72,7 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
                   <span class="timeline-dot" [class.pending]="event.status !== 'complete'"></span>
                   <div><strong>{{ event.title }}</strong>
                     <div class="timeline-meta">{{ event.occurredAt ? (event.occurredAt | date:'medium') : event.status }}</div>
-                    @if (event.evidenceUrl) { <a [href]="event.evidenceUrl" target="_blank" rel="noopener noreferrer">View evidence →</a> }
+                    @if (event.evidenceUrl) { <a [href]="event.evidenceUrl | safeUrl" target="_blank" rel="noopener noreferrer">View evidence →</a> }
                   </div>
                 </li>
               }
