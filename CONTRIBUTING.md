@@ -97,6 +97,22 @@ verdant-bond-protocol/
 6. **Commit** using conventional commits (see below)
 7. **Push** and open a **Pull Request** against `main`
 
+## E2E Testing
+
+To run the end-to-end tests locally, use the following command in the `api` directory:
+
+```bash
+npm run test:e2e
+```
+
+For the highest-risk user journey (subscription with failure and recovery modes), run:
+
+```bash
+npx jest --config ./test/jest-e2e.json test/subscription-journey.e2e-spec.ts
+```
+
+Ensure you have a local Redis instance running if required, and mock environments are configured properly.
+
 ### Branch Naming
 
 - `feat/description` — New features

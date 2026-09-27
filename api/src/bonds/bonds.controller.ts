@@ -19,6 +19,7 @@ import { QuotaResource } from '../common/services/quota.service';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { Idempotent } from '../common/decorators/idempotent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import {
   BondResponse,
   SubscriptionResponse,
@@ -33,6 +34,8 @@ import {
   ClaimableCreditsResponse,
 } from './interfaces/bond.interface';
 
+@ApiTags('bonds')
+@ApiBearerAuth()
 @Controller('bonds')
 export class BondsController {
   constructor(private readonly bondsService: BondsService) {}

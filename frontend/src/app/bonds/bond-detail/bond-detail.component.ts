@@ -141,10 +141,10 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                     <p class="auth-hint">Connect your wallet and sign in to subscribe.</p>
                   }
                   @if (subscribeSuccess()) {
-                    <div class="success-msg">Subscribed! Tx: {{ subscribeTx() }}</div>
+                    <div class="success-msg" role="status" aria-live="polite">Subscribed! Tx: {{ subscribeTx() }}</div>
                   }
                   @if (subscribeError()) {
-                    <div class="error-msg">{{ subscribeError() }}</div>
+                    <div class="error-msg" role="alert" aria-live="assertive">{{ subscribeError() }}</div>
                   }
                 </div>
               }
@@ -209,12 +209,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                 <p class="auth-hint">Connect your wallet and sign in to claim credits.</p>
               }
               @if (claimSuccess()) {
-                <div class="success-msg">
+                <div class="success-msg" role="status" aria-live="polite">
                   Claimed {{ claimCredits() }} credits! Tx: {{ claimTx() }}
                 </div>
               }
               @if (claimError()) {
-                <div class="error-msg">{{ claimError() }}</div>
+                <div class="error-msg" role="alert" aria-live="assertive">{{ claimError() }}</div>
               }
             </div>
 
@@ -259,12 +259,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                     <p class="auth-hint">Connect your wallet and sign in to transfer.</p>
                   }
                   @if (transferSuccess()) {
-                    <div class="success-msg">
+                    <div class="success-msg" role="status" aria-live="polite">
                       Transferred {{ transferAmount }} tokens to {{ transferTo }}! Tx: {{ transferTx() }}
                     </div>
                   }
                   @if (transferError()) {
-                    <div class="error-msg">{{ transferError() }}</div>
+                    <div class="error-msg" role="alert" aria-live="assertive">{{ transferError() }}</div>
                   }
                 </div>
               }
@@ -299,12 +299,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                   <div class="admin-note">Loading undistributed total...</div>
                 }
                 @if (sweepSuccess()) {
-                  <div class="success-msg">
+                  <div class="success-msg" role="status" aria-live="polite">
                     Swept {{ sweepSwept() }} credits! Tx: {{ sweepTx() }}
                   </div>
                 }
                 @if (sweepError()) {
-                  <div class="error-msg">{{ sweepError() }}</div>
+                  <div class="error-msg" role="alert" aria-live="assertive">{{ sweepError() }}</div>
                 }
                 <!-- Coupon Distribute -->
                 @if (couponEligibility() && couponEligibility()!.eligible) {

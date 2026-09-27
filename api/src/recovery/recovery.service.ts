@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   RecoveryCheckpoint,
   RecoveryDiagnostic,
@@ -40,6 +41,8 @@ export class RecoveryService {
   private readonly operations = new Map<string, RecoveryOperation>();
   private readonly userActions = new Map<string, RecoveryUserAction[]>();
   private readonly auditEvents: Array<Record<string, any>> = [];
+
+  constructor(private readonly notificationsService: NotificationsService) {}
 
   /**
    * Declare a new operation. Steps are copied defensively so a later change to
@@ -233,6 +236,13 @@ export class RecoveryService {
     });
     this.userActions.set(operation.operationId, actions);
     this.logger.warn(`operation ${operation.operationId} interrupted at ${step.id}: ${error}`);
+    this.notificationsService.createNotification({
+      userId: 'admin',
+      type: 'RECOVERY_INTERRUPTED',
+      message: `Recovery operation ${operation.type} interrupted at step ${step.id}: ${error}`,
+      eventId: `recovery_${operation.operationId}_${step.id}`,
+      link: `/admin/recovery/${operation.operationId}`
+    });
   }
 
   private audit(event: string, operation: RecoveryOperation, stepIndex: number, error?: string): void {

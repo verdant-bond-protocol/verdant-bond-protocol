@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   DEFAULT_STALE_AFTER_MS,
   PartialFailure,
@@ -50,6 +51,8 @@ export class PartialFailureService {
   private readonly logger = new Logger(PartialFailureService.name);
   private readonly failures = new Map<string, PartialFailure>();
 
+  constructor(private readonly notificationsService: NotificationsService) {}
+
   /**
    * Record a partially completed operation. Metadata is deep-scrubbed so
    * secret-shaped fields never reach the dashboard.
@@ -78,6 +81,17 @@ export class PartialFailureService {
       id: failure.id,
       externalRef: failure.externalRef,
     });
+
+    if (failure.severity === 'warning' || failure.severity === 'critical') {
+      this.notificationsService.createNotification({
+        userId: 'admin', // assuming this is a system admin notification
+        type: 'PARTIAL_FAILURE',
+        message: `Partial failure in ${failure.operationType}: ${failure.message}`,
+        eventId: `pf_${failure.operationType}_${failure.externalRef || failure.id}`,
+        link: `/admin/failures/${failure.id}`
+      });
+    }
+
     return failure;
   }
 

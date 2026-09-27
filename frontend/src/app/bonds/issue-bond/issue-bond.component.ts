@@ -24,10 +24,10 @@ import {
       <h1 class="page-title">Issue New Bond</h1>
 
       @if (error()) {
-        <div class="error-banner">{{ error() }}</div>
+        <div class="error-banner" role="alert" aria-live="assertive">{{ error() }}</div>
       }
       @if (success()) {
-        <div class="success-banner">Bond issued successfully!</div>
+        <div class="success-banner" role="status" aria-live="polite">Bond issued successfully!</div>
       }
 
       <!-- Issuance is behind IntentGuard on the API; say so up front (#166). -->
@@ -54,7 +54,7 @@ import {
           <label class="form-label" for="projectId">Project ID</label>
           <input id="projectId" class="form-input" formControlName="projectId" placeholder="Enter project ID" />
           @if (form.get('projectId')?.invalid && form.get('projectId')?.touched) {
-            <span class="form-error">Project ID is required</span>
+            <span class="form-error" role="alert">Project ID is required</span>
           }
         </div>
 
@@ -63,7 +63,7 @@ import {
             <label class="form-label" for="faceValue">Face Value</label>
             <input id="faceValue" type="number" class="form-input" formControlName="faceValue" placeholder="100000" />
             @if (form.get('faceValue')?.invalid && form.get('faceValue')?.touched) {
-              <span class="form-error">Enter a positive value</span>
+              <span class="form-error" role="alert">Enter a positive value</span>
             }
           </div>
           <div class="form-group">
@@ -82,14 +82,14 @@ import {
             <label class="form-label" for="totalSupply">Total Supply</label>
             <input id="totalSupply" type="number" class="form-input" formControlName="totalSupply" placeholder="1000" />
             @if (form.get('totalSupply')?.invalid && form.get('totalSupply')?.touched) {
-              <span class="form-error">Enter a positive value</span>
+              <span class="form-error" role="alert">Enter a positive value</span>
             }
           </div>
           <div class="form-group">
             <label class="form-label" for="maturityDate">Maturity Date</label>
             <input id="maturityDate" type="date" class="form-input" formControlName="maturityDate" />
             @if (form.get('maturityDate')?.invalid && form.get('maturityDate')?.touched) {
-              <span class="form-error">Maturity date is required</span>
+              <span class="form-error" role="alert">Maturity date is required</span>
             }
           </div>
         </div>
@@ -98,19 +98,19 @@ import {
           <label class="form-label" for="couponSchedule">Coupon Schedule</label>
           <input id="couponSchedule" class="form-input" formControlName="couponSchedule" placeholder="Comma-separated epoch seconds, e.g. 1750000000, 1781536000" />
           @if (form.get('couponSchedule')?.hasError('required') && form.get('couponSchedule')?.touched) {
-            <span class="form-error">Enter at least one coupon date</span>
+            <span class="form-error" role="alert">Enter at least one coupon date</span>
           }
           @if (form.errors?.['couponEmpty'] && form.get('couponSchedule')?.touched) {
-            <span class="form-error">Enter at least one valid coupon date</span>
+            <span class="form-error" role="alert">Enter at least one valid coupon date</span>
           }
           @if (form.errors?.['couponPast'] && form.get('couponSchedule')?.touched) {
-            <span class="form-error">All coupon dates must be in the future</span>
+            <span class="form-error" role="alert">All coupon dates must be in the future</span>
           }
           @if (form.errors?.['couponUnordered'] && form.get('couponSchedule')?.touched) {
-            <span class="form-error">Coupon dates must be strictly ascending with no duplicates</span>
+            <span class="form-error" role="alert">Coupon dates must be strictly ascending with no duplicates</span>
           }
           @if (form.errors?.['couponAfterMaturity'] && form.get('couponSchedule')?.touched) {
-            <span class="form-error">All coupon dates must be before the maturity date</span>
+            <span class="form-error" role="alert">All coupon dates must be before the maturity date</span>
           }
         </div>
 

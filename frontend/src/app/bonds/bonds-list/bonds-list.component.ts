@@ -13,57 +13,62 @@ import { Bond } from '../../shared/interfaces/bond.interface';
   standalone: true,
   imports: [CommonModule, RouterModule, BondCardComponent, LoadingSpinnerComponent, ConnectPromptComponent],
   template: `
-    <div class="bonds-page">
+    <div class="bonds-page" aria-label="Bonds List Page">
       <div class="page-header">
         <h1 class="page-title">Bonds</h1>
         @if (adminAccess.isAdmin()) {
-          <a class="btn btn-primary" routerLink="/bonds/issue">Issue Bond</a>
+          <a class="btn btn-primary" routerLink="/bonds/issue" aria-label="Issue a new bond">Issue Bond</a>
         }
       </div>
 
       <app-connect-prompt action="Browsing is open to everyone; subscribing to a bond needs a signed-in wallet." />
 
       @if (error()) {
-        <div class="error-banner">{{ error() }}</div>
+        <div class="error-banner" role="alert" aria-live="assertive">{{ error() }}</div>
       }
 
       @if (loading()) {
-        <div class="loading-section"><app-loading-spinner size="lg" /></div>
+        <div class="loading-section" aria-busy="true" aria-label="Loading bonds"><app-loading-spinner size="lg" /></div>
       } @else {
-        <div class="filter-bar">
+        <div class="filter-bar" role="group" aria-label="Filter bonds">
           <button
             class="filter-btn"
             [class.active]="filter() === 'all'"
+            [attr.aria-pressed]="filter() === 'all'"
             (click)="filter.set('all')"
           >All</button>
           <button
             class="filter-btn"
             [class.active]="filter() === 'Active'"
+            [attr.aria-pressed]="filter() === 'Active'"
             (click)="filter.set('Active')"
           >Active</button>
           <button
             class="filter-btn"
             [class.active]="filter() === 'Matured'"
+            [attr.aria-pressed]="filter() === 'Matured'"
             (click)="filter.set('Matured')"
           >Matured</button>
         </div>
 
         @if (filteredBonds().length === 0) {
-          <div class="empty-section">
+          <div class="empty-section" role="status">
             <p>No {{ filter() === 'all' ? '' : filter() }} bonds found.</p>
           </div>
         } @else {
-          <div class="card-grid">
+          <div class="card-grid" role="list">
             @for (bond of filteredBonds(); track bond.id) {
-              <app-bond-card [bond]="bond" (subscribe)="onSubscribe(bond.id)" />
+              <div role="listitem">
+                <app-bond-card [bond]="bond" (subscribe)="onSubscribe(bond.id)" />
+              </div>
             }
           </div>
 
-          <div class="pagination">
-            <button class="btn btn-outline" [disabled]="page() <= 1" (click)="prevPage()">Previous</button>
-            <span class="page-info">Page {{ page() }} of {{ totalPages() }}</span>
-            <button class="btn btn-outline" [disabled]="page() >= totalPages()" (click)="nextPage()">Next</button>
-          </div>
+          <nav class="pagination" aria-label="Bonds pagination">
+            <button class="btn btn-outline" [disabled]="page() <= 1" aria-label="Previous page" (click)="prevPage()">Previous</button>
+            <span class="page-info" aria-live="polite">Page {{ page() }} of {{ totalPages() }}</span>
+            <button class="btn btn-outline" [disabled]="page() >= totalPages()" aria-label="Next page" (click)="nextPage()">Next</button>
+          </nav>
         }
       }
     </div>
