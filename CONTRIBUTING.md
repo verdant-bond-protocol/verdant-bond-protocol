@@ -281,6 +281,17 @@ Use the [Feature Request template](.github/ISSUE_TEMPLATE/feature_request.md). I
 - Review [docs/](./docs/) for architecture and design details
 - Open a [discussion](https://github.com/prissca/verdant-bond-protocol/discussions) for questions
 
+## Role-Based Access Control (RBAC)
+
+Verdant Bond Protocol uses a centralized, consistently enforced role-based access control system across both API and UI boundaries. 
+The defined roles and their capabilities are:
+- **MAINTAINER**: Has all permissions. Usually assigned to the protocol admin.
+- **ISSUER**: Can create bonds, distribute coupons, mature bonds, export bonds, and approve/reject projects.
+- **INVESTOR**: Can subscribe to bonds, claim credits, and transfer bonds.
+- **SETTLEMENT_MANAGER**: Can reconcile holders, reindex holders, sweep undistributed funds, register oracle providers, and manage oracle incidents.
+
+Roles are granted based on wallet addresses matching configured environment variables (e.g., `ISSUER_PUBLIC_KEYS`, `SETTLEMENT_PUBLIC_KEYS`) or via the `STELLAR_PUBLIC_KEY` for the maintainer.
+
 ---
 
 Thank you for helping make Verdant Bond Protocol better!

@@ -9,9 +9,11 @@ import { ClaimCreditsDto } from './dto/claim-credits.dto';
 import { TransferBondDto } from './dto/transfer-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { AdminGuard } from '../common/guards/admin.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../auth/rbac';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { Idempotent } from '../common/decorators/idempotent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
@@ -34,7 +36,8 @@ export class BondsController {
   constructor(private readonly bondsService: BondsService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.CREATE_BOND)
   @RequireIntent('create_bond')
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
@@ -86,7 +89,8 @@ export class BondsController {
   }
 
   @Post(':id/coupon')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.DISTRIBUTE_COUPON)
   @RequireIntent('distribute_coupon')
   @HttpCode(HttpStatus.OK)
   async distributeCoupon(
@@ -133,7 +137,8 @@ export class BondsController {
   }
 
   @Post(':id/sweep-undistributed')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.SWEEP_UNDISTRIBUTED)
   @RequireIntent('sweep_undistributed')
   @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.OK)
@@ -159,7 +164,8 @@ export class BondsController {
    * single bond against on-chain balances. Discovers out-of-band transfers.
    */
   @Post(':id/reconcile-holders')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.RECONCILE_HOLDERS)
   @RequireIntent('reconcile_holders')
   @HttpCode(HttpStatus.OK)
   async reconcileHolders(
@@ -173,7 +179,8 @@ export class BondsController {
    * balances. Run after Redis loss or suspected direct contract transfers.
    */
   @Post('admin/reindex-holders')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.REINDEX_HOLDERS)
   @RequireIntent('reindex_holders', 'id', 'global')
   @HttpCode(HttpStatus.OK)
   async reindexHolders(): Promise<Array<{ bondId: number; total: number }>> {
@@ -181,7 +188,8 @@ export class BondsController {
   }
 
   @Post(':id/mature')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MATURE_BOND)
   @RequireIntent('mature_bond')
   @HttpCode(HttpStatus.OK)
   async mature(
@@ -191,7 +199,8 @@ export class BondsController {
   }
 
   @Get(':id/export')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.EXPORT_BOND)
   async exportBond(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: any,

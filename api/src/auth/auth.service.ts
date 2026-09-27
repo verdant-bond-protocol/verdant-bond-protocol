@@ -19,6 +19,7 @@ import { KycService } from './kyc.service';
 import { VerifySignatureDto } from './dto/verify-signature.dto';
 import { ChallengeResponse, AuthTokenResponse, UserProfileResponse } from './interfaces/auth.interface';
 import { ConfigService } from '../config/config.service';
+import { RbacService } from './rbac.service';
 
 const CHALLENGE_TTL_SECONDS = 300;
 
@@ -45,6 +46,7 @@ export class AuthService {
     private readonly stellarService: StellarService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly rbacService: RbacService,
   ) {
     this.accessTokenExpiry = this.config.getJwtExpiry();
     this.refreshTokenExpiry = this.config.getJwtRefreshExpiry();
@@ -183,8 +185,10 @@ export class AuthService {
     }
 
     const kycStatus = await this.kycService.getStatus(dto.address);
+    const roles = this.rbacService.getUserRoles(dto.address);
+    const permissions = this.rbacService.getUserPermissions(dto.address);
 
-    const payload = { sub: dto.address, kycStatus };
+    const payload = { sub: dto.address, kycStatus, roles, permissions };
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = this.jwtService.sign(
       { ...payload, tokenType: 'refresh' },
@@ -204,12 +208,16 @@ export class AuthService {
     try {
       const payload = this.jwtService.verify(token, {
         secret: this.refreshTokenSecret,
-      }) as { sub: string; kycStatus: string; tokenType: string };
+      }) as { sub: string; kycStatus: string; tokenType: string; roles?: string[]; permissions?: string[] };
       if (payload.tokenType !== 'refresh') {
         throw new UnauthorizedException('Invalid refresh token');
       }
 
-      const newPayload = { sub: payload.sub, kycStatus: payload.kycStatus };
+      // Recalculate roles just in case they changed
+      const roles = this.rbacService.getUserRoles(payload.sub);
+      const permissions = this.rbacService.getUserPermissions(payload.sub);
+
+      const newPayload = { sub: payload.sub, kycStatus: payload.kycStatus, roles, permissions };
       const accessToken = this.jwtService.sign(newPayload);
       return { accessToken, tokenType: 'Bearer', expiresIn: this.accessTokenExpiry };
     } catch {
@@ -219,9 +227,13 @@ export class AuthService {
 
   async getProfile(userId: string): Promise<UserProfileResponse> {
     const kycStatus = await this.kycService.getStatus(userId);
+    const roles = this.rbacService.getUserRoles(userId);
+    const permissions = this.rbacService.getUserPermissions(userId);
     return {
       walletAddress: userId,
       kycStatus,
+      roles,
+      permissions,
       createdAt: new Date().toISOString(),
     };
   }

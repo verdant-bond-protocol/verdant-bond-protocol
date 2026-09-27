@@ -11,7 +11,9 @@ import { ChallengeDto } from './dto/challenge.dto';
 import { RegisterProviderDto } from './dto/register-provider.dto';
 import { ListOracleIncidentsDto } from './dto/list-oracle-incidents.dto';
 import { ResolveOracleIncidentDto } from './dto/resolve-oracle-incident.dto';
-import { AdminGuard } from '../common/guards/admin.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../auth/rbac';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
@@ -102,7 +104,8 @@ export class OracleController {
   }
 
   @Post('providers')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.REGISTER_PROVIDER)
   @RequireIntent('register_provider', 'id', 'global')
   @RateLimit({ type: 'oracle' })
   @HttpCode(HttpStatus.CREATED)
@@ -140,7 +143,8 @@ export class OracleController {
    * acknowledgement/resolution is operational state, not public data.
    */
   @Get('incidents')
-  @UseGuards(JwtAuthGuard, AdminGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
   async listIncidents(
     @Query() query: ListOracleIncidentsDto,
   ): Promise<PaginatedResponse<OracleIncident>> {
@@ -148,7 +152,8 @@ export class OracleController {
   }
 
   @Post('incidents/:id/acknowledge')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
   @RequireIntent('acknowledge_incident', 'id')
   @HttpCode(HttpStatus.OK)
   async acknowledgeIncident(
@@ -160,7 +165,8 @@ export class OracleController {
   }
 
   @Post('incidents/:id/resolve')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
   @RequireIntent('resolve_incident', 'id')
   @HttpCode(HttpStatus.OK)
   async resolveIncident(

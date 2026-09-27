@@ -8,6 +8,8 @@ import { KycService } from './kyc.service';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { ConfigService } from '../config/config.service';
 
+import { RbacService } from './rbac.service';
+
 @Global()
 @Module({
   imports: [
@@ -21,7 +23,7 @@ import { ConfigService } from '../config/config.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, KycService, KycGuard],
-  exports: [AuthService, KycService, KycGuard],
+  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService],
+  exports: [AuthService, KycService, KycGuard, RbacService],
 })
 export class AuthModule {}

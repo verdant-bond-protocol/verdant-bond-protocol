@@ -14,10 +14,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: { sub: string; kycStatus: string }): Promise<AuthenticatedUser> {
+  async validate(payload: { sub: string; kycStatus: string; roles?: string[]; permissions?: string[] }): Promise<AuthenticatedUser> {
     return {
       walletAddress: payload.sub,
       kycStatus: payload.kycStatus as KycStatus,
+      roles: payload.roles || [],
+      permissions: payload.permissions || [],
     };
   }
 }
