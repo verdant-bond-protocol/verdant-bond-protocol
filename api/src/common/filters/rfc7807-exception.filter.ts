@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { ContractException } from '../../stellar/contract-errors';
+import { ErrorCode, ErrorTaxonomy, DomainException } from '../errors/error-codes';
 
 type ProblemDetail = {
   type: string;
@@ -17,6 +18,7 @@ type ProblemDetail = {
   instance: string;
   correlationId?: string;
   timestamp: string;
+  retryable: boolean;
   errors?: Array<{ field: string; message: string }>;
   contract?: {
     address?: string;
@@ -36,13 +38,13 @@ function validationErrors(message: unknown): Array<{ field: string; message: str
   });
 }
 
-function defaultCode(status: number): string {
-  if (status === 400) return 'VALIDATION_ERROR';
-  if (status === 401) return 'AUTHENTICATION_REQUIRED';
-  if (status === 403) return 'FORBIDDEN';
-  if (status === 404) return 'NOT_FOUND';
-  if (status === 409) return 'CONFLICT';
-  return status >= 500 ? 'INTERNAL_ERROR' : `HTTP_${status}`;
+function defaultCode(status: number): ErrorCode {
+  if (status === 400) return ErrorCode.VALIDATION_FAILED;
+  if (status === 401) return ErrorCode.UNAUTHORIZED;
+  if (status === 403) return ErrorCode.FORBIDDEN;
+  if (status === 404) return ErrorCode.NOT_FOUND;
+  if (status === 429) return ErrorCode.RATE_LIMIT_EXCEEDED;
+  return ErrorCode.INTERNAL_ERROR;
 }
 
 @Catch()
@@ -55,35 +57,46 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
     let status = 500;
     let title = 'Internal Server Error';
     let detail = 'An unexpected error occurred';
-    let code = 'INTERNAL_ERROR';
-    let errors: ProblemDetail['errors'];
-    let contract: ProblemDetail['contract'];
+    let retryable = false;
 
-    if (exception instanceof HttpException) {
+    if (exception instanceof DomainException) {
+      status = 400;
+      code = exception.code;
+      title = exception.code.replace(/_/g, ' ');
+      detail = exception.message;
+      retryable = ErrorTaxonomy[exception.code].retryable;
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exResponse = exception.getResponse();
+      const mappedCode = defaultCode(status);
 
       if (typeof exResponse === 'object' && exResponse !== null) {
         const resp = exResponse as Record<string, any>;
         errors = validationErrors(resp.message);
         title = resp.error || (exception instanceof BadRequestException ? 'Bad Request' : exception.message);
-        detail = resp.detail || (typeof resp.message === 'string' ? resp.message : JSON.stringify(resp.message));
-        code = resp.code || defaultCode(status);
       } else {
         title = exception.message;
-        detail = String(exResponse);
-        code = defaultCode(status);
       }
+      
+      code = mappedCode;
+      detail = ErrorTaxonomy[mappedCode]?.safeMessage || 'An unexpected error occurred.';
+      retryable = ErrorTaxonomy[mappedCode]?.retryable || false;
+
       if (exception instanceof ContractException) {
         title = 'Contract Error';
-        code = exception.code;
-        detail = exception.detail;
+        code = ErrorCode.SETTLEMENT_FAILED;
+        detail = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage;
+        retryable = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].retryable;
         contract = {
           address: exception.contractAddress,
           method: exception.method,
           rawErrorCode: exception.rawErrorCode,
         };
       }
+    } else {
+      code = ErrorCode.INTERNAL_ERROR;
+      detail = ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].safeMessage;
+      retryable = ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].retryable;
     }
 
     const problem: ProblemDetail = {
@@ -95,6 +108,7 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       instance: request.url,
       correlationId: (request as any).correlationId || (request as any).requestId,
       timestamp: new Date().toISOString(),
+      retryable,
     };
     if (errors) problem.errors = errors;
     if (contract) problem.contract = contract;
