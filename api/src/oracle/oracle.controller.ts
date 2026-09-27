@@ -14,6 +14,8 @@ import { ResolveOracleIncidentDto } from './dto/resolve-oracle-incident.dto';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { Permission } from '../auth/rbac';
+import { RequireQuota } from '../common/decorators/quota.decorator';
+import { QuotaResource } from '../common/services/quota.service';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
@@ -41,6 +43,7 @@ export class OracleController {
   ) {}
 
   @Post('reports')
+  @RequireQuota(QuotaResource.SUBMIT_ORACLE_REPORT)
   @HttpCode(HttpStatus.CREATED)
   async submitReport(
     @Body() dto: SubmitReportDto,

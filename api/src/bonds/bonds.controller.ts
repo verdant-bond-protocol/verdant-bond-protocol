@@ -14,6 +14,8 @@ import { KycGuard } from '../common/guards/kyc.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { Permission } from '../auth/rbac';
+import { RequireQuota } from '../common/decorators/quota.decorator';
+import { QuotaResource } from '../common/services/quota.service';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { Idempotent } from '../common/decorators/idempotent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
@@ -38,6 +40,7 @@ export class BondsController {
   @Post()
   @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
   @RequirePermissions(Permission.CREATE_BOND)
+  @RequireQuota(QuotaResource.CREATE_BOND)
   @RequireIntent('create_bond')
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
@@ -166,6 +169,7 @@ export class BondsController {
   @Post(':id/reconcile-holders')
   @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
   @RequirePermissions(Permission.RECONCILE_HOLDERS)
+  @RequireQuota(QuotaResource.RECONCILE_HOLDERS)
   @RequireIntent('reconcile_holders')
   @HttpCode(HttpStatus.OK)
   async reconcileHolders(
