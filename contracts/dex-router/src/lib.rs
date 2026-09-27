@@ -425,6 +425,29 @@ impl DEXRouter {
             .ok_or(DEXError::Overflow)?;
         set_balance(&env, &order.seller, &order.quote_asset, new_seller_balance);
 
+        // #191: checks-effects-interactions — every piece of local state a
+        // reentrant call into this contract could read (escrow, order
+        // status/remaining amount) must be finalized *before* the external
+        // invoke_contract calls below. bond_issuer.transfer() is an
+        // arbitrary cross-contract call from this contract's perspective;
+        // if it (directly or via a further hop) re-entered execute_purchase
+        // for the same order_id while escrow/order.amount still reflected
+        // the pre-fill state, the same escrowed bond tokens could be sold
+        // more than once before this call's own writes ever landed.
+        let new_seller_escrow = seller_escrow - amount;
+        set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
+
+        if amount == order.amount {
+            order.status = OrderStatus::Filled;
+        } else {
+            order.status = OrderStatus::PartiallyFilled;
+            order.amount -= amount;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Order(order_id), &order);
+
         let bond_issuer: Address = env
             .storage()
             .instance()
@@ -448,21 +471,6 @@ impl DEXRouter {
                 seller_bond_nonce.into_val(&env),
             ],
         );
-
-        // Release escrowed tokens on successful fill
-        let new_seller_escrow = seller_escrow - amount;
-        set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
-
-        if amount == order.amount {
-            order.status = OrderStatus::Filled;
-        } else {
-            order.status = OrderStatus::PartiallyFilled;
-            order.amount -= amount;
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
 
         env.events().publish(
             (Symbol::new(&env, "order_filled"),),
