@@ -652,7 +652,7 @@ mod integration {
                 &1,
             );
 
-            contracts.oc_client.verify_report(&admin, &report_id, &2);
+            verify_with_quorum(&env, &contracts.oc_client, &admin, report_id, 2);
             assert_eq!(
                 contracts.oc_client.get_report(&report_id).status,
                 ReportStatus::Verified
@@ -683,11 +683,11 @@ mod integration {
             let blocked = contracts
                 .ce_client
                 .try_distribute_coupon(&admin, &bond_id, &1, &holders, &report_id, &2);
-            assert_eq!(blocked, Err(Ok(BondError::ReportNotVerified)));
+            assert_eq!(blocked, Err(Ok(BondError::ProjectDisputedAndFrozen)));
 
             contracts
                 .oc_client
-                .resolve_challenge(&admin, &report_id, &ReportStatus::Verified, &3);
+                .resolve_challenge(&admin, &report_id, &ReportStatus::Verified, &4);
             assert_eq!(
                 contracts.oc_client.get_report(&report_id).status,
                 ReportStatus::Verified

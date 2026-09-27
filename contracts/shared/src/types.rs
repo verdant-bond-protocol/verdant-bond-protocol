@@ -133,3 +133,36 @@ pub enum ReportStatus {
     Challenged,
     Rejected,
 }
+
+/// Periodic CarbonChain audit true-up adjustment applied forward to next coupon period (#194).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct TrueUpAdjustment {
+    pub bond_id: u64,
+    pub period_index: u32,
+    pub adjustment_amount: i128,
+    pub reason: Symbol,
+    pub ipfs_evidence_hash: BytesN<32>,
+    pub timestamp: u64,
+    pub applied: bool,
+}
+
+/// Per-project staleness config with tiered fallback thresholds (#192).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct ProjectStalenessConfig {
+    pub threshold1_secs: u64,
+    pub threshold2_secs: u64,
+    pub conservatism_discount_bps: u64,
+}
+
+/// Observability view for project oracle staleness status (#192).
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct StalenessState {
+    pub project_id: BytesN<32>,
+    pub last_report_timestamp: u64,
+    pub current_tier: u32,
+    pub time_elapsed: u64,
+    pub discount_bps: u64,
+}

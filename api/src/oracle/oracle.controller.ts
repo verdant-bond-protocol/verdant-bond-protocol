@@ -133,6 +133,11 @@ export class OracleController {
     return this.monitoringService.computeStaleness();
   }
 
+  @Get('staleness/:projectId')
+  async getProjectStalenessState(@Param('projectId') projectId: string) {
+    return this.oracleService.getProjectStalenessState(projectId);
+  }
+
   @Get('monitoring/anomalies')
   @Header('Cache-Control', 'no-cache')
   async anomalies(): Promise<OracleAnomalyReport> {

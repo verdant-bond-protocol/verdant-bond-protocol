@@ -598,6 +598,31 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
     }
   }
 
+  async getProjectStalenessState(projectId: string): Promise<{
+    projectId: string;
+    lastReportTimestamp: number;
+    currentTier: number;
+    timeElapsed: number;
+    discountBps: number;
+  }> {
+    const scVal = await this.contractService.simulateCall({
+      contractAddress: this.configService.getOracleConsumerAddress(),
+      method: 'get_project_staleness_state',
+      args: [
+        this.toBytes32(projectId),
+        nativeToScVal(BigInt(Math.floor(Date.now() / 1000)), { type: 'u64' }),
+      ],
+    });
+    const data = scValToNative(scVal) as any;
+    return {
+      projectId: this.field(data, 'project_id', 0) ?? projectId,
+      lastReportTimestamp: Number(this.field(data, 'last_report_timestamp', 1) ?? 0),
+      currentTier: Number(this.field(data, 'current_tier', 2) ?? 0),
+      timeElapsed: Number(this.field(data, 'time_elapsed', 3) ?? 0),
+      discountBps: Number(this.field(data, 'discount_bps', 4) ?? 0),
+    };
+  }
+
   private getAdminSecret(): string {
     return this.signingKeys.adminSecret();
   }
