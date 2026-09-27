@@ -15,6 +15,7 @@
     "seed:reset": "ts-node scripts/seed.ts --reset",
     "reindex-holders": "ts-node scripts/reindex-holders.ts",
     "validate:recovery": "ts-node scripts/validate-recovery.ts",
+    "diagnostics": "ts-node scripts/diagnostics.ts",
     "mutate": "stryker-run",
     "test:mutate": "stryker-run --reporter=progress --threshold=50"
   },
