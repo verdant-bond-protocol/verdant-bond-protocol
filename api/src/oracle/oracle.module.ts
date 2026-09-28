@@ -24,6 +24,9 @@ import { BlueCarbonProvider } from './providers/blue-carbon.provider';
     SatelliteProvider,
     BlueCarbonProvider,
   ],
-  exports: [OracleService, OracleMonitoringService, GracePeriodService],
+  // OracleIncidentRepository is exported so the public status feed
+  // (StatusModule, issue #303) can read incident state without duplicating
+  // its query logic.
+  exports: [OracleService, OracleMonitoringService, GracePeriodService, OracleIncidentRepository],
 })
 export class OracleModule {}

@@ -28,6 +28,9 @@ import { ImpersonationModule } from './impersonation/impersonation.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { FailuresModule } from './failures/failures.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { FeesModule } from './fees/fees.module';
+import { AuthorizationsModule } from './authorizations/authorizations.module';
+import { StatusModule } from './status/status.module';
 
 @Module({
   imports: [
@@ -52,6 +55,9 @@ import { NotificationsModule } from './notifications/notifications.module';
     InvitationsModule,
     FailuresModule,
     NotificationsModule,
+    FeesModule,
+    AuthorizationsModule,
+    StatusModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },

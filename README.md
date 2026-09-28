@@ -827,13 +827,23 @@ What gets seeded (all values are stable and repeatable across runs):
 | --------------- | -------------------------------------------------------------------------- |
 | Users/roles     | 4 users covering admin, developer, investor, oracle-provider               |
 | Projects        | 6 projects spanning every status and 4 credit methodologies                |
-| Bonds           | 8 bonds across Active/Matured and all credit types                          |
+| Bonds           | 9 bonds across Active/Matured/**Defaulted** and all credit types           |
 | Marketplace     | 6 orders covering every order status                                        |
-| Oracle reports  | 10 reports (9 plus a pending/stale case) across all report statuses         |
+| Oracle reports  | 11 reports across all report statuses, including one anchored to "now" so it is unambiguously overdue |
+| Authorizations  | 3 delegated grants: active, expired-but-uncleaned, and revoked             |
 
 The seed is idempotent (guarded by a `seed:verdant:marker` Redis key) and never
 duplicates or clobbers unrelated keys. See `api/src/seed/fixtures.ts` for the
 data and `api/scripts/seed.ts` for the CLI entry point.
+
+**Edge cases covered for contributor testing** (issue #304): a **failed
+settlement** (the Defaulted bond), **revoked access** (the revoked
+authorization grant), an **overdue workflow** (the oracle report anchored to
+`now` rather than the fixed fixture date), and **historical records** (the
+matured legacy bond, created years before the fixture's anchor date). A
+dedicated test suite, `api/src/seed/fixtures.consistency.spec.ts`, checks the
+dataset's internal consistency (no dangling foreign ids, no duplicate ids,
+correctly ordered timestamps) and that it is byte-identical across two builds.
 
 ---
 

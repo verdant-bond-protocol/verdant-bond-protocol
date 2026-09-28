@@ -103,12 +103,26 @@ export interface SeedUser {
   name: string;
 }
 
+/** Edge-case fixture for issue #302's authorization grant/expiry/renewal flow. */
+export interface SeedAuthorization {
+  id: string;
+  subjectAddress: number;
+  scope: string;
+  grantedBy: number;
+  grantedAt: number;
+  expiresAt: number;
+  status: 'active' | 'expired' | 'revoked';
+  revokedAt?: number;
+  revokedBy?: number;
+}
+
 export interface SeedDataset {
   users: SeedUser[];
   projects: SeedProject[];
   bonds: SeedBond[];
   orders: SeedOrder[];
   oracleReports: SeedOracleReport[];
+  authorizations: SeedAuthorization[];
 }
 
 /**
@@ -116,13 +130,29 @@ export interface SeedDataset {
  *
  * - 4 users covering every role.
  * - 6 projects spanning all project statuses and 4 credit methodologies.
- * - 8 bonds spanning Active/Matured and all credit types.
+ * - 9 bonds spanning Active/Matured/**Defaulted** and all credit types — bond
+ *   9 is the **failed-settlement** edge case (issue #304).
  * - 6 marketplace orders spanning every order status.
- * - 10 oracle reports covering all report statuses, including a stale pending
- *   report so the monitoring view has something to surface.
+ * - 11 oracle reports covering all report statuses: 10 anchored to the fixed
+ *   `BASE_TS` story, plus report 11, anchored to `now` minus a long window,
+ *   as the **overdue-workflow** edge case — still `Pending` well past when a
+ *   report would normally be expected.
+ * - 3 authorization grants (issue #302's grant/expiry/renewal model) covering
+ *   active, expired-but-uncleaned, and the **revoked-access** edge case.
+ * - Bond 5 ("Legacy Amazon Bond (Matured)") is the **historical-records** edge
+ *   case: a matured bond created years before the fixture's anchor date.
+ *
+ * Every id, timestamp, and derived value is either a fixed constant or a
+ * single `now` captured once at the top of this function, so two calls in
+ * the same process produce byte-identical output (see `seed.service.spec.ts`).
  */
 export function buildSeedDataset(): SeedDataset {
-  const now = Date.now();
+  // Rounded to the second (issue #304): several fixtures below derive
+  // timestamps from `now` directly as numbers (not just via `.toISOString()`,
+  // which already truncates to the second). Two calls to this function
+  // milliseconds apart — as the determinism tests make — must still produce
+  // byte-identical output, which a raw `Date.now()` cannot guarantee.
+  const now = Math.floor(Date.now() / 1000) * 1000;
 
   const users: SeedUser[] = [
     { id: 1, address: 1, role: 'admin', name: 'Protocol Admin' },
@@ -226,6 +256,14 @@ export function buildSeedDataset(): SeedDataset {
       creditType: 'Biodiversity', maturityDate: BASE_TS + 365 * DAY * 6, maturityStatus: 'Active',
       totalSupply: 2000, totalSubscribed: 2000, status: 'Active', couponRate: 0.04, createdAt: BASE_TS + DAY * 100,
     },
+    {
+      // Failed-settlement edge case (issue #304): a coupon distribution
+      // failed to settle, so the bond is marked Defaulted rather than Active.
+      // Matured (past its maturityDate) so no further coupons are expected.
+      id: 9, projectId: 6, name: 'Kenya Grazing Bond (Defaulted)', faceValue: 180_000, couponSchedule: coupons(2),
+      creditType: 'Carbon', maturityDate: now - DAY * 10, maturityStatus: 'Matured',
+      totalSupply: 1800, totalSubscribed: 1800, status: 'Defaulted', couponRate: 0.07, createdAt: BASE_TS + DAY * 205,
+    },
   ];
 
   const mappedBonds = bonds.map((b) => ({
@@ -254,6 +292,21 @@ export function buildSeedDataset(): SeedDataset {
     { id: 8, projectId: 1, periodStart: BASE_TS + DAY * 300, periodEnd: BASE_TS + DAY * 330, carbonSequestered: 1355, methodology: 'VERRA-VCS', ipfsHash: 'QmRpt8', providerAddress: 4, status: 'Pending', createdAt: BASE_TS + DAY * 331 },
     { id: 9, projectId: 2, periodStart: BASE_TS + DAY * 320, periodEnd: BASE_TS + DAY * 350, carbonSequestered: 1011, methodology: 'Plan Vivo', ipfsHash: 'QmRpt9', providerAddress: 4, status: 'Verified', createdAt: BASE_TS + DAY * 351, verifiedAt: BASE_TS + DAY * 352 },
     { id: 10, projectId: 3, periodStart: BASE_TS + DAY * 340, periodEnd: BASE_TS + DAY * 370, carbonSequestered: 298, methodology: 'CCBS', ipfsHash: 'QmRpt10', providerAddress: 4, status: 'Pending', createdAt: BASE_TS + DAY * 371 },
+    // Overdue-workflow edge case (issue #304): still Pending long after the
+    // period it covers ended, anchored to `now` (not BASE_TS) so it reads as
+    // overdue regardless of when the seed is applied.
+    { id: 11, projectId: 4, periodStart: now - DAY * 400, periodEnd: now - DAY * 370, carbonSequestered: 1560, methodology: 'Gold Standard', ipfsHash: 'QmRpt11', providerAddress: 4, status: 'Pending', createdAt: now - DAY * 369 },
+  ];
+
+  const authorizations: SeedAuthorization[] = [
+    // Active: still within its window.
+    { id: 'seed-auth-active', subjectAddress: 2, scope: 'covenant:report:BOND-1', grantedBy: 1, grantedAt: now - DAY * 5, expiresAt: now + DAY * 25, status: 'active' },
+    // Expired-but-uncleaned: past its expiry, but the fixture records it as
+    // still `active` — exercising the "expired before cleanup runs" case the
+    // authorization service's `effectiveStatus`/`cleanupExpired` distinguish.
+    { id: 'seed-auth-expired', subjectAddress: 3, scope: 'covenant:vote:BOND-2', grantedBy: 1, grantedAt: now - DAY * 60, expiresAt: now - DAY * 5, status: 'active' },
+    // Revoked-access edge case: explicitly withdrawn before its natural expiry.
+    { id: 'seed-auth-revoked', subjectAddress: 4, scope: 'oracle:submit:PROJECT-3', grantedBy: 1, grantedAt: now - DAY * 40, expiresAt: now + DAY * 20, status: 'revoked', revokedAt: now - DAY * 10, revokedBy: 1 },
   ];
 
   return {
@@ -262,6 +315,7 @@ export function buildSeedDataset(): SeedDataset {
     bonds: mappedBonds,
     orders,
     oracleReports,
+    authorizations,
   };
 }
 

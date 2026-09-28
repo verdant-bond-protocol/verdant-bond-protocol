@@ -11,20 +11,6 @@ import { IntentGuard } from './guards/intent.guard';
 import { IdempotencyService } from './services/idempotency.service';
 import { SearchIndexService } from './search/search-index.service';
 import { EnvConfigValidator } from './config/env-config.validator';
-
-@Global()
-@Module({
-  controllers: [RedisHealthController],
-  providers: [
-    NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService,
-    HolderIndexService, IntentService, IntentGuard, IdempotencyService,
-    SearchIndexService, EnvConfigValidator,
-  ],
-  exports: [
-    NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService,
-    HolderIndexService, IntentService, IntentGuard, IdempotencyService,
-    SearchIndexService, EnvConfigValidator,
-  ],
 import { TelemetryService } from './services/telemetry.service';
 import { TelemetryInterceptor } from './interceptors/telemetry.interceptor';
 import { QuotaService } from './services/quota.service';
@@ -38,7 +24,7 @@ import { QuotaController } from './quota.controller';
 @Module({
   imports: [StellarModule],
   controllers: [RedisHealthController, QuotaController],
-  providers: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor, QuotaService, QuotaGuard],
-  exports: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor, QuotaService, QuotaGuard],
+  providers: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor, QuotaService, QuotaGuard, SearchIndexService, EnvConfigValidator],
+  exports: [NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService, HolderIndexService, IntentService, IntentGuard, IdempotencyService, TelemetryService, TelemetryInterceptor, QuotaService, QuotaGuard, SearchIndexService, EnvConfigValidator],
 })
 export class CommonModule {}
