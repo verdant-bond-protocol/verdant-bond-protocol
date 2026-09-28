@@ -17,7 +17,7 @@ actions that can resolve it.
 - **Staleness**: an open failure older than `staleAfterMs` (default 24 h) is
   flagged `stale: true` on the board; resolved failures never count as stale.
 - **Secret hygiene**: `record()` deep-scrubs the metadata — any key matching
-  `secret|password|private_key|privateKey|seed|mnemonic|token|apikey` is
+  `secret|password|passphrase|private_key|privateKey|seed|mnemonic|token|apikey` is
   replaced with `[redacted]` before storage, so the dashboard can be shared
   without leaking credentials.
 
@@ -42,6 +42,17 @@ actions that can resolve it.
 | `POST …/:id/retry` | mark a retry attempt (bumps counter, `retrying`) |
 | `POST …/:id/resolve` | resolve with a note |
 | `POST …/:id/ignore` | manually ignore with a note |
+| `GET …/trends` | export bucketed operational metrics as JSON or CSV |
+| `GET …/dependencies` | build a cross-resource dependency graph for impact analysis |
+| `GET …/rejections/:code/explanation` | return a user-facing rejected-operation explanation |
+
+The dashboard route accepts maintainer queue filters:
+`operationType`, `status`, `severity`, `retryable`, `externalRef`, `text`,
+`staleOnly`, `minRetryCount`, `createdAfter`, and `createdBefore`.
+`GET …/trends` accepts `bucketMs`, `from`, `to`, and `format=json|csv`.
+Dependency graph edges are derived from metadata `dependsOn` entries; pass
+`rootId` to focus impact analysis on one operation, external reference, or
+resource id.
 
 ## Design decisions & tradeoffs
 
@@ -49,7 +60,14 @@ actions that can resolve it.
   the dashboard reflects the live process. Durable history can back the same
   interface later.
 - **Grouping server-side** keeps the board a single request for operators;
-  filters (`operationType`, `status`, `retryable`) are available on `list`.
+  advanced filters cover operation type, status, severity, retryability,
+  external reference, text, retry count, staleness and creation window.
+- **Dependency graph** uses explicit `metadata.dependsOn` references rather
+  than guessing relationships from free-form text. This keeps impact analysis
+  deterministic and makes producers responsible for recording resource links.
+- **Trend exports** are bucketed from recorded failure timestamps, so the
+  same data can feed dashboards, incident reviews and financial/operational
+  metric exports without exposing per-user secrets.
 - **Retry marking is bookkeeping only**: `markRetried` records the attempt so
   repeat submissions are visible; the actual re-drive stays with the owning
   worker/integration, which is the component that knows the operation.
@@ -60,8 +78,8 @@ actions that can resolve it.
 
 `api/src/failures/partial-failure.service.spec.ts` covers secret scrubbing,
 grouping with severity/retryability counts, staleness vs. resolution, the
-retry counter flow, resolution and manual ignore — the stale, retryable,
-resolved and manually-ignored cases from the acceptance criteria.
+retry counter flow, resolution, manual ignore, advanced filters, dependency
+graphs, rejection explanations and trend exports.
 
 ```bash
 pnpm --filter api test -- partial-failure

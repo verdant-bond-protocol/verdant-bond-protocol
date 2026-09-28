@@ -1,5 +1,12 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { PartialFailure, PartialFailureDashboard } from './partial-failure.interface';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  DependencyGraph,
+  FailureTrendExport,
+  PartialFailure,
+  PartialFailureDashboard,
+  PartialFailureListFilter,
+  RejectedOperationExplanation,
+} from './partial-failure.interface';
 import { PartialFailureService } from './partial-failure.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../../common/guards/admin.guard';
@@ -18,9 +25,48 @@ export class PartialFailureController {
   /** Grouped maintainer view (age, severity, retryability, links). */
   @Get()
   dashboard(
-    @Body() body: { staleAfterMs?: number } = {},
+    @Query() query: PartialFailureListFilter & { staleAfterMs?: string } = {},
   ): PartialFailureDashboard {
-    return this.failures.dashboard({ staleAfterMs: body.staleAfterMs });
+    return this.failures.dashboard({
+      staleAfterMs: query.staleAfterMs ? Number(query.staleAfterMs) : undefined,
+      filter: {
+        operationType: query.operationType,
+        status: query.status,
+        severity: query.severity,
+        retryable: query.retryable === undefined ? undefined : query.retryable === true || String(query.retryable) === 'true',
+        externalRef: query.externalRef,
+        text: query.text,
+        staleOnly: query.staleOnly === undefined ? undefined : query.staleOnly === true || String(query.staleOnly) === 'true',
+        minRetryCount: query.minRetryCount === undefined ? undefined : Number(query.minRetryCount),
+        createdAfter: query.createdAfter,
+        createdBefore: query.createdBefore,
+      },
+    });
+  }
+
+  @Get('trends')
+  trends(
+    @Query() query: { bucketMs?: string; format?: 'json' | 'csv'; from?: string; to?: string } = {},
+  ): FailureTrendExport {
+    return this.failures.trendExport({
+      bucketMs: query.bucketMs ? Number(query.bucketMs) : undefined,
+      format: query.format,
+      from: query.from ? Date.parse(query.from) : undefined,
+      to: query.to ? Date.parse(query.to) : undefined,
+    });
+  }
+
+  @Get('dependencies')
+  dependencies(@Query('rootId') rootId?: string): DependencyGraph {
+    return this.failures.dependencyGraph(rootId);
+  }
+
+  @Get('rejections/:code/explanation')
+  explainRejectedOperation(
+    @Param('code') code: string,
+    @Query('supportReference') supportReference?: string,
+  ): RejectedOperationExplanation {
+    return this.failures.explainRejectedOperation(code, { supportReference });
   }
 
   @Get(':id')

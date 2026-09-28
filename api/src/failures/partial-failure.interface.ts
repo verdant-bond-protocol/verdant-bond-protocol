@@ -45,6 +45,19 @@ export interface PartialFailureInput {
   now?: number;
 }
 
+export interface PartialFailureListFilter {
+  operationType?: string;
+  status?: PartialFailureStatus;
+  severity?: PartialFailureSeverity;
+  retryable?: boolean;
+  externalRef?: string;
+  text?: string;
+  staleOnly?: boolean;
+  minRetryCount?: number;
+  createdAfter?: string;
+  createdBefore?: string;
+}
+
 export interface PartialFailureLinks {
   retry?: string;
   inspect: string;
@@ -67,6 +80,54 @@ export interface PartialFailureDashboard {
   unresolved: number;
   staleAfterMs: number;
   groups: PartialFailureGroup[];
+}
+
+export interface DependencyGraphNode {
+  id: string;
+  kind: string;
+  label: string;
+  status?: PartialFailureStatus;
+  severity?: PartialFailureSeverity;
+}
+
+export interface DependencyGraphEdge {
+  from: string;
+  to: string;
+  relation: string;
+}
+
+export interface DependencyGraph {
+  generatedAt: string;
+  nodes: DependencyGraphNode[];
+  edges: DependencyGraphEdge[];
+  impactedFailures: string[];
+}
+
+export interface RejectedOperationExplanation {
+  code: string;
+  title: string;
+  userMessage: string;
+  nextActions: string[];
+  retryable: boolean;
+  supportReference?: string;
+}
+
+export interface FailureTrendBucket {
+  bucketStart: string;
+  bucketEnd: string;
+  total: number;
+  unresolved: number;
+  retryable: number;
+  bySeverity: Record<PartialFailureSeverity, number>;
+  byStatus: Record<PartialFailureStatus, number>;
+}
+
+export interface FailureTrendExport {
+  generatedAt: string;
+  format: 'json' | 'csv';
+  bucketMs: number;
+  buckets: FailureTrendBucket[];
+  csv?: string;
 }
 
 export const DEFAULT_STALE_AFTER_MS = 24 * 60 * 60 * 1000;

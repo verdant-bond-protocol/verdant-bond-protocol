@@ -41,6 +41,7 @@ describe('PartialFailureService (#266)', () => {
       expect(failure.metadata).toEqual({
         walletAddress: 'GUSER',
         passphrase: '[redacted]',
+        privateKey: '[redacted]',
         apiToken: '[redacted]',
         nested: { seedPhrase: '[redacted]', ledger: 4_000 },
       });
@@ -148,6 +149,110 @@ describe('PartialFailureService (#266)', () => {
       const retryable = service.list({ retryable: true }, NOW);
       expect(retryable).toHaveLength(1);
       expect(retryable[0].operationType).toBe('oracle.ingestion');
+    });
+  });
+
+  describe('maintainer queue filtering (#305)', () => {
+    it('filters by severity, free text, retry count, external reference and stale state', () => {
+      const old = record({
+        externalRef: 'tx_old',
+        severity: 'critical',
+        metadata: { dependsOn: ['bond:7'], note: 'coupon payout' },
+      }, NOW - DAY - 1);
+      service.markRetried(old.id, NOW - DAY);
+      record({
+        externalRef: 'tx_new',
+        severity: 'warning',
+        metadata: { note: 'oracle projection' },
+      });
+
+      const filtered = service.list({
+        severity: 'critical',
+        text: 'coupon',
+        minRetryCount: 1,
+        externalRef: 'tx_old',
+        staleOnly: true,
+      }, NOW);
+
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].id).toBe(old.id);
+    });
+
+    it('applies filters to the grouped dashboard', () => {
+      record({ operationType: 'stellar.settlement' });
+      record({ operationType: 'oracle.ingestion' });
+
+      const board = service.dashboard({
+        now: NOW,
+        filter: { operationType: 'oracle.ingestion' },
+      });
+
+      expect(board.groups).toHaveLength(1);
+      expect(board.groups[0].operationType).toBe('oracle.ingestion');
+    });
+  });
+
+  describe('dependency graph impact analysis (#306)', () => {
+    it('builds an operation, failure and resource graph from failure metadata', () => {
+      const failure = record({
+        operationType: 'coupon.distribution',
+        externalRef: 'tx_coupon',
+        metadata: { dependsOn: ['bond:42', 'oracle:report-9'] },
+      });
+
+      const graph = service.dependencyGraph('bond:42', NOW);
+
+      expect(graph.impactedFailures).toEqual([failure.id]);
+      expect(graph.nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+        `failure:${failure.id}`,
+        'operation:coupon.distribution',
+        'resource:bond:42',
+        'resource:oracle:report-9',
+        'external:tx_coupon',
+      ]));
+      expect(graph.edges).toEqual(expect.arrayContaining([
+        { from: `failure:${failure.id}`, to: 'resource:bond:42', relation: 'depends_on' },
+      ]));
+    });
+  });
+
+  describe('rejected operation explanations (#309)', () => {
+    it('returns a user-facing explanation and next actions for known rejection codes', () => {
+      const explanation = service.explainRejectedOperation('insufficient_balance', {
+        supportReference: 'support-123',
+      });
+
+      expect(explanation.title).toBe('Insufficient balance');
+      expect(explanation.userMessage).not.toMatch(/exception|stack|internal/i);
+      expect(explanation.nextActions.length).toBeGreaterThan(1);
+      expect(explanation.retryable).toBe(true);
+      expect(explanation.supportReference).toBe('support-123');
+    });
+
+    it('falls back to a safe generic explanation for unknown rejection codes', () => {
+      const explanation = service.explainRejectedOperation('contract_error_7');
+
+      expect(explanation.code).toBe('contract_error_7');
+      expect(explanation.retryable).toBe(false);
+      expect(explanation.userMessage).toContain('rejected');
+    });
+  });
+
+  describe('historical trend export (#310)', () => {
+    it('exports bucketed operational metrics as JSON and CSV', () => {
+      const first = record({ severity: 'critical' }, NOW);
+      const second = record({ severity: 'info', retryable: false }, NOW + DAY + 1);
+      service.resolve(second.id, 'done', NOW + DAY + 2);
+
+      const json = service.trendExport({ bucketMs: DAY, now: NOW + DAY + 3 });
+      expect(json.buckets).toHaveLength(2);
+      expect(json.buckets[0].total).toBe(1);
+      expect(json.buckets[0].bySeverity.critical).toBe(1);
+      expect(json.buckets[1].byStatus.resolved).toBe(1);
+
+      const csv = service.trendExport({ bucketMs: DAY, format: 'csv', now: NOW + DAY + 3 });
+      expect(csv.csv).toContain('bucketStart,bucketEnd,total');
+      expect(csv.csv).toContain(first.createdAt.slice(0, 10));
     });
   });
 });

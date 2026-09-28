@@ -1,13 +1,17 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
   DEFAULT_STALE_AFTER_MS,
+  DependencyGraph,
+  FailureTrendExport,
+  PartialFailureListFilter,
   PartialFailure,
   PartialFailureDashboard,
   PartialFailureGroup,
   PartialFailureInput,
   PartialFailureLinks,
   PartialFailureStatus,
+  RejectedOperationExplanation,
 } from './partial-failure.interface';
 
 /** Remediation docs per operation kind — the "manual remediation" links. */
@@ -27,7 +31,7 @@ function remediationDoc(operationType: string): string {
  * case-insensitive on the whole key name.
  */
 const SECRET_KEY_PATTERN =
-  /secret|password|privatekey|private_key|seed|mnemonic|token|apikey|api_key/i;
+  /secret|password|passphrase|privatekey|private_key|seed|mnemonic|token|apikey|api_key/i;
 
 function scrub(value: unknown, depth = 0): unknown {
   if (depth > 6) return '[truncated]';
@@ -51,7 +55,7 @@ export class PartialFailureService {
   private readonly logger = new Logger(PartialFailureService.name);
   private readonly failures = new Map<string, PartialFailure>();
 
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(@Optional() private readonly notificationsService?: NotificationsService) {}
 
   /**
    * Record a partially completed operation. Metadata is deep-scrubbed so
@@ -83,7 +87,7 @@ export class PartialFailureService {
     });
 
     if (failure.severity === 'warning' || failure.severity === 'critical') {
-      this.notificationsService.createNotification({
+      this.notificationsService?.createNotification({
         userId: 'admin', // assuming this is a system admin notification
         type: 'PARTIAL_FAILURE',
         message: `Partial failure in ${failure.operationType}: ${failure.message}`,
@@ -150,14 +154,25 @@ export class PartialFailureService {
   }
 
   list(
-    filter: { operationType?: string; status?: PartialFailureStatus; retryable?: boolean } = {},
+    filter: PartialFailureListFilter = {},
     now: number = Date.now(),
   ): PartialFailure[] {
     const result: PartialFailure[] = [];
     for (const failure of this.failures.values()) {
       if (filter.operationType && failure.operationType !== filter.operationType) continue;
       if (filter.status && failure.status !== filter.status) continue;
+      if (filter.severity && failure.severity !== filter.severity) continue;
       if (filter.retryable !== undefined && failure.retryable !== filter.retryable) continue;
+      if (filter.externalRef && failure.externalRef !== filter.externalRef) continue;
+      if (filter.minRetryCount !== undefined && failure.retryCount < filter.minRetryCount) continue;
+      if (filter.createdAfter && Date.parse(failure.createdAt) < Date.parse(filter.createdAfter)) continue;
+      if (filter.createdBefore && Date.parse(failure.createdAt) > Date.parse(filter.createdBefore)) continue;
+      if (filter.staleOnly && now - Date.parse(failure.createdAt) < DEFAULT_STALE_AFTER_MS) continue;
+      if (filter.text) {
+        const needle = filter.text.toLowerCase();
+        const haystack = `${failure.operationType} ${failure.externalRef ?? ''} ${failure.message} ${JSON.stringify(failure.metadata)}`.toLowerCase();
+        if (!haystack.includes(needle)) continue;
+      }
       result.push(failure);
     }
     return result;
@@ -169,13 +184,13 @@ export class PartialFailureService {
    * retry/inspect/remediation links — no secrets.
    */
   dashboard(
-    opts: { staleAfterMs?: number; now?: number } = {},
+    opts: { staleAfterMs?: number; now?: number; filter?: PartialFailureListFilter } = {},
   ): PartialFailureDashboard {
     const now = opts.now ?? Date.now();
     const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
 
     const byType = new Map<string, PartialFailure[]>();
-    for (const failure of this.failures.values()) {
+    for (const failure of this.list(opts.filter ?? {}, now)) {
       if (failure.status === 'ignored') continue; // manually ignored: documented decision
       const bucket = byType.get(failure.operationType) ?? [];
       bucket.push(failure);
@@ -231,6 +246,171 @@ export class PartialFailureService {
         : undefined,
       inspect: `GET /api/v1/operations/failures/${failure.id}`,
       remediationDoc: remediationDoc(failure.operationType),
+    };
+  }
+
+  explainRejectedOperation(code: string, context: Record<string, unknown> = {}): RejectedOperationExplanation {
+    const normalized = String(code || 'unknown').toLowerCase();
+    const known: Record<string, Omit<RejectedOperationExplanation, 'supportReference'>> = {
+      kyc_required: {
+        code: 'kyc_required',
+        title: 'Identity verification is required',
+        userMessage: 'This operation cannot continue until the account completes identity verification.',
+        nextActions: ['Complete verification from account settings.', 'Retry the operation after verification is approved.'],
+        retryable: true,
+      },
+      insufficient_balance: {
+        code: 'insufficient_balance',
+        title: 'Insufficient balance',
+        userMessage: 'The wallet does not have enough spendable balance for this operation and network fees.',
+        nextActions: ['Add funds to the wallet.', 'Confirm no pending operation is reserving the same balance.', 'Retry after the ledger reflects the new balance.'],
+        retryable: true,
+      },
+      policy_denied: {
+        code: 'policy_denied',
+        title: 'Operation rejected by policy',
+        userMessage: 'A protocol policy prevented this request from being accepted.',
+        nextActions: ['Review the request details.', 'Contact support if the policy result looks incorrect.'],
+        retryable: false,
+      },
+    };
+    const explanation = known[normalized] ?? {
+      code: normalized || 'unknown',
+      title: 'Operation rejected',
+      userMessage: 'The operation was rejected before it could be submitted.',
+      nextActions: ['Review the request details.', 'Retry only after correcting the highlighted issue.'],
+      retryable: false,
+    };
+
+    return {
+      ...explanation,
+      supportReference: typeof context.supportReference === 'string'
+        ? context.supportReference
+        : undefined,
+    };
+  }
+
+  dependencyGraph(rootId?: string, now: number = Date.now()): DependencyGraph {
+    const nodes = new Map<string, DependencyGraph['nodes'][number]>();
+    const edges: DependencyGraph['edges'] = [];
+    const impactedFailures = new Set<string>();
+
+    const addNode = (id: string, kind: string, label: string, failure?: PartialFailure) => {
+      if (!nodes.has(id)) {
+        nodes.set(id, {
+          id,
+          kind,
+          label,
+          status: failure?.status,
+          severity: failure?.severity,
+        });
+      }
+    };
+
+    for (const failure of this.failures.values()) {
+      const failureNode = `failure:${failure.id}`;
+      addNode(failureNode, 'failure', failure.message, failure);
+      const operationNode = `operation:${failure.operationType}`;
+      addNode(operationNode, 'operation', failure.operationType);
+      edges.push({ from: operationNode, to: failureNode, relation: 'has_failure' });
+
+      if (failure.externalRef) {
+        const externalNode = `external:${failure.externalRef}`;
+        addNode(externalNode, 'external_ref', failure.externalRef);
+        edges.push({ from: failureNode, to: externalNode, relation: 'references' });
+      }
+
+      const dependencies = Array.isArray(failure.metadata?.dependsOn)
+        ? failure.metadata.dependsOn
+        : [];
+      for (const dependency of dependencies) {
+        const dependencyId = String(dependency);
+        const dependencyNode = `resource:${dependencyId}`;
+        addNode(dependencyNode, 'resource', dependencyId);
+        edges.push({ from: failureNode, to: dependencyNode, relation: 'depends_on' });
+        if (!rootId || dependencyNode === rootId || dependencyId === rootId) {
+          impactedFailures.add(failure.id);
+        }
+      }
+
+      if (!rootId || failureNode === rootId || operationNode === rootId || failure.externalRef === rootId) {
+        impactedFailures.add(failure.id);
+      }
+    }
+
+    return {
+      generatedAt: new Date(now).toISOString(),
+      nodes: [...nodes.values()],
+      edges,
+      impactedFailures: [...impactedFailures],
+    };
+  }
+
+  trendExport(opts: {
+    bucketMs?: number;
+    format?: 'json' | 'csv';
+    from?: number;
+    to?: number;
+    now?: number;
+  } = {}): FailureTrendExport {
+    const bucketMs = opts.bucketMs ?? 24 * 60 * 60 * 1000;
+    const format = opts.format ?? 'json';
+    const now = opts.now ?? Date.now();
+    const failures = [...this.failures.values()].filter((failure) => {
+      const created = Date.parse(failure.createdAt);
+      if (opts.from !== undefined && created < opts.from) return false;
+      if (opts.to !== undefined && created > opts.to) return false;
+      return true;
+    });
+
+    const buckets = new Map<number, FailureTrendExport['buckets'][number]>();
+    for (const failure of failures) {
+      const created = Date.parse(failure.createdAt);
+      const start = Math.floor(created / bucketMs) * bucketMs;
+      const bucket = buckets.get(start) ?? {
+        bucketStart: new Date(start).toISOString(),
+        bucketEnd: new Date(start + bucketMs).toISOString(),
+        total: 0,
+        unresolved: 0,
+        retryable: 0,
+        bySeverity: { info: 0, warning: 0, critical: 0 },
+        byStatus: { open: 0, retrying: 0, resolved: 0, ignored: 0 },
+      };
+      bucket.total += 1;
+      if (failure.status !== 'resolved' && failure.status !== 'ignored') bucket.unresolved += 1;
+      if (failure.retryable) bucket.retryable += 1;
+      bucket.bySeverity[failure.severity] += 1;
+      bucket.byStatus[failure.status] += 1;
+      buckets.set(start, bucket);
+    }
+
+    const sorted = [...buckets.entries()].sort(([a], [b]) => a - b).map(([, bucket]) => bucket);
+    const csv = format === 'csv'
+      ? [
+          'bucketStart,bucketEnd,total,unresolved,retryable,info,warning,critical,open,retrying,resolved,ignored',
+          ...sorted.map((bucket) => [
+            bucket.bucketStart,
+            bucket.bucketEnd,
+            bucket.total,
+            bucket.unresolved,
+            bucket.retryable,
+            bucket.bySeverity.info,
+            bucket.bySeverity.warning,
+            bucket.bySeverity.critical,
+            bucket.byStatus.open,
+            bucket.byStatus.retrying,
+            bucket.byStatus.resolved,
+            bucket.byStatus.ignored,
+          ].join(',')),
+        ].join('\n')
+      : undefined;
+
+    return {
+      generatedAt: new Date(now).toISOString(),
+      format,
+      bucketMs,
+      buckets: sorted,
+      csv,
     };
   }
 
