@@ -33,10 +33,10 @@ export function validateForOnChain(report: OracleReport): void {
   }
 
   // 3. Methodology format matches Soroban Symbol constraints
-  // A Soroban Symbol can be at most 32 characters long, containing only a-zA-Z0-9_
-  if (!/^[a-zA-Z0-9_]{1,32}$/.test(report.methodology)) {
+  // A Soroban Symbol can be at most 32 characters long, containing only a-zA-Z0-9_-
+  if (!/^[a-zA-Z0-9_-]{1,32}$/.test(report.methodology)) {
     throw new OracleValidationError(
-      `Invalid methodology: must be a valid Soroban Symbol (1-32 chars, a-z, A-Z, 0-9, _), got "${report.methodology}"`
+      `Invalid methodology: must be a valid Soroban Symbol (1-32 chars, a-z, A-Z, 0-9, _, -), got "${report.methodology}"`
     );
   }
 

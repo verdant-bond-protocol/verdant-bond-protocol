@@ -567,7 +567,7 @@ The standalone adapters in `oracle/` poll real upstream endpoints, validate ever
 | IoT            | `oracle/iot-aggregator.ts`      | `IOT_API_URL` (in-situ soil sensors)                             | `IOT-SENSORS`    | `IoTSensorReadingSchema`, `IotProjectConfigSchema`        |
 | Blue carbon    | `oracle/blue-carbon-adapter.ts` | `BLUE_CARBON_API_URL` (mangrove/seagrass/saltmarsh plot surveys) | `BLUE-CARBON`    | `BlueCarbonSurveySchema`, `BlueCarbonProjectConfigSchema` |
 
-All four validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`, `BlueCarbonSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned.
+All four validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`, `BlueCarbonSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned. In the NestJS API, `IOT-SENSORS` is registered via `IotProvider` (`api/src/oracle/providers/iot.provider.ts`) and can be enabled during oracle polling via `ENABLE_IOT_PROVIDER=true`.
 
 ### On-Chain Pre-flight Validation
 

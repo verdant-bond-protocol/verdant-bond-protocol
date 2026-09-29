@@ -6,6 +6,7 @@ import { OracleMonitoringService } from './oracle.monitoring.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 import { BlueCarbonProvider } from './providers/blue-carbon.provider';
+import { IotProvider } from './providers/iot.provider';
 import { MeasurementData, OracleProviderAdapter } from './providers/provider.interface';
 
 @Injectable()
@@ -18,6 +19,7 @@ export class OracleScheduler {
     private readonly verraProvider: VerraProvider,
     private readonly satelliteProvider: SatelliteProvider,
     private readonly blueCarbonProvider: BlueCarbonProvider,
+    private readonly iotProvider?: IotProvider,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -25,11 +27,19 @@ export class OracleScheduler {
     this.logger.log('Oracle poll cycle started');
 
     try {
-      const providers = [
+      const providers: OracleProviderAdapter[] = [
         this.verraProvider,
         this.satelliteProvider,
         this.blueCarbonProvider,
       ];
+
+      if (
+        (process.env.ENABLE_IOT_PROVIDER === 'true' ||
+          process.env.ORACLE_ENABLE_IOT_PROVIDER === 'true') &&
+        this.iotProvider
+      ) {
+        providers.push(this.iotProvider);
+      }
 
       for (const provider of providers) {
         await this.pollProvider(provider);

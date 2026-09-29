@@ -10,6 +10,7 @@ import { GracePeriodService } from './grace-period.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 import { BlueCarbonProvider } from './providers/blue-carbon.provider';
+import { IotProvider } from './providers/iot.provider';
 
 @Module({
   imports: [ScheduleModule.forRoot(), ProjectsModule],
@@ -23,10 +24,11 @@ import { BlueCarbonProvider } from './providers/blue-carbon.provider';
     VerraProvider,
     SatelliteProvider,
     BlueCarbonProvider,
+    IotProvider,
   ],
   // OracleIncidentRepository is exported so the public status feed
   // (StatusModule, issue #303) can read incident state without duplicating
   // its query logic.
-  exports: [OracleService, OracleMonitoringService, GracePeriodService, OracleIncidentRepository],
+  exports: [OracleService, OracleMonitoringService, GracePeriodService, OracleIncidentRepository, IotProvider],
 })
 export class OracleModule {}

@@ -40,6 +40,7 @@ export class OracleService {
     'VERRA-VCS',
     'BLUE-CARBON',
     'REMOTE-SENSING',
+    'IOT-SENSORS',
   ];
 
   constructor(
