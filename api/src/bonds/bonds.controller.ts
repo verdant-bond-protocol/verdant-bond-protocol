@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException
+  Controller, Get, Post, Body, Param, Query, Req, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException, ForbiddenException
 } from '@nestjs/common';
 import { BondsService } from './bonds.service';
 import { CreateBondDto } from './dto/create-bond.dto';
@@ -55,10 +55,28 @@ export class BondsController {
     return this.bondsService.findAll(query.page, query.limit);
   }
 
+  /**
+   * Wallet-scoped holdings view (#174). A non-admin may only query holdings
+   * for their own authenticated wallet address; admins may query any address.
+   */
   @Get('held/:address')
+  @UseGuards(JwtAuthGuard)
   async findHeldByAddress(
     @Param('address') address: string,
+    @Req() req: any,
   ): Promise<HeldBondResponse[]> {
+    const requester = req.user?.walletAddress;
+    if (!requester) {
+      throw new ForbiddenException('Authenticated wallet required');
+    }
+
+    const isAdmin = Boolean(
+      process.env.STELLAR_PUBLIC_KEY && requester === process.env.STELLAR_PUBLIC_KEY,
+    );
+    if (address !== requester && !isAdmin) {
+      throw new ForbiddenException('You may only view your own holdings');
+    }
+
     return this.bondsService.findHeldByAddress(address);
   }
 
@@ -87,6 +105,11 @@ export class BondsController {
     return this.bondsService.subscribe(id, dto);
   }
 
+  /**
+   * Public on-chain holder list (#174). Documented intent: On-chain ledger
+   * holder positions are public blockchain data on Stellar, so this aggregate
+   * per-bond holder distribution endpoint remains public for market transparency.
+   */
   @Get(':id/holders')
   async getHolders(
     @Param('id', ParseIntPipe) id: number,
