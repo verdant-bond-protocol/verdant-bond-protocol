@@ -42,6 +42,29 @@ export interface AuthorizationGrant {
   audit: AuthorizationAuditEntry[];
 }
 
+/**
+ * A grant as presented in a listing: the record plus the status it actually
+ * has *right now*. A self-service listing that shows a revoked delegation
+ * indistinguishably from a live one is worse than no listing, so both facts
+ * are always on the row.
+ */
+export interface AuthorizationGrantView extends AuthorizationGrant {
+  /** `status` as of the listing's `now`, not the value last persisted. */
+  effectiveStatus: AuthorizationStatus;
+  /** True only when the grant currently authorizes its scope's action. */
+  effective: boolean;
+}
+
+export interface AuthorizationListOptions {
+  /**
+   * Return revoked and expired grants too. Off by default, so a listing
+   * surfaces live delegations unless the caller explicitly asks for history.
+   */
+  includeInactive?: boolean;
+  /** Clock the effective status is evaluated against. */
+  now?: number;
+}
+
 export class AuthorizationError extends Error {
   constructor(
     message: string,

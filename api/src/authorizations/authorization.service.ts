@@ -4,6 +4,8 @@ import {
   AuthorizationAuditEntry,
   AuthorizationError,
   AuthorizationGrant,
+  AuthorizationGrantView,
+  AuthorizationListOptions,
   AuthorizationStatus,
 } from './authorization.interface';
 
@@ -179,8 +181,27 @@ export class AuthorizationService {
     return record;
   }
 
-  /** All grants for a subject, for an audit or self-service listing view. */
-  listForSubject(subjectAddress: string): AuthorizationGrant[] {
-    return [...this.grants.values()].filter((g) => g.subjectAddress === subjectAddress);
+  /**
+   * Grants for a subject, for an audit or self-service listing view.
+   *
+   * By default this returns only grants that currently authorize something:
+   * a listing that mixes a live delegation with one revoked an hour ago, with
+   * nothing on the row to tell them apart, is not a usable view. `includeInactive`
+   * opts back in to the full history, with `effectiveStatus` still marking what
+   * each grant is worth now.
+   */
+  listForSubject(
+    subjectAddress: string,
+    opts: AuthorizationListOptions = {},
+  ): AuthorizationGrantView[] {
+    const now = opts.now ?? Date.now();
+    return [...this.grants.values()]
+      .filter((grant) => grant.subjectAddress === subjectAddress)
+      .map((grant) => ({
+        ...grant,
+        effectiveStatus: this.effectiveStatus(grant, now),
+        effective: this.effectiveStatus(grant, now) === AuthorizationStatus.Active,
+      }))
+      .filter((grant) => opts.includeInactive === true || grant.effective);
   }
 }

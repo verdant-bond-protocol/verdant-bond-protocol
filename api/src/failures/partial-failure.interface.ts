@@ -9,7 +9,15 @@
  * without leaking secrets.
  */
 
-export type PartialFailureStatus = 'open' | 'retrying' | 'resolved' | 'ignored';
+import type { RecordLifecycle } from '../common/lifecycle/record-lifecycle';
+
+/**
+ * Work state. This describes the *work*, not its visibility — a failure that
+ * has been archived is not in this enum. Records leave the board by being
+ * archived (see `RecordLifecycle`), never by acquiring a status that only one
+ * reader knows to filter.
+ */
+export type PartialFailureStatus = 'open' | 'retrying' | 'resolved';
 
 export type PartialFailureSeverity = 'info' | 'warning' | 'critical';
 
@@ -30,9 +38,9 @@ export interface PartialFailure {
   /** Secret-free context for investigation. */
   metadata: Record<string, unknown>;
   resolvedAt?: string;
-  ignoredAt?: string;
   resolvedNote?: string;
-  ignoredNote?: string;
+  /** Archive/restore state: the single rule for whether this is visible. */
+  lifecycle: RecordLifecycle;
 }
 
 export interface PartialFailureInput {
@@ -56,6 +64,8 @@ export interface PartialFailureListFilter {
   minRetryCount?: number;
   createdAfter?: string;
   createdBefore?: string;
+  /** Opt-in: return archived records too. The board never sets this. */
+  includeArchived?: boolean;
 }
 
 export interface PartialFailureLinks {
@@ -67,9 +77,12 @@ export interface PartialFailureLinks {
 /** One grouped row of the maintainer dashboard. */
 export interface PartialFailureGroup {
   operationType: string;
+  /** Live (non-archived) failures in this group. */
   total: number;
   byStatus: Record<PartialFailureStatus, number>;
   bySeverity: Record<PartialFailureSeverity, number>;
+  /** Archived failures, reported rather than silently dropped. */
+  archived: number;
   retryable: number;
   oldestAgeMs: number | null;
   failures: Array<PartialFailure & { ageMs: number; stale: boolean; links: PartialFailureLinks }>;
@@ -79,6 +92,8 @@ export interface PartialFailureDashboard {
   generatedAt: string;
   unresolved: number;
   staleAfterMs: number;
+  /** Archived across the whole board, reported for parity with the export. */
+  archived: number;
   groups: PartialFailureGroup[];
 }
 
@@ -115,8 +130,12 @@ export interface RejectedOperationExplanation {
 export interface FailureTrendBucket {
   bucketStart: string;
   bucketEnd: string;
+  /** All failures in the bucket, archived included. */
   total: number;
+  /** Live and not yet resolved. */
   unresolved: number;
+  /** Archived in this bucket — reported so the export matches the board. */
+  archived: number;
   retryable: number;
   bySeverity: Record<PartialFailureSeverity, number>;
   byStatus: Record<PartialFailureStatus, number>;

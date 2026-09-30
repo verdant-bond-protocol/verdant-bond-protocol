@@ -22,6 +22,14 @@ export interface ImpersonationScope {
   allowDangerousMutations?: boolean;
 }
 
+/**
+ * Why a session stopped being usable. This is the *single* terminal state of
+ * a session — there is no separate `revoked` boolean, because a revoked flag
+ * and an `endedAt` timestamp are two ways of saying "over", and two flags for
+ * one state can disagree.
+ */
+export type ImpersonationEndReason = 'explicit_end' | 'expired' | 'revoked';
+
 export interface ImpersonationSession {
   sessionId: string;
   /** The maintainer performing the impersonation. */
@@ -33,14 +41,15 @@ export interface ImpersonationSession {
   startedAt: string;
   /** Hard expiry; enforced on every operation, never extended. */
   expiresAt: string;
-  endedAt?: string;
-  endReason?: 'explicit_end' | 'expired';
-  revoked?: boolean;
+  /** Set once, when the session ends. Null while the session is live. */
+  endedAt: string | null;
+  /** Set together with `endedAt`; never set independently. */
+  endReason: ImpersonationEndReason | null;
 }
 
 export interface ImpersonationAuditEvent {
   sessionId: string;
-  event: 'started' | 'operation_allowed' | 'operation_denied' | 'ended' | 'expired';
+  event: 'started' | 'operation_allowed' | 'operation_denied' | 'ended' | 'expired' | 'revoked';
   at: string;
   maintainerAddress: string;
   targetAddress: string;
@@ -50,8 +59,18 @@ export interface ImpersonationAuditEvent {
 
 export interface ImpersonationDecision {
   allowed: boolean;
-  /** Present when `allowed` is false — always a reason, never silent denial. */
-  denialReason?: 'no_active_session' | 'expired' | 'revoked' | 'operation_not_in_scope' | 'dangerous_mutation_blocked';
+  /**
+   * Present when `allowed` is false — always a reason, never silent denial.
+   * An ended session reports *why* it ended, so a caller is never told
+   * "revoked" for a session that merely ran out its TTL.
+   */
+  denialReason?:
+    | 'no_active_session'
+    | 'expired'
+    | 'revoked'
+    | 'session_ended'
+    | 'operation_not_in_scope'
+    | 'dangerous_mutation_blocked';
   /** What to surface to the user; also used for the audit event. */
   reason?: string;
 }

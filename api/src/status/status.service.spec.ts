@@ -97,13 +97,13 @@ describe('StatusService.getPublicStatus', () => {
     ]);
   });
 
-  it('a scheduled (future) or completed (past) window does not by itself change overall status, and a cancelled one is hidden', async () => {
+  it('maintenance: a scheduled (future) or completed (past) window does not by itself change overall status, and an archived one is hidden', async () => {
     const service = makeService({ redisHealthy: true, incidents: [] });
     const now = Date.parse('2026-01-02T00:00:00.000Z');
     const future = service.scheduleMaintenance('Future work', new Date(now + DAY(1)).toISOString(), new Date(now + DAY(2)).toISOString(), 'GADMIN0000000000000000000000000000000000000000000000000', now);
     const past = service.scheduleMaintenance('Past work', new Date(now - DAY(2)).toISOString(), new Date(now - DAY(1)).toISOString(), 'GADMIN0000000000000000000000000000000000000000000000000', now);
-    const cancelled = service.scheduleMaintenance('Cancelled work', new Date(now - DAY(1)).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN0000000000000000000000000000000000000000000000000', now);
-    service.cancelMaintenance(cancelled.id, now);
+    const archived = service.scheduleMaintenance('Withdrawn work', new Date(now - DAY(1)).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN0000000000000000000000000000000000000000000000000', now);
+    service.archiveMaintenance(archived.id, 'GADMIN', 'superseded by a shorter window', now);
 
     const report = await service.getPublicStatus(now);
 
@@ -115,7 +115,51 @@ describe('StatusService.getPublicStatus', () => {
         { id: past.id, status: 'completed' },
       ]),
     );
-    expect(statuses.find((w) => w.id === cancelled.id)).toBeUndefined();
+    expect(statuses.find((w) => w.id === archived.id)).toBeUndefined();
+  });
+
+  it('archiving a window requires a reason and cannot be done twice', () => {
+    const service = makeService({ redisHealthy: true, incidents: [] });
+    const now = Date.parse('2026-01-02T00:00:00.000Z');
+    const window = service.scheduleMaintenance('Withdrawn work', new Date(now).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN', now);
+
+    expect(() => service.archiveMaintenance(window.id, 'GADMIN', '  ', now)).toThrow(
+      expect.objectContaining({ code: 'missing_reason' }),
+    );
+
+    service.archiveMaintenance(window.id, 'GADMIN', 'superseded by a shorter window', now);
+    expect(() => service.archiveMaintenance(window.id, 'GOTHER', 'again', now)).toThrow(
+      expect.objectContaining({ code: 'already_archived' }),
+    );
+    expect(service.listMaintenance({ includeArchived: true, now })[0].lifecycle.archivedBy).toBe('GADMIN');
+  });
+
+  it('restoring an archived window republishes it and keeps the archive in its history', async () => {
+    const service = makeService({ redisHealthy: true, incidents: [] });
+    const now = Date.parse('2026-01-02T00:00:00.000Z');
+    const window = service.scheduleMaintenance('Withdrawn work', new Date(now - DAY(1)).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN', now);
+    service.archiveMaintenance(window.id, 'GADMIN', 'superseded by a shorter window', now);
+
+    service.restoreMaintenance(window.id, 'GADMIN', now + 1);
+    const report = await service.getPublicStatus(now + 1);
+
+    expect(report.maintenanceWindows.map((w) => w.id)).toContain(window.id);
+    expect(service.listMaintenance({ now: now + 1 }).map((w) => w.id)).toContain(window.id);
+    const [record] = service.listMaintenance({ includeArchived: true, now: now + 1 });
+    expect(record.lifecycle.state).toBe('active');
+    expect(record.lifecycle.history.map((e) => e.action)).toEqual(['archive', 'restore']);
+  });
+
+  it('the admin listing and the public feed agree on which windows are live', () => {
+    const service = makeService({ redisHealthy: true, incidents: [] });
+    const now = Date.parse('2026-01-02T00:00:00.000Z');
+    const live = service.scheduleMaintenance('Live work', new Date(now).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN', now);
+    const withdrawn = service.scheduleMaintenance('Withdrawn work', new Date(now).toISOString(), new Date(now + DAY(1)).toISOString(), 'GADMIN', now);
+    service.archiveMaintenance(withdrawn.id, 'GADMIN', 'superseded', now);
+
+    expect(service.listMaintenance({ now }).map((w) => w.id)).toEqual([live.id]);
+    expect(service.listMaintenance({ includeArchived: true, now }).map((w) => w.id).sort())
+      .toEqual([live.id, withdrawn.id].sort());
   });
 
   it('private-data filtering: no internal diagnostics leak into the public incident shape', async () => {

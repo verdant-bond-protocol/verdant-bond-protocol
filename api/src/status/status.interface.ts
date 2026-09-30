@@ -9,11 +9,19 @@
  * `StatusService.toPublicIncident` and `toPublicComponent`.
  */
 
+import type { RecordLifecycle } from '../common/lifecycle/record-lifecycle';
+
 export const STATUS_SCHEMA_VERSION = 1 as const;
 
 export type ComponentStatus = 'operational' | 'degraded' | 'down';
 export type PublicIncidentStatus = 'investigating' | 'monitoring' | 'resolved';
-export type MaintenanceWindowStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+/**
+ * Schedule state only. There is no `cancelled` value: a window that was
+ * withdrawn is *archived*, and archived windows are excluded from the feed
+ * rather than published under a status every reader has to remember to
+ * filter.
+ */
+export type MaintenanceWindowStatus = 'scheduled' | 'in_progress' | 'completed';
 export type OverallStatus = 'healthy' | 'degraded' | 'incident' | 'maintenance';
 
 export interface PublicComponent {
@@ -53,9 +61,14 @@ export interface MaintenanceWindowRecord {
   title: string;
   startsAt: string;
   endsAt: string;
-  cancelledAt: string | null;
   createdBy: string;
   createdAt: string;
+  /**
+   * Archive/restore state. This — not a `cancelledAt` timestamp or a
+   * `cancelled` status — is what withdraws a window from the public feed, and
+   * it records who withdrew it, when, and why.
+   */
+  lifecycle: RecordLifecycle;
 }
 
 export class StatusError extends Error {

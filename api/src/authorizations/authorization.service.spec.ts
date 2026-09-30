@@ -119,4 +119,55 @@ describe('AuthorizationService', () => {
   it('throws not_found for an unknown grant id', () => {
     expect(() => service.get('missing')).toThrow(expect.objectContaining({ code: 'not_found' }));
   });
+
+  describe('listing', () => {
+    it('lists only live delegations by default, so a revoked one is never mistaken for a live one', () => {
+      const live = service.grant(SUBJECT, 'covenant:report', GRANTOR, ONE_HOUR * 24, NOW);
+      const revoked = service.grant(SUBJECT, 'covenant:vote', GRANTOR, ONE_HOUR, NOW);
+      const lapsed = service.grant(SUBJECT, 'covenant:monitor', GRANTOR, ONE_HOUR, NOW);
+      service.revoke(revoked.id, GRANTOR, NOW + 10);
+
+      const listed = service.listForSubject(SUBJECT, { now: NOW + ONE_HOUR + 1 });
+
+      // `lapsed` has passed its expiry and `revoked` was withdrawn an hour
+      // ago; neither belongs in a default listing beside a live delegation.
+      expect(listed.map((g) => g.id)).toEqual([live.id]);
+      expect(lapsed.id).not.toBe(live.id);
+      expect(listed[0]).toMatchObject({
+        effective: true,
+        effectiveStatus: AuthorizationStatus.Active,
+      });
+    });
+
+    it('opts into the full history, with each row still labelled by its current status', () => {
+      const revoked = service.grant(SUBJECT, 'covenant:vote', GRANTOR, ONE_HOUR, NOW);
+      service.revoke(revoked.id, GRANTOR, NOW + 10);
+
+      const listed = service.listForSubject(SUBJECT, { now: NOW + 20, includeInactive: true });
+
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({
+        id: revoked.id,
+        effective: false,
+        effectiveStatus: AuthorizationStatus.Revoked,
+        // The persisted status is untouched by a read.
+        status: AuthorizationStatus.Revoked,
+      });
+    });
+
+    it('reports a lapsed grant as expired without waiting for cleanup', () => {
+      const lapsed = service.grant(SUBJECT, 'covenant:monitor', GRANTOR, ONE_HOUR, NOW);
+
+      const [view] = service.listForSubject(SUBJECT, { now: NOW + ONE_HOUR + 1, includeInactive: true });
+
+      expect(view.effectiveStatus).toBe(AuthorizationStatus.Expired);
+      expect(view.effective).toBe(false);
+      expect(service.get(lapsed.id).status).toBe(AuthorizationStatus.Active);
+    });
+
+    it('never returns another subject’s grants', () => {
+      service.grant(SUBJECT, 'covenant:report', GRANTOR, ONE_HOUR, NOW);
+      expect(service.listForSubject(STRANGER, { now: NOW })).toEqual([]);
+    });
+  });
 });

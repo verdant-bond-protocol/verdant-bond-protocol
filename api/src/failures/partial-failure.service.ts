@@ -1,4 +1,13 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import {
+  activeLifecycle,
+  archiveRecord,
+  assertNotArchived,
+  includeArchived,
+  isArchived,
+  restoreRecord,
+  visibleOnly,
+} from '../common/lifecycle/record-lifecycle';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
   DEFAULT_STALE_AFTER_MS,
@@ -10,7 +19,6 @@ import {
   PartialFailureGroup,
   PartialFailureInput,
   PartialFailureLinks,
-  PartialFailureStatus,
   RejectedOperationExplanation,
 } from './partial-failure.interface';
 
@@ -79,6 +87,7 @@ export class PartialFailureService {
       lastFailureAt: new Date(now).toISOString(),
       retryCount: 0,
       metadata: (scrub(input.metadata ?? {}) ?? {}) as Record<string, unknown>,
+      lifecycle: activeLifecycle(),
     };
     this.failures.set(failure.id, failure);
     this.logger.warn(`partial failure recorded: ${input.operationType}`, {
@@ -116,27 +125,56 @@ export class PartialFailureService {
     return failure;
   }
 
+  /**
+   * A record that has been archived is out of play: it is neither a live
+   * failure to resolve nor a retry to count. Work actions on an archived
+   * record must be refused rather than silently mutating a hidden record.
+   */
+  private requireLive(id: string): PartialFailure {
+    const failure = this.get(id);
+    assertNotArchived(failure, `acting on partial failure ${id}`);
+    return failure;
+  }
+
   /** Resolve a failure after manual (or automatic) remediation. */
   resolve(id: string, note?: string, now: number = Date.now()): PartialFailure {
-    const failure = this.get(id);
+    const failure = this.requireLive(id);
     failure.status = 'resolved';
     failure.resolvedAt = new Date(now).toISOString();
     failure.resolvedNote = note;
     return failure;
   }
 
-  /** Manually ignore a failure (documented decision, hidden from the board). */
-  ignore(id: string, note?: string, now: number = Date.now()): PartialFailure {
+  /**
+   * Archive a failure: a documented decision to stop tracking it, with the
+   * operator, the timestamp and the justification recorded on the record.
+   * The record is never destroyed — it stays queryable with `includeArchived`.
+   */
+  archive(id: string, actor: string, reason: string, now: number = Date.now()): PartialFailure {
     const failure = this.get(id);
-    failure.status = 'ignored';
-    failure.ignoredAt = new Date(now).toISOString();
-    failure.ignoredNote = note;
+    archiveRecord(failure.lifecycle, { actor, reason, now });
+    this.logger.log(`partial failure archived: ${failure.operationType}`, {
+      id: failure.id,
+      actor,
+      reason,
+    });
+    return failure;
+  }
+
+  /** Reverse an archive. The archive itself stays in the record's history. */
+  restore(id: string, actor: string, now: number = Date.now()): PartialFailure {
+    const failure = this.get(id);
+    restoreRecord(failure.lifecycle, { actor, now });
+    this.logger.log(`partial failure restored: ${failure.operationType}`, {
+      id: failure.id,
+      actor,
+    });
     return failure;
   }
 
   /** Mark a retry as attempted: bumps the counter and flips status. */
   markRetried(id: string, now: number = Date.now()): PartialFailure {
-    const failure = this.get(id);
+    const failure = this.requireLive(id);
     failure.retryCount += 1;
     failure.status = 'retrying';
     failure.lastFailureAt = new Date(now).toISOString();
@@ -158,7 +196,7 @@ export class PartialFailureService {
     now: number = Date.now(),
   ): PartialFailure[] {
     const result: PartialFailure[] = [];
-    for (const failure of this.failures.values()) {
+    for (const failure of includeArchived([...this.failures.values()], filter.includeArchived === true)) {
       if (filter.operationType && failure.operationType !== filter.operationType) continue;
       if (filter.status && failure.status !== filter.status) continue;
       if (filter.severity && failure.severity !== filter.severity) continue;
@@ -182,26 +220,54 @@ export class PartialFailureService {
    * Group unresolved (and recently resolved) failures by operation type for
    * the maintainer dashboard. Every row carries its age, staleness and the
    * retry/inspect/remediation links — no secrets.
+   *
+   * Archived failures are never rendered as board rows by default, but they
+   * are *counted* — the board and the trend export agree on how many were
+   * archived, so the two views cannot drift apart the way a board-only filter
+   * and an export that ignored the filter would. `filter.includeArchived` adds
+   * them back as rows for an operator auditing who archived what, and why.
    */
   dashboard(
     opts: { staleAfterMs?: number; now?: number; filter?: PartialFailureListFilter } = {},
   ): PartialFailureDashboard {
     const now = opts.now ?? Date.now();
     const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+    const filter = opts.filter ?? {};
+    // One pass over both views, so the live rows and the archived tally are
+    // computed from the same filtered set.
+    const all = this.list({ ...filter, includeArchived: true }, now);
 
     const byType = new Map<string, PartialFailure[]>();
-    for (const failure of this.list(opts.filter ?? {}, now)) {
-      if (failure.status === 'ignored') continue; // manually ignored: documented decision
+    const archivedRowsByType = new Map<string, PartialFailure[]>();
+    let archived = 0;
+    for (const failure of all) {
+      if (isArchived(failure)) {
+        archived += 1;
+        // With `includeArchived`, the operator also sees the rows themselves,
+        // each still carrying its `lifecycle` attribution, so the audit view is
+        // not a count they have to cross-reference back to `GET …/:id`.
+        const archivedRows = archivedRowsByType.get(failure.operationType) ?? [];
+        archivedRows.push(failure);
+        archivedRowsByType.set(failure.operationType, archivedRows);
+        continue;
+      }
       const bucket = byType.get(failure.operationType) ?? [];
       bucket.push(failure);
       byType.set(failure.operationType, bucket);
     }
 
+    // An operation type whose only failures were archived still belongs on the
+    // board — with its archived tally — rather than silently vanishing.
+    for (const operationType of archivedRowsByType.keys()) {
+      if (!byType.has(operationType)) byType.set(operationType, []);
+    }
+
+    const showArchived = filter.includeArchived === true;
     const groups: PartialFailureGroup[] = [];
     let unresolved = 0;
     for (const [operationType, bucket] of byType) {
       bucket.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-      const byStatus = { open: 0, retrying: 0, resolved: 0, ignored: 0 };
+      const byStatus = { open: 0, retrying: 0, resolved: 0 };
       const bySeverity = { info: 0, warning: 0, critical: 0 };
       let retryable = 0;
       let oldestAgeMs: number | null = null;
@@ -219,11 +285,20 @@ export class PartialFailureService {
           links: this.linksFor(failure),
         };
       });
+
+      const archivedRows = archivedRowsByType.get(operationType) ?? [];
+      if (showArchived) {
+        const archivedAt = (failure: PartialFailure) => failure.lifecycle.archivedAt ?? failure.createdAt;
+        for (const failure of archivedRows.sort((a, b) => Date.parse(archivedAt(b)) - Date.parse(archivedAt(a)))) {
+          rows.push({ ...failure, ageMs: now - Date.parse(failure.createdAt), stale: false, links: this.linksFor(failure) });
+        }
+      }
       groups.push({
         operationType,
         total: bucket.length,
         byStatus,
         bySeverity,
+        archived: archivedRows.length,
         retryable,
         oldestAgeMs,
         failures: rows,
@@ -235,6 +310,7 @@ export class PartialFailureService {
       generatedAt: new Date(now).toISOString(),
       unresolved,
       staleAfterMs,
+      archived,
       groups,
     };
   }
@@ -307,7 +383,7 @@ export class PartialFailureService {
       }
     };
 
-    for (const failure of this.failures.values()) {
+    for (const failure of visibleOnly([...this.failures.values()])) {
       const failureNode = `failure:${failure.id}`;
       addNode(failureNode, 'failure', failure.message, failure);
       const operationNode = `operation:${failure.operationType}`;
@@ -346,6 +422,12 @@ export class PartialFailureService {
     };
   }
 
+  /**
+   * Bucketed operational history. Archived failures are included in `total`
+   * and reported in their own `archived` column, so this export and the board
+   * describe the same population — the export is not a superset of what an
+   * operator can actually see.
+   */
   trendExport(opts: {
     bucketMs?: number;
     format?: 'json' | 'csv';
@@ -372,27 +454,33 @@ export class PartialFailureService {
         bucketEnd: new Date(start + bucketMs).toISOString(),
         total: 0,
         unresolved: 0,
+        archived: 0,
         retryable: 0,
         bySeverity: { info: 0, warning: 0, critical: 0 },
-        byStatus: { open: 0, retrying: 0, resolved: 0, ignored: 0 },
+        byStatus: { open: 0, retrying: 0, resolved: 0 },
       };
       bucket.total += 1;
-      if (failure.status !== 'resolved' && failure.status !== 'ignored') bucket.unresolved += 1;
+      if (isArchived(failure)) {
+        bucket.archived += 1;
+      } else {
+        if (failure.status !== 'resolved') bucket.unresolved += 1;
+        bucket.bySeverity[failure.severity] += 1;
+        bucket.byStatus[failure.status] += 1;
+      }
       if (failure.retryable) bucket.retryable += 1;
-      bucket.bySeverity[failure.severity] += 1;
-      bucket.byStatus[failure.status] += 1;
       buckets.set(start, bucket);
     }
 
     const sorted = [...buckets.entries()].sort(([a], [b]) => a - b).map(([, bucket]) => bucket);
     const csv = format === 'csv'
       ? [
-          'bucketStart,bucketEnd,total,unresolved,retryable,info,warning,critical,open,retrying,resolved,ignored',
+          'bucketStart,bucketEnd,total,unresolved,archived,retryable,info,warning,critical,open,retrying,resolved',
           ...sorted.map((bucket) => [
             bucket.bucketStart,
             bucket.bucketEnd,
             bucket.total,
             bucket.unresolved,
+            bucket.archived,
             bucket.retryable,
             bucket.bySeverity.info,
             bucket.bySeverity.warning,
@@ -400,7 +488,6 @@ export class PartialFailureService {
             bucket.byStatus.open,
             bucket.byStatus.retrying,
             bucket.byStatus.resolved,
-            bucket.byStatus.ignored,
           ].join(',')),
         ].join('\n')
       : undefined;

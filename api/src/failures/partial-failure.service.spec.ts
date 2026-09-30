@@ -132,15 +132,89 @@ describe('PartialFailureService (#266)', () => {
       expect(service.get(failure.id).resolvedNote).toBe('manually settled');
     });
 
-    it('manually ignored failures stay out of the board but remain queryable', () => {
+    it('archives a failure with an actor and reason, keeping it out of the board but queryable', () => {
       const failure = record();
 
-      service.ignore(failure.id, 'duplicate of tx_abc124', NOW + 1);
+      service.archive(failure.id, 'GADMIN', 'duplicate of tx_abc124', NOW + 1);
       const board = service.dashboard({ now: NOW + 1 });
 
-      expect(board.groups).toHaveLength(0);
-      expect(service.get(failure.id).status).toBe('ignored');
-      expect(service.get(failure.id).ignoredNote).toBe('duplicate of tx_abc124');
+      expect(board.groups[0].failures).toHaveLength(0);
+      expect(board.archived).toBe(1);
+      expect(board.groups[0].archived).toBe(1);
+      const archived = service.get(failure.id);
+      expect(archived.lifecycle.state).toBe('archived');
+      expect(archived.lifecycle.archivedBy).toBe('GADMIN');
+      expect(archived.lifecycle.archiveReason).toBe('duplicate of tx_abc124');
+      // The work status is untouched: archiving hides a record, it does not
+      // resolve it.
+      expect(archived.status).toBe('open');
+      expect(service.list({ includeArchived: true }, NOW + 1)).toHaveLength(1);
+      expect(service.list({}, NOW + 1)).toHaveLength(0);
+    });
+
+    it('surfaces archived rows with their attribution when the board opts in', () => {
+      const live = record({ externalRef: 'tx_live' });
+      const archived = record({ externalRef: 'tx_archived' });
+      service.archive(archived.id, 'GADMIN', 'duplicate of tx_live', NOW + 1);
+
+      const board = service.dashboard({ now: NOW + 2, filter: { includeArchived: true } });
+      const rows = board.groups[0].failures;
+
+      expect(rows.map((r) => r.id)).toEqual([live.id, archived.id]);
+      // The archived row is labelled, so it cannot be mistaken for live work.
+      expect(rows[1].lifecycle.state).toBe('archived');
+      expect(rows[1].lifecycle.archivedBy).toBe('GADMIN');
+      expect(rows[1].lifecycle.archiveReason).toBe('duplicate of tx_live');
+      expect(rows[1].stale).toBe(false);
+      // Counters describe live work only; the archived row is not double counted.
+      expect(board.unresolved).toBe(1);
+      expect(board.groups[0].byStatus).toEqual({ open: 1, retrying: 0, resolved: 0 });
+      expect(board.archived).toBe(1);
+    });
+
+    it('refuses to archive without a reason, and refuses to archive twice', () => {
+      const failure = record();
+
+      expect(() => service.archive(failure.id, 'GADMIN', '   ', NOW + 1)).toThrow(
+        expect.objectContaining({ code: 'missing_reason' }),
+      );
+
+      service.archive(failure.id, 'GADMIN', 'duplicate of tx_abc124', NOW + 1);
+      expect(() => service.archive(failure.id, 'GOTHER', 'again', NOW + 2)).toThrow(
+        expect.objectContaining({ code: 'already_archived' }),
+      );
+      // The second attempt did not overwrite the original attribution.
+      expect(service.get(failure.id).lifecycle.archivedBy).toBe('GADMIN');
+    });
+
+    it('restores an archived failure and keeps the archive in its history', () => {      const failure = record();
+      service.archive(failure.id, 'GADMIN', 'duplicate of tx_abc124', NOW + 1);
+
+      service.restore(failure.id, 'GADMIN', NOW + 2);
+      const board = service.dashboard({ now: NOW + 2 });
+      const restored = service.get(failure.id);
+
+      expect(restored.lifecycle.state).toBe('active');
+      expect(restored.lifecycle.restoredBy).toBe('GADMIN');
+      expect(restored.lifecycle.history.map((e) => e.action)).toEqual(['archive', 'restore']);
+      expect(board.groups[0].failures.map((f) => f.id)).toEqual([failure.id]);
+      expect(board.archived).toBe(0);
+    });
+
+    it('refuses to restore a record that was never archived', () => {
+      const failure = record();
+      expect(() => service.restore(failure.id, 'GADMIN', NOW + 1)).toThrow(
+        expect.objectContaining({ code: 'not_archived' }),
+      );
+    });
+
+    it('refuses to resolve, retry, or re-archive-by-work an archived failure', () => {
+      const failure = record();
+      service.archive(failure.id, 'GADMIN', 'duplicate', NOW + 1);
+
+      expect(() => service.resolve(failure.id, 'done', NOW + 2)).toThrow(/archived/);
+      expect(() => service.markRetried(failure.id, NOW + 2)).toThrow(/archived/);
+      expect(service.get(failure.id).status).toBe('open');
     });
 
     it('lists retryable failures only when filtered', () => {
@@ -254,6 +328,25 @@ describe('PartialFailureService (#266)', () => {
       const csv = service.trendExport({ bucketMs: DAY, format: 'csv', now: NOW + DAY + 3 });
       expect(csv.csv).toContain('bucketStart,bucketEnd,total');
       expect(csv.csv).toContain(first.createdAt.slice(0, 10));
+    });
+
+    it('reports archived failures as their own column so the export matches the board', () => {
+      const live = record({ externalRef: 'tx_live' }, NOW);
+      const archived = record({ externalRef: 'tx_archived' }, NOW);
+      service.archive(archived.id, 'GADMIN', 'duplicate of tx_live', NOW + 1);
+
+      const bucket = service.trendExport({ bucketMs: DAY, now: NOW + 2 }).buckets[0];
+      const board = service.dashboard({ now: NOW + 2 });
+
+      // The export counts the archived record; the board reports it without
+      // rendering it as a row. Neither view silently drops it.
+      expect(bucket.total).toBe(2);
+      expect(bucket.archived).toBe(1);
+      expect(bucket.unresolved).toBe(1);
+      expect(bucket.byStatus).toEqual({ open: 1, retrying: 0, resolved: 0 });
+      expect(board.archived).toBe(bucket.archived);
+      expect(board.unresolved).toBe(bucket.unresolved);
+      expect(board.groups[0].failures.map((f) => f.id)).toEqual([live.id]);
     });
   });
 });

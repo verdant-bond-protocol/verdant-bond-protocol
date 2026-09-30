@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { RedisService } from '../common/services/redis.service';
+import {
+  activeLifecycle,
+  archiveRecord,
+  includeArchived,
+  restoreRecord,
+  visibleOnly,
+} from '../common/lifecycle/record-lifecycle';
 import { OracleIncidentRepository } from '../oracle/oracle-incident.repository';
 import { OracleIncident, OracleIncidentStatus } from '../oracle/interfaces/oracle-incident.interface';
 import {
@@ -37,24 +44,53 @@ export class StatusService {
       title,
       startsAt,
       endsAt,
-      cancelledAt: null,
       createdBy,
       createdAt: new Date(now).toISOString(),
+      lifecycle: activeLifecycle(),
     };
     this.maintenanceWindows.set(record.id, record);
     return record;
   }
 
-  cancelMaintenance(id: string, now: number = Date.now()): MaintenanceWindowRecord {
+  /**
+   * Withdraw a scheduled window by archiving it. The reason is mandatory: a
+   * maintenance notice that disappears without an explanation is the exact
+   * case the status page exists to prevent.
+   */
+  archiveMaintenance(id: string, actor: string, reason: string, now: number = Date.now()): MaintenanceWindowRecord {
     const record = this.maintenanceWindows.get(id);
     if (!record) throw new StatusError(`no maintenance window with id "${id}"`, 'not_found');
-    record.cancelledAt = new Date(now).toISOString();
+    archiveRecord(record.lifecycle, { actor, reason, now });
+    this.logger.log(`maintenance window archived: ${id}`, { actor, reason });
     return record;
   }
 
-  /** A window's status is derived from `now` against its schedule, unless it was cancelled. */
+  /** Re-publish a previously withdrawn window. The archive stays in its history. */
+  restoreMaintenance(id: string, actor: string, now: number = Date.now()): MaintenanceWindowRecord {
+    const record = this.maintenanceWindows.get(id);
+    if (!record) throw new StatusError(`no maintenance window with id "${id}"`, 'not_found');
+    restoreRecord(record.lifecycle, { actor, now });
+    this.logger.log(`maintenance window restored: ${id}`, { actor });
+    return record;
+  }
+
+  /**
+   * Windows for the admin surface. Archived windows are omitted by default so
+   * the admin listing and the public feed agree on what is live; pass
+   * `includeArchived` to audit what was withdrawn.
+   */
+  listMaintenance(
+    opts: { includeArchived?: boolean; now?: number } = {},
+  ): Array<MaintenanceWindowRecord & { status: MaintenanceWindowStatus }> {
+    const now = opts.now ?? Date.now();
+    return includeArchived([...this.maintenanceWindows.values()], opts.includeArchived === true).map((record) => ({
+      ...record,
+      status: this.maintenanceStatus(record, now),
+    }));
+  }
+
+  /** A window's status is derived from `now` against its schedule. */
   private maintenanceStatus(record: MaintenanceWindowRecord, now: number): MaintenanceWindowStatus {
-    if (record.cancelledAt) return 'cancelled';
     if (now < Date.parse(record.startsAt)) return 'scheduled';
     if (now < Date.parse(record.endsAt)) return 'in_progress';
     return 'completed';
@@ -121,9 +157,9 @@ export class StatusService {
       components.push({ name: 'oracle-monitoring', status: 'down', description: 'Oracle coverage incident tracking.' });
     }
 
-    const maintenanceWindows = [...this.maintenanceWindows.values()]
-      .map((record) => this.toPublicMaintenanceWindow(record, now))
-      .filter((window) => window.status !== 'cancelled');
+    const maintenanceWindows = visibleOnly([...this.maintenanceWindows.values()]).map((record) =>
+      this.toPublicMaintenanceWindow(record, now),
+    );
 
     const overallStatus: StatusReport['overallStatus'] =
       incidents.some((incident) => incident.status !== 'resolved')

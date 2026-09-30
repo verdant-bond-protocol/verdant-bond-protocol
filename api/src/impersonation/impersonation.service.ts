@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import {
   ImpersonationAuditEvent,
   ImpersonationDecision,
+  ImpersonationEndReason,
   ImpersonationScope,
   ImpersonationSession,
 } from './impersonation.interface';
@@ -11,6 +12,29 @@ import {
 export const MAX_SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
 const DEFAULT_SESSION_TTL_SECONDS = 15 * 60;
 const MAX_AUDIT_EVENTS = 5_000;
+
+/**
+ * Map a session's single terminal state onto the denial a caller sees. A
+ * session that was revoked is not reported the same way as one whose TTL ran
+ * out or that the maintainer deliberately ended — a caller debugging an access
+ * decision needs those to be distinguishable.
+ */
+function endedDenial(session: ImpersonationSession): {
+  denialReason: ImpersonationDecision['denialReason'];
+  reason: string;
+} {
+  switch (session.endReason) {
+    case 'expired':
+      return {
+        denialReason: 'expired',
+        reason: `session expired at ${session.expiresAt}`,
+      };
+    case 'revoked':
+      return { denialReason: 'revoked', reason: 'session was revoked' };
+    default:
+      return { denialReason: 'session_ended', reason: 'session has ended' };
+  }
+}
 
 /**
  * Scoped maintainer impersonation (issue #264).
@@ -83,6 +107,8 @@ export class ImpersonationService {
       reason: input.reason.trim(),
       startedAt,
       expiresAt,
+      endedAt: null,
+      endReason: null,
     };
 
     this.sessions.set(session.sessionId, session);
@@ -105,14 +131,14 @@ export class ImpersonationService {
       return { allowed: false, denialReason: 'no_active_session', reason: 'no such impersonation session' };
     }
 
-    if (session.revoked || session.endedAt) {
-      this.audit(session, 'operation_denied', { operation, detail: 'session already ended' });
-      return { allowed: false, denialReason: 'revoked', reason: 'session has ended' };
+    if (session.endedAt) {
+      this.audit(session, 'operation_denied', { operation, detail: `session already ${session.endReason}` });
+      return { allowed: false, ...endedDenial(session) };
     }
 
     const expiresAtMs = new Date(session.expiresAt).getTime();
     if (now.getTime() >= expiresAtMs) {
-      this.endInternal(session, 'expired');
+      this.endInternal(session, 'expired', now);
       this.audit(session, 'expired', { operation });
       return { allowed: false, denialReason: 'expired', reason: `session expired at ${session.expiresAt}` };
     }
@@ -132,7 +158,26 @@ export class ImpersonationService {
   }
 
   /** Explicit end by the maintainer (or a supervisor). Idempotent. */
-  async end(sessionId: string, byAddress: string): Promise<boolean> {
+  async end(sessionId: string, byAddress: string, now: Date = new Date()): Promise<boolean> {
+    return this.endBy(sessionId, byAddress, 'explicit_end', 'ended', now);
+  }
+
+  /**
+   * Revoke a session. Same authority as an explicit end — only the session's
+   * own maintainer — and the same single terminal state, so a revocation can
+   * never be represented by a flag that some other check forgets to read.
+   */
+  async revoke(sessionId: string, byAddress: string, now: Date = new Date()): Promise<boolean> {
+    return this.endBy(sessionId, byAddress, 'revoked', 'revoked', now);
+  }
+
+  private async endBy(
+    sessionId: string,
+    byAddress: string,
+    endReason: ImpersonationEndReason,
+    auditEvent: ImpersonationAuditEvent['event'],
+    now: Date,
+  ): Promise<boolean> {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
@@ -141,9 +186,8 @@ export class ImpersonationService {
 
     if (session.endedAt) return true; // already ended — idempotent
 
-    session.endedAt = new Date().toISOString();
-    session.endReason = 'explicit_end';
-    this.audit(session, 'ended', {});
+    this.endInternal(session, endReason, now);
+    this.audit(session, auditEvent, {});
     return true;
   }
 
@@ -175,9 +219,13 @@ export class ImpersonationService {
     this.auditEvents.length = 0;
   }
 
-  private endInternal(session: ImpersonationSession, reason: 'explicit_end' | 'expired'): void {
+  private endInternal(
+    session: ImpersonationSession,
+    reason: ImpersonationEndReason,
+    now: Date = new Date(),
+  ): void {
     if (session.endedAt) return;
-    session.endedAt = new Date().toISOString();
+    session.endedAt = now.toISOString();
     session.endReason = reason;
   }
 

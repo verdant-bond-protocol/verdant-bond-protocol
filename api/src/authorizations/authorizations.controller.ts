@@ -9,6 +9,7 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -19,7 +20,7 @@ import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { Permission } from '../auth/rbac';
 import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 import { AuthorizationService, CleanupReport } from './authorization.service';
-import { AuthorizationError, AuthorizationGrant } from './authorization.interface';
+import { AuthorizationError, AuthorizationGrant, AuthorizationGrantView } from './authorization.interface';
 import { GrantAuthorizationDto } from './dto/grant-authorization.dto';
 import { RenewAuthorizationDto } from './dto/renew-authorization.dto';
 
@@ -49,6 +50,26 @@ export class AuthorizationsController {
     } catch (error) {
       toHttpError(error);
     }
+  }
+
+  /**
+   * Delegations held by a subject. Defaults to the subject's own address and
+   * to live grants only; `?includeInactive=true` returns revoked and expired
+   * ones too, each row still labelled with its current effective status.
+   * A caller without MANAGE_INCIDENTS may only list their own.
+   */
+  @Get()
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  list(
+    @Query('subject') subject: string | undefined,
+    @Query('includeInactive') includeInactive: string | undefined,
+    @Req() req: AuthenticatedRequest,
+  ): AuthorizationGrantView[] {
+    const canListOthers = (req.user.permissions ?? []).includes(Permission.MANAGE_INCIDENTS);
+    const target = canListOthers && subject ? subject : req.user.walletAddress;
+    return this.authorizations.listForSubject(target, {
+      includeInactive: includeInactive === 'true',
+    });
   }
 
   @Get(':id')
