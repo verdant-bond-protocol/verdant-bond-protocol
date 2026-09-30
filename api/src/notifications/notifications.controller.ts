@@ -1,5 +1,5 @@
-import { Controller, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
-import { NotificationsService } from './notifications.service';
+import { Body, Controller, Get, HttpCode, HttpStatus, NotFoundException, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { NotificationsService, OPTIONAL_NOTIFICATION_CATEGORIES, MANDATORY_NOTIFICATION_CATEGORIES } from './notifications.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
@@ -21,6 +21,25 @@ export class NotificationsController {
     const inboxes = [req.user.walletAddress];
     if (req.user.roles?.includes(Role.MAINTAINER)) inboxes.push(ADMIN_INBOX);
     return inboxes;
+  }
+
+  @Get('preferences')
+  getPreferences(@Req() req: AuthenticatedRequest) {
+    return {
+      optional: this.notificationsService.getPreferences(req.user.walletAddress),
+      mandatory: MANDATORY_NOTIFICATION_CATEGORIES,
+      optionalCategories: OPTIONAL_NOTIFICATION_CATEGORIES,
+    };
+  }
+
+  @Patch('preferences')
+  setPreferences(@Req() req: AuthenticatedRequest, @Body() body: unknown) {
+    return this.notificationsService.setPreferences(req.user.walletAddress, body);
+  }
+
+  @Get('decisions')
+  async getDecisions(@Req() req: AuthenticatedRequest) {
+    return (await Promise.all(this.inboxes(req).map(inbox => this.notificationsService.getDecisions(inbox)))).flat();
   }
 
   /**
