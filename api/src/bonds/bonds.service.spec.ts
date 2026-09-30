@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { xdr, scValToNative, nativeToScVal, Address } from '@stellar/stellar-sdk';
 import { ComplianceAttestationService } from '../compliance/services/compliance-attestation.service';
 import { ComplianceRulesEngine } from '../compliance/services/compliance-rules.engine';
+import { ComplianceSnapshotService } from '../compliance/services/compliance-snapshot.service';
 import { TrancheType } from '../compliance/interfaces/compliance.interface';
 import { KycStatus } from '../common/interfaces/authenticated-request.interface';
 
@@ -137,6 +138,7 @@ describe('BondsService', () => {
 
   describe('distributeCoupon arg encoding', () => {
     it('places the admin caller first and passes a scalar report id', async () => {
+      const snapshots = { capture: jest.fn().mockResolvedValue({}) };
       const contractService = {
         invokeContractMethod: jest.fn().mockResolvedValue({
           result: xdr.ScVal.scvVec([
@@ -168,6 +170,7 @@ describe('BondsService', () => {
           signingProvider,
           configProvider,
           holderIndexProvider,
+          { provide: ComplianceSnapshotService, useValue: snapshots },
         ],
       }).compile();
 
@@ -184,6 +187,8 @@ describe('BondsService', () => {
         'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
       );
       expect(scValToNative(args[4])).toBe(BigInt(7));
+      expect(snapshots.capture).toHaveBeenCalledWith('bond:1:coupon:0', 'COUPON_DISTRIBUTED', 1,
+        expect.objectContaining({ periodIndex: 0, reportId: 7 }));
     });
   });
 

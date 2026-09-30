@@ -6,6 +6,7 @@ import { SanctionsService } from '../services/sanctions.service';
 import { KycStoreService } from '../../common/services/kyc-store.service';
 import { TrancheType } from '../interfaces/compliance.interface';
 import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
+import { ComplianceSnapshotService } from '../services/compliance-snapshot.service';
 
 describe('ComplianceController', () => {
   let controller: ComplianceController;
@@ -40,6 +41,7 @@ describe('ComplianceController', () => {
         { provide: ComplianceAttestationService, useValue: attestationService },
         { provide: SanctionsService, useValue: sanctionsService },
         { provide: KycStoreService, useValue: mockKycStore },
+        { provide: ComplianceSnapshotService, useValue: { get: jest.fn(), verify: jest.fn() } },
       ],
     }).compile();
 

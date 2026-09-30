@@ -9,10 +9,13 @@ import {
   HttpCode,
   HttpStatus,
   ForbiddenException,
+  NotFoundException,
+  Param,
 } from '@nestjs/common';
 import { ComplianceRulesEngine } from '../services/compliance-rules.engine';
 import { ComplianceAttestationService } from '../services/compliance-attestation.service';
 import { SanctionsService } from '../services/sanctions.service';
+import { ComplianceSnapshotService } from '../services/compliance-snapshot.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../../common/guards/admin.guard';
 import { AuthenticatedUser } from '../../common/interfaces/authenticated-request.interface';
@@ -48,7 +51,16 @@ export class ComplianceController {
     private readonly attestationService: ComplianceAttestationService,
     private readonly sanctionsService: SanctionsService,
     private readonly kycStore: KycStoreService,
+    private readonly snapshots: ComplianceSnapshotService,
   ) {}
+
+  @Get('snapshots/:eventId')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  async getSnapshot(@Param('eventId') eventId: string) {
+    const snapshot = await this.snapshots.get(eventId);
+    if (!snapshot) throw new NotFoundException('Compliance snapshot not found');
+    return { ...snapshot, integrityValid: this.snapshots.verify(snapshot) };
+  }
 
   /**
    * Get canonical versioned ruleset with audit hash for verification.

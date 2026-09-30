@@ -4,6 +4,7 @@ import { ContractException } from '../stellar/contract-errors';
 import { StellarService } from '../stellar/stellar.service';
 import { ComplianceAttestationService } from '../compliance/services/compliance-attestation.service';
 import { ComplianceRulesEngine } from '../compliance/services/compliance-rules.engine';
+import { ComplianceSnapshotService } from '../compliance/services/compliance-snapshot.service';
 import { TrancheType } from '../compliance/interfaces/compliance.interface';
 import { NonceService } from '../common/services/nonce.service';
 import { RedisService } from '../common/services/redis.service';
@@ -64,6 +65,7 @@ export class BondsService {
     @Optional() private readonly oracleService?: OracleService,
     @Optional() private readonly complianceAttestation?: ComplianceAttestationService,
     @Optional() private readonly complianceRulesEngine?: ComplianceRulesEngine,
+    @Optional() private readonly complianceSnapshots?: ComplianceSnapshotService,
   ) {}
 
   async create(dto: CreateBondDto): Promise<BondResponse> {
@@ -82,6 +84,8 @@ export class BondsService {
     const bondId = Number(scValToNative(result));
     const bond = await this.buildBondResponse(bondId);
     await this.redis.setEx(`bond:${bondId}`, 300, JSON.stringify(bond));
+    await this.complianceSnapshots?.capture(`bond:${bondId}:issued`, 'BOND_ISSUED', bondId,
+      { bond, transactionHash });
     return { ...bond, transactionHash };
   }
 
@@ -181,6 +185,10 @@ export class BondsService {
     await this.redis.del(`bond:${id}`);
     await this.holderIndex.recordSubscribe(id, dto.investorAddress);
     this.invalidatePortfolio(dto.investorAddress);
+
+    await this.complianceSnapshots?.capture(`bond:${id}:subscription:${transactionHash}`, 'BOND_SUBSCRIBED', id,
+      { investorAddress: dto.investorAddress, amount: String(dto.amount), tranche: dto.tranche ?? TrancheType.STANDARD,
+        jurisdiction: dto.jurisdiction ?? 'GLOBAL', attestation: dto.attestation?.payload ?? null, transactionHash });
 
     return { bondId: id, investorAddress: dto.investorAddress, amount: toBigIntString(dto.amount), transactionHash: transactionHash || '' };
   }
@@ -308,7 +316,7 @@ export class BondsService {
       }
     }
 
-    const { result } = await this.contractService.invokeContractMethod(
+    const { result, transactionHash } = await this.contractService.invokeContractMethod(
       this.configService.getCouponEngineAddress(), 'distribute_coupon', adminSecret,
       [
         Address.fromString(adminAddress).toScVal(),
@@ -321,6 +329,9 @@ export class BondsService {
     );
 
     const parsed = scValToNative(result) as any[];
+    await this.complianceSnapshots?.capture(`bond:${id}:coupon:${dto.periodIndex}`, 'COUPON_DISTRIBUTED', id,
+      { periodIndex: dto.periodIndex, reportId: dto.reportId, holderAddresses,
+        totalCredits: toBigIntString(parsed?.[2] ?? 0), transactionHash });
     return {
       bondId: id,
       periodIndex: dto.periodIndex,
@@ -558,19 +569,23 @@ export class BondsService {
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
     const nonce = await this.nonceService.next(this.configService.getBondIssuerAddress(), adminAddress);
 
+    let transactionHash: string | undefined;
     try {
-      await this.contractService.invokeContractMethod(
+      ({ transactionHash } = await this.contractService.invokeContractMethod(
         this.configService.getBondIssuerAddress(), 'mature_bond', adminSecret,
         [Address.fromString(adminAddress).toScVal(), nativeToScVal(BigInt(id), { type: 'u64' })],
         adminAddress,
-      );
+      ));
     } catch (error) {
       throw this.mapBondError(error, id);
     }
 
     await this.redis.del(`bond:${id}`);
     await this.redis.delPattern('portfolio:*').catch(() => undefined);
-    return this.buildBondResponse(id);
+    const bond = await this.buildBondResponse(id);
+    await this.complianceSnapshots?.capture(`bond:${id}:matured`, 'BOND_MATURED', id,
+      { bond, transactionHash });
+    return bond;
   }
 
   private encodeBondConfig(dto: CreateBondDto): xdr.ScVal {
