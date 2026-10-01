@@ -14,6 +14,7 @@ export interface SeedSummary {
     bonds: number;
     orders: number;
     oracleReports: number;
+    authorizations: number;
     cacheKeysWritten: number;
   };
 }
@@ -73,6 +74,7 @@ export class SeedService implements OnModuleInit {
         bonds: dataset.bonds.length,
         orders: dataset.orders.length,
         oracleReports: dataset.oracleReports.length,
+        authorizations: dataset.authorizations.length,
         cacheKeysWritten: written,
       },
     };
@@ -80,7 +82,8 @@ export class SeedService implements OnModuleInit {
     this.logger.log(
       `Seed complete: ${summary.totals.cacheKeysWritten} cache keys written ` +
         `(${summary.totals.projects} projects, ${summary.totals.bonds} bonds, ` +
-        `${summary.totals.orders} orders, ${summary.totals.oracleReports} oracle reports).`,
+        `${summary.totals.orders} orders, ${summary.totals.oracleReports} oracle reports, ` +
+        `${summary.totals.authorizations} authorization grants).`,
     );
 
     return summary;
@@ -95,6 +98,8 @@ export class SeedService implements OnModuleInit {
     await this.redis.delPattern('orders:*');
     await this.redis.delPattern('reports:*');
     await this.redis.del('oracle:providers');
+    await this.redis.delPattern('authorization:*');
+    await this.redis.del('authorizations:seed');
     await this.redis.del(MARKER_KEY);
     this.logger.log('Seed data cleared.');
   }
@@ -222,6 +227,25 @@ export class SeedService implements OnModuleInit {
     for (const [projectId, list] of reportsByProject) {
       await write(`reports:${projectId}`, list);
     }
+
+    // Authorization grant fixtures for issue #302's grant/expiry/renewal
+    // flow — see `SeedAuthorization` in fixtures.ts for which edge case each
+    // one covers (active, expired-but-uncleaned, revoked).
+    const authorizations = dataset.authorizations.map((a) => ({
+      id: a.id,
+      subjectAddress: walletFor(a.subjectAddress),
+      scope: a.scope,
+      grantedBy: walletFor(a.grantedBy),
+      grantedAt: new Date(a.grantedAt).toISOString(),
+      expiresAt: new Date(a.expiresAt).toISOString(),
+      status: a.status,
+      ...(a.revokedAt ? { revokedAt: new Date(a.revokedAt).toISOString() } : {}),
+      ...(a.revokedBy !== undefined ? { revokedBy: walletFor(a.revokedBy) } : {}),
+    }));
+    for (const authorization of authorizations) {
+      await write(`authorization:${authorization.id}`, authorization);
+    }
+    await write('authorizations:seed', authorizations);
 
     await write('oracle:providers', [
       {

@@ -11,7 +11,12 @@ export class RedisService {
     this.redis = createClient({
       url: process.env.REDIS_URL || 'redis://localhost:6379',
       socket: {
-        reconnectStrategy: (retries) => Math.min(1000 * 2 ** retries, 30_000),
+        reconnectStrategy: (retries) => {
+          if (process.env.REDIS_DISABLE_RETRY === 'true' || retries > 2) {
+            return false;
+          }
+          return Math.min(1000 * 2 ** retries, 30_000);
+        },
       },
     });
     this.redis.on('ready', () => {
@@ -131,6 +136,30 @@ export class RedisService {
     }
   }
 
+  /**
+   * Scan keys matching pattern without blocking Redis.
+   */
+  async scanKeys(pattern: string): Promise<string[]> {
+    if (!this.healthy) {
+      return [];
+    }
+    try {
+      const keys: string[] = [];
+      let cursor = 0;
+      do {
+        const reply = await this.redis.scan(cursor, { MATCH: pattern, COUNT: 100 });
+        cursor = reply.cursor;
+        if (reply.keys.length > 0) {
+          keys.push(...reply.keys);
+        }
+      } while (cursor !== 0);
+      return keys;
+    } catch (error) {
+      this.logDegraded('scanKeys', pattern, error);
+      return [];
+    }
+  }
+
   async sAdd(key: string, value: string): Promise<void> {
     try {
       await this.redis.sAdd(key, value);
@@ -144,6 +173,23 @@ export class RedisService {
       return await this.redis.sMembers(key);
     } catch (error) {
       this.logDegraded('sMembers', key, error);
+      return [];
+    }
+  }
+
+  async lpush(key: string, value: string): Promise<void> {
+    try {
+      await this.redis.lPush(key, value);
+    } catch (error) {
+      this.logDegraded('lpush', key, error);
+    }
+  }
+
+  async lrange(key: string, start: number, stop: number): Promise<string[]> {
+    try {
+      return await this.redis.lRange(key, start, stop);
+    } catch (error) {
+      this.logDegraded('lrange', key, error);
       return [];
     }
   }

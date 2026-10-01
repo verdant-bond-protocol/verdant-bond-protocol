@@ -36,7 +36,7 @@ describe('BondsController authorization (behavioral)', () => {
       await request(app.getHttpServer())
         .post('/bonds/1/sweep-undistributed')
         .set('x-test-role', 'user' as TestRole)
-        .expect(401);
+        .expect(403);
       expect(bondsService.sweepUndistributed).not.toHaveBeenCalled();
     });
 
@@ -50,7 +50,7 @@ describe('BondsController authorization (behavioral)', () => {
     });
   });
 
-  describe('GET /bonds/:id/export (authenticated)', () => {
+  describe('GET /bonds/:id/export (EXPORT_BOND)', () => {
     it('rejects anonymous callers', async () => {
       await request(app.getHttpServer())
         .get('/bonds/1/export')
@@ -59,13 +59,21 @@ describe('BondsController authorization (behavioral)', () => {
       expect(bondsService.exportBond).not.toHaveBeenCalled();
     });
 
-    it('allows any authenticated caller and forwards the wallet address', async () => {
-      mockBondsService.exportBond.mockResolvedValue({ id: 1 } as any);
+    it('rejects authenticated callers without the EXPORT_BOND permission', async () => {
       await request(app.getHttpServer())
         .get('/bonds/1/export')
         .set('x-test-role', 'user' as TestRole)
+        .expect(403);
+      expect(bondsService.exportBond).not.toHaveBeenCalled();
+    });
+
+    it('allows a caller holding EXPORT_BOND and forwards the wallet address', async () => {
+      mockBondsService.exportBond.mockResolvedValue({ id: 1 } as any);
+      await request(app.getHttpServer())
+        .get('/bonds/1/export')
+        .set('x-test-role', 'admin' as TestRole)
         .expect(200);
-      expect(bondsService.exportBond).toHaveBeenCalledWith(1, 'G_USER_ADDRESS');
+      expect(bondsService.exportBond).toHaveBeenCalledWith(1, 'G_ADMIN_ADDRESS');
     });
   });
 
@@ -86,7 +94,7 @@ describe('BondsController authorization (behavioral)', () => {
         .post('/bonds')
         .set('x-test-role', 'user' as TestRole)
         .send(body)
-        .expect(401);
+        .expect(403);
       expect(bondsService.create).not.toHaveBeenCalled();
     });
 

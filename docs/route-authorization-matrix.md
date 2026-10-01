@@ -81,6 +81,9 @@ controller diverge from what is declared below. **Keep the two in sync.**
 | POST | `/projects/:id/reject` | public | — |
 | POST | `/projects/:id/documents` | public | — |
 | GET | `/projects/:id/export` | authenticated | `JwtAuthGuard` |
+| POST | `/projects/:id/certifications` | public | — |
+| GET | `/projects/:id/certifications` | public | — |
+| GET | `/projects/:id/coupon-certification` | public | — |
 
 ## Marketplace (`/marketplace`)
 
@@ -105,6 +108,12 @@ header (`wallet-header`). No JWT/KYC guard is applied at the API boundary.
 | POST | `/marketplace/reconciliation/run` | wallet-header | — | (issue #2: run quote/order reconciliation) |
 | GET | `/marketplace/reconciliation/mismatches` | wallet-header | — | (issue #2: list detected mismatches) |
 | POST | `/marketplace/reconciliation/repair` | wallet-header | — | (issue #2: repair a mismatch) |
+
+## Valuations (`/valuations`)
+
+| Method | Path | Role | Guards |
+| --- | --- | --- | --- |
+| GET | `/valuations` | public | — | (issue #204: credit valuations with staleness metadata) |
 
 ## How the tests protect this contract
 

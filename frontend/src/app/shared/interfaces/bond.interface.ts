@@ -94,6 +94,7 @@ export interface Order {
   status: 'Open' | 'PartiallyFilled' | 'Filled' | 'Cancelled' | 'Expired';
   createdAt: string;
   expiresAt: string;
+  transactionHash?: string;
 }
 
 export interface OrderQueryParams {
@@ -113,6 +114,20 @@ export interface SubscriptionResponse {
   subscriber: string;
   amount: string;
   transactionHash: string;
+}
+
+// Mirror api/src/bonds/interfaces/bond.interface.ts.
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
 }
 
 export interface ClaimCreditsResponse {
@@ -199,4 +214,17 @@ export type TransactionStatus = 'pending' | 'confirmed' | 'failed';
 export interface TransactionStatusResponse {
   hash: string;
   status: TransactionStatus;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
+}
+
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
 }

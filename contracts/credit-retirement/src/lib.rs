@@ -5,6 +5,10 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
 
+/// Issue #188: versioned-interface convention. Bump on a breaking storage
+/// layout or interface change; see docs/upgrade-migrations.md.
+pub const SCHEMA_VERSION: u32 = 1;
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -122,7 +126,7 @@ impl CreditRetirement {
             .ok_or(CreditError::NotInitialized)?;
         let accrued: i128 = env.invoke_contract(
             &coupon_engine,
-            &Symbol::new(&env, "accrued_credits"),
+            &Symbol::new(&env, "escrowed_credits"),
             vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
         );
 
@@ -286,6 +290,14 @@ impl CreditRetirement {
             .get(&DataKey::Admin)
             .ok_or(CreditError::NotInitialized)
     }
+
+    /// Issue #188: versioned-interface convention — bump when the contract's
+    /// storage layout or callable interface changes in a breaking way. See
+    /// docs/upgrade-migrations.md.
+    pub fn schema_version(env: Env) -> u32 {
+        let _ = env;
+        SCHEMA_VERSION
+    }
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), CreditError> {
@@ -388,7 +400,10 @@ mod test {
             credit_type: CreditType::Carbon,
             maturity_date: 3_000_000,
             total_supply: 10_000,
-        };
+            credit_vintage: 2024,
+            serial_number_start: 1,
+            serial_number_end: 10_000,
+            };
         let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
         issuer_client.subscribe(&holder, &bond_id, &10_000, &0);
 
@@ -404,7 +419,7 @@ mod test {
 
         let holders = svec![&env, holder.clone()];
         ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
-        let accrued = ce_client.accrued_credits(&bond_id, &holder);
+        let accrued = ce_client.escrowed_credits(&bond_id, &holder);
         assert!(accrued > 0);
 
         let contract_id = env.register(
@@ -438,7 +453,7 @@ mod test {
             &0,
         );
         assert_eq!(
-            s.ce_client.accrued_credits(&s.bond_id, &s.holder),
+            s.ce_client.escrowed_credits(&s.bond_id, &s.holder),
             s.accrued - half
         );
 
@@ -450,7 +465,7 @@ mod test {
             &make_certificate_hash(&s._env, 2),
             &1,
         );
-        assert_eq!(s.ce_client.accrued_credits(&s.bond_id, &s.holder), 0);
+        assert_eq!(s.ce_client.escrowed_credits(&s.bond_id, &s.holder), 0);
 
         // Retired credits are gone from the coupon ledger, so a claim after
         // retirement yields nothing.
@@ -643,7 +658,10 @@ mod test {
             credit_type: CreditType::Carbon,
             maturity_date: 3_000_000,
             total_supply: 10_000,
-        };
+            credit_vintage: 2024,
+            serial_number_start: 1,
+            serial_number_end: 10_000,
+            };
         let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
         issuer_client.subscribe(&holder1, &bond_id, &3_000, &0);
         issuer_client.subscribe(&holder2, &bond_id, &7_000, &0);
@@ -661,8 +679,8 @@ mod test {
         let holders = svec![&env, holder1.clone(), holder2.clone()];
         ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
 
-        let accrued1 = ce_client.accrued_credits(&bond_id, &holder1);
-        let accrued2 = ce_client.accrued_credits(&bond_id, &holder2);
+        let accrued1 = ce_client.escrowed_credits(&bond_id, &holder1);
+        let accrued2 = ce_client.escrowed_credits(&bond_id, &holder2);
         assert!(accrued1 > 0);
         assert!(accrued2 > 0);
 

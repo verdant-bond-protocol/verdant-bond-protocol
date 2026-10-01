@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectionStrategy, signal, output, effect } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectionStrategy, signal, output, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { forkJoin, of } from 'rxjs';
@@ -140,9 +140,11 @@ export class QuoteBalanceComponent implements OnInit {
   amount = 0;
 
   constructor() {
+    // Re-load when the wallet connects. loadBalances writes signals, so it runs
+    // untracked: the effect depends only on isConnected (NG0600 otherwise).
     effect(() => {
       if (this.walletService.isConnected()) {
-        this.loadBalances();
+        untracked(() => this.loadBalances());
       }
     });
   }

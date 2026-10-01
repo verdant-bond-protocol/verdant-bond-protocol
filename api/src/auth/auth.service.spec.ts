@@ -1,5 +1,6 @@
 import { Keypair, TransactionBuilder } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
+import { RbacService } from './rbac.service';
 
 describe('AuthService', () => {
   const userKeypair = Keypair.random();
@@ -29,6 +30,7 @@ describe('AuthService', () => {
       getJwtRefreshExpiry: () => '7d',
       getJwtRefreshSecret: () => 'refresh-secret',
     } as never,
+    new RbacService(),
   );
 
   beforeEach(() => {

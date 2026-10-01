@@ -1,4 +1,8 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
+import { AdminIntentService } from '../../shared/services/admin-intent.service';
+import { Keypair } from '@stellar/stellar-sdk';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideHttpClient } from '@angular/common/http';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { IssueBondComponent } from './issue-bond.component';
@@ -30,6 +34,8 @@ describe('IssueBondComponent', () => {
       imports: [IssueBondComponent],
       providers: [
         provideRouter([]),
+        provideHttpClient(),
+        provideHttpClientTesting(),
         { provide: ApiService, useValue: apiService },
         { provide: PendingTransactionsService, useValue: jasmine.createSpyObj('PendingTransactionsService', ['register']) },
       ],
@@ -92,6 +98,8 @@ describe('IssueBondComponent', () => {
       ...baseValue,
       couponSchedule: `${inFuture(1000)}`,
     });
+    // Issuance needs a signed admin intent (#166): unlock the admin session.
+    TestBed.inject(AdminIntentService).setAdminSecret(Keypair.random().secret());
     component.onSubmit();
     const apiService = TestBed.inject(ApiService) as unknown as { issueBond: jasmine.Spy };
     const submitted = apiService.issueBond.calls.mostRecent().args[0];

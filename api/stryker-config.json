@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "jest",
+  "coverageAnalysis": "perTest",
+  "checkers": [],
+  "mutate": [
+    "src/bonds/**/*.ts",
+    "src/oracle/**/*.ts",
+    "src/auth/**/*.ts",
+    "src/portfolio/**/*.ts",
+    "!src/**/*.spec.ts",
+    "!src/**/*.module.ts",
+    "!src/**/*.interface.ts",
+    "!src/**/dto/**"
+  ],
+  "reporters": ["clear-text", "progress"],
+  "thresholds": { "high": 80, "low": 60, "break": null },
+  "concurrency": 4,
+  "timeoutMS": 60000,
+  "tempDirName": ".stryker-tmp"
+}

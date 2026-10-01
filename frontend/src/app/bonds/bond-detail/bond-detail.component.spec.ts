@@ -10,6 +10,8 @@ import { WalletService } from '../../auth/wallet.service';
 import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { Bond } from '../../shared/interfaces/bond.interface';
+import { AuthService } from '../../auth/auth.service';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 // `environment.adminAddress` now defaults to empty (#167), so the admin account
 // under test is configured explicitly rather than read from the environment.
@@ -20,7 +22,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
   let fixture: ComponentFixture<BondDetailComponent>;
   let apiService: jasmine.SpyObj<ApiService>;
   let walletService: WalletService;
-  let sessionReady: ReturnType<typeof signal<boolean>>;
+  let isAuthenticated: ReturnType<typeof signal<boolean>>;
 
   const bond: Bond = {
     id: 1,
@@ -57,8 +59,11 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
   beforeEach(async () => {
     apiService = jasmine.createSpyObj('ApiService', [
       'getBondDetail', 'subscribeToBond', 'claimCredits', 'transferBond',
-      'sweepUndistributed', 'getCouponEligibility', 'getClaimableCredits',
+      'sweepUndistributed', 'getCouponEligibility', 'getClaimableCredits', 'getTransactionStatus',
     ]);
+    localStorage.removeItem('nbs_pending_txs');
+    txStatus = 'pending';
+    apiService.getTransactionStatus.and.callFake((hash: string) => of({ hash, status: txStatus }));
     apiService.getBondDetail.and.returnValue(of(detailFor()));
     apiService.getClaimableCredits.and.returnValue(of({
       bondId: 1,
@@ -75,7 +80,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
     apiService.sweepUndistributed.and.returnValue(of({ bondId: 1, swept: '7', transactionHash: '0xabc' }));
     apiService.getCouponEligibility.and.returnValue(of({ projectId: 'a1b2', eligible: true, reasons: [], blockedByReportIds: [] }));
 
-    sessionReady = signal(true); // existing tests expect an authenticated session, matching prior behavior
+    isAuthenticated = signal(true); // existing tests expect an authenticated session, matching prior behavior
 
     await TestBed.configureTestingModule({
       imports: [BondDetailComponent],
@@ -86,7 +91,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
           useValue: { snapshot: { paramMap: { get: () => '1' } } },
         },
         { provide: ApiService, useValue: apiService },
-        { provide: AuthService, useValue: { sessionReady } },
+        { provide: AuthService, useValue: { isAuthenticated } },
         { provide: PendingTransactionsService, useValue: jasmine.createSpyObj('PendingTransactionsService', ['register']) },
         WalletService,
       ],
@@ -102,6 +107,7 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
 
   afterEach(() => {
     fixture?.destroy();
+    localStorage.removeItem('nbs_pending_txs');
   });
 
   const createFixture = (): void => {
@@ -154,12 +160,86 @@ describe('BondDetailComponent (issue #4 refresh model)', () => {
 
     expect(apiService.getClaimableCredits).toHaveBeenCalled();
     const text = fixture.nativeElement.textContent;
-    expect(text).toContain('Claimable: 1.5 credits');
+    expect(text).toContain('Claimable: 1.5 carbon credits (tCO₂e)');
     expect(text).toContain('Period 1');
     expect(text).toContain('Period 2');
     expect(text).toContain('BlueCarbon');
     discardPeriodicTasks();
   }));
+
+  describe('optimistic updates (#209)', () => {
+    const claimableTotalText = () => fixture.nativeElement.querySelector('.claimable-total').textContent;
+
+    it('shows the claimed-out balance as pending until confirmation, then the on-chain value', fakeAsync(() => {
+      walletService.address.set('GAAAA');
+      createFixture();
+
+      fixture.componentInstance.onClaim();
+      tick();
+      fixture.detectChanges();
+      expect(claimableTotalText()).toContain('0 carbon credits');
+      expect(claimableTotalText()).toContain('claim pending confirmation');
+      expect(TestBed.inject(PendingTransactionsService).entries()[0].effect).toEqual({
+        kind: 'claimable-credits', bondId: 1, address: 'GAAAA', expected: '0',
+      });
+
+      apiService.getClaimableCredits.and.returnValue(of({ bondId: 1, address: 'GAAAA', total: '0', details: [] }));
+      txStatus = 'confirmed';
+      tick(4000);
+      fixture.detectChanges();
+      expect(claimableTotalText()).not.toContain('pending');
+      expect(fixture.nativeElement.querySelector('.tx-notice')).toBeNull();
+      discardPeriodicTasks();
+    }));
+
+    it('rolls a failed claim back with an alert instead of silently reverting', fakeAsync(() => {
+      walletService.address.set('GAAAA');
+      createFixture();
+
+      fixture.componentInstance.onClaim();
+      tick();
+      txStatus = 'failed';
+      tick(4000);
+      fixture.detectChanges();
+
+      const notice: HTMLElement = fixture.nativeElement.querySelector('.tx-notice');
+      expect(notice.getAttribute('role')).toBe('alert');
+      expect(notice.textContent).toContain('Your claim failed on-chain and was not applied');
+      expect(claimableTotalText()).toContain('1.5 carbon credits');
+
+      (notice.querySelector('button') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.tx-notice')).toBeNull();
+      discardPeriodicTasks();
+    }));
+
+    it('predicts the subscriber balance and reports a different confirmed value', fakeAsync(() => {
+      const open = { maturityDate: futureBond().maturityDate };
+      apiService.getBondDetail.and.returnValue(of(detailFor(open)));
+      walletService.address.set('GAAAA');
+      createFixture();
+
+      fixture.componentInstance.subscribeAmount = 25;
+      fixture.componentInstance.onSubscribe();
+      tick();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.my-holding').textContent).toContain('125');
+      expect(fixture.nativeElement.querySelector('.my-holding').textContent).toContain('pending confirmation');
+
+      apiService.getBondDetail.and.returnValue(of({
+        ...detailFor(open),
+        holders: [{ address: 'GAAAA', balance: '110' }, { address: 'GBBBB', balance: '200' }],
+      }));
+      txStatus = 'confirmed';
+      tick(4000);
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.querySelector('.my-holding').textContent).toContain('110');
+      expect(fixture.nativeElement.querySelector('.tx-notice').textContent)
+        .toContain('the on-chain value is 110 instead of the expected 125');
+      discardPeriodicTasks();
+    }));
+  });
 
   it('sweeps undistributed credits only after confirmation', fakeAsync(() => {
     walletService.address.set(ADMIN_ADDRESS);

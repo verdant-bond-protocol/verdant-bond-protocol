@@ -11,8 +11,10 @@ import { StatusBadgeComponent } from '../../shared/components/status-badge/statu
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
 import { QuoteBalanceComponent, QuoteBalances } from '../../shared/components/quote-balance/quote-balance.component';
 import { ConnectPromptComponent } from '../../shared/components/connect-prompt/connect-prompt.component';
+import { OrderBookDepthComponent } from '../order-book-depth/order-book-depth.component';
 import { Order, Bond, QuoteAsset, PaginatedResponse } from '../../shared/interfaces/bond.interface';
 import { appErrorMessage, normalizeApiError } from '../../shared/errors/api-error';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 export const ORDERS_RETRY_COUNT = 3;
 export const ORDERS_RETRY_BASE_DELAY_MS = 500;
@@ -25,7 +27,7 @@ export const ORDERS_POLL_INTERVAL_MS = 15000;
 @Component({
   selector: 'app-marketplace-list',
   standalone: true,
-  imports: [CommonModule, RouterModule, FormsModule, StatusBadgeComponent, LoadingSpinnerComponent, QuoteBalanceComponent, ConnectPromptComponent],
+  imports: [CommonModule, RouterModule, FormsModule, StatusBadgeComponent, LoadingSpinnerComponent, QuoteBalanceComponent, ConnectPromptComponent, OrderBookDepthComponent],
   template: `
     <div class="marketplace-page">
       <div class="page-header">
@@ -93,6 +95,8 @@ export const ORDERS_POLL_INTERVAL_MS = 15000;
             <h3 class="section-title">Open Orders ({{ orders().length }})</h3>
             <button class="btn btn-sm btn-outline" (click)="refreshOrders()">Refresh</button>
           </div>
+
+          <app-order-book-depth [bondId]="filterBondId()" />
 
           @if (orders().length === 0) {
             <div class="empty-section">
@@ -280,7 +284,6 @@ export class MarketplaceListComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
   readonly authService = inject(AuthService);
   readonly walletService = inject(WalletService);
-  private readonly pendingTx = inject(PendingTransactionsService);
 
   readonly orders = signal<Order[]>([]);
   readonly bonds = signal<Bond[]>([]);
@@ -409,7 +412,8 @@ export class MarketplaceListComponent implements OnInit, OnDestroy {
     this.error.set('');
     // defer re-invokes the API call on every (re)subscription, so retries issue a
     // fresh request with a fresh cache-busting param instead of reusing a stale one.
-    return defer(() => this.apiService.getOrders({ bondId: this.filterBondId() ?? undefined, status: this.filterStatus() === 'All' ? undefined : this.filterStatus() }, forceRefresh)).pipe(
+    const s = this.filterStatus();
+    return defer(() => this.apiService.getOrders({ bondId: this.filterBondId() ?? undefined, status: s === 'All' ? undefined : (s as Order['status']) }, forceRefresh)).pipe(
       retry({
         count: ORDERS_RETRY_COUNT,
         delay: (error, attempt) =>

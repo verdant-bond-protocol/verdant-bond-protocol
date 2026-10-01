@@ -14,5 +14,7 @@ export interface AuthTokenResponse {
 export interface UserProfileResponse {
   walletAddress: string;
   kycStatus: string;
+  roles: string[];
+  permissions: string[];
   createdAt: string;
 }

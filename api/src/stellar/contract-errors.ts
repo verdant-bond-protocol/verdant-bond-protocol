@@ -16,6 +16,11 @@ export enum StableErrorCode {
   BOND_INVALID_SUPPLY = 'BOND_INVALID_SUPPLY',
   BOND_REDEMPTION_UNDERFUNDED = 'BOND_REDEMPTION_UNDERFUNDED',
   BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE = 'BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE',
+  BOND_PERFORMANCE_FLAGGED = 'BOND_PERFORMANCE_FLAGGED',
+  BOND_INSUFFICIENT_ATTESTATIONS = 'BOND_INSUFFICIENT_ATTESTATIONS',
+  BOND_MIGRATION_IN_PROGRESS = 'BOND_MIGRATION_IN_PROGRESS',
+  BOND_ORACLE_STALE = 'BOND_ORACLE_STALE',
+  BOND_PROJECT_DISPUTED = 'BOND_PROJECT_DISPUTED',
 
   // Oracle Errors
   ORACLE_NOT_INITIALIZED = 'ORACLE_NOT_INITIALIZED',
@@ -30,6 +35,10 @@ export enum StableErrorCode {
   ORACLE_INVALID_SIGNATURE = 'ORACLE_INVALID_SIGNATURE',
   ORACLE_INVALID_RESOLUTION = 'ORACLE_INVALID_RESOLUTION',
   ORACLE_OVERLAPPING_REPORT_PERIOD = 'ORACLE_OVERLAPPING_REPORT_PERIOD',
+  ORACLE_INSUFFICIENT_QUORUM = 'ORACLE_INSUFFICIENT_QUORUM',
+  ORACLE_STALE = 'ORACLE_STALE',
+  ORACLE_DISPUTE_BOND_INSUFFICIENT = 'ORACLE_DISPUTE_BOND_INSUFFICIENT',
+  ORACLE_PROJECT_DISPUTED = 'ORACLE_PROJECT_DISPUTED',
 
   // DEX Errors
   DEX_NOT_INITIALIZED = 'DEX_NOT_INITIALIZED',
@@ -111,6 +120,11 @@ export const ERROR_MAPPINGS: Record<string, Record<number, { code: StableErrorCo
     12: { code: StableErrorCode.BOND_INVALID_SUPPLY, message: 'Invalid supply bounds' },
     13: { code: StableErrorCode.BOND_REDEMPTION_UNDERFUNDED, message: 'Bond redemption pool is underfunded' },
     14: { code: StableErrorCode.BOND_INCOMPATIBLE_METHODOLOGY_CREDIT_TYPE, message: 'Incompatible methodology for credit type' },
+    15: { code: StableErrorCode.BOND_PERFORMANCE_FLAGGED, message: 'Coupon distribution is paused: performance change is outside the allowed bounds' },
+    16: { code: StableErrorCode.BOND_INSUFFICIENT_ATTESTATIONS, message: 'Oracle report has too few independent attestations' },
+    17: { code: StableErrorCode.BOND_MIGRATION_IN_PROGRESS, message: 'Coupon operations are paused during a migration' },
+    18: { code: StableErrorCode.BOND_ORACLE_STALE, message: 'Oracle data is too stale; manual intervention is required before distribution' },
+    19: { code: StableErrorCode.BOND_PROJECT_DISPUTED, message: 'Project is disputed; coupon distribution is frozen' },
   },
   ORACLE: {
     1: { code: StableErrorCode.ORACLE_NOT_INITIALIZED, message: 'Oracle contract is not initialized' },
@@ -125,6 +139,10 @@ export const ERROR_MAPPINGS: Record<string, Record<number, { code: StableErrorCo
     10: { code: StableErrorCode.ORACLE_INVALID_SIGNATURE, message: 'Invalid signature for oracle verification' },
     11: { code: StableErrorCode.ORACLE_INVALID_RESOLUTION, message: 'Invalid resolution state for challenge' },
     12: { code: StableErrorCode.ORACLE_OVERLAPPING_REPORT_PERIOD, message: 'Oracle report period overlaps an existing report' },
+    13: { code: StableErrorCode.ORACLE_INSUFFICIENT_QUORUM, message: 'Not enough oracle sources to reach quorum' },
+    14: { code: StableErrorCode.ORACLE_STALE, message: 'Oracle data is stale' },
+    15: { code: StableErrorCode.ORACLE_DISPUTE_BOND_INSUFFICIENT, message: 'Dispute bond is below the required amount' },
+    16: { code: StableErrorCode.ORACLE_PROJECT_DISPUTED, message: 'Project is under dispute' },
   },
   DEX: {
     1: { code: StableErrorCode.DEX_NOT_INITIALIZED, message: 'DEX contract is not initialized' },

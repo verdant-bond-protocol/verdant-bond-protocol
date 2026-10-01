@@ -235,3 +235,27 @@ Report periods use half-open intervals (`[period_start, period_end)`). For a
 given project, provider, and methodology, exact or partial overlaps are
 rejected on-chain; adjacent periods are valid. Coupon eligibility also rejects legacy/indexed data
 that contains overlapping periods.
+
+## Multi-Oracle Aggregation & Outlier Rejection (#195)
+- **Minimum Quorum:** Tunable via `set_minimum_quorum`. Requires `n >= min_quorum` verified reports per reporting window before aggregation computes a final performance metric.
+- **Trimmed Mean Aggregation:**
+  - `n < min_quorum`: returns `OracleError::InsufficientQuorum`.
+  - `n == 2`: computes standard average `(r1 + r2) / 2`.
+  - `n >= 3`: drops min and max reports, computing trimmed mean across intermediate observations.
+- **Outlier Provider Slashing:** Providers submitting reports deviating by more than `MAX_ALLOWED_DEVIATION_BPS` (2,000 bps = 20%) from the consensus trimmed mean suffer a 10% stake slash and deactivation.
+
+## Dispute & Arbitration Mechanism (#193)
+- **Dispute Bond Requirement:** `challenge_report` requires challengers to stake at least `minimum_dispute_bond`.
+- **Project-Level Coupon Freeze:** An active dispute sets `ProjectDisputed(project_id)`, freezing coupon math cross-contract (`BondError::ProjectDisputedAndFrozen`) across all dependent bonds.
+- **Bad-Faith Disputer Slashing:** Upon arbitration (`resolve_challenge`), if the challenge is rejected (exonerating the report), 100% of the challenger's dispute bond is slashed. If upheld, the provider is slashed and the challenger receives their bond back.
+
+## Oracle Staleness Thresholds & 3-Tiered Graceful Degradation (#192)
+- **Configurable Thresholds:** `set_project_staleness_config` sets `threshold1_secs` (Tier 1 threshold), `threshold2_secs` (Tier 2 threshold), and `conservatism_discount_bps`.
+- **Three-Tier Degradation:**
+  - **Tier 0 (Fresh, `< threshold1`):** Full normal coupon credit calculations (`discount_bps = 0`).
+  - **Tier 1 (Degraded / Discounted LKG, `threshold1 <= elapsed < threshold2`):** Applies `conservatism_discount_bps` reduction to total credits accrued during coupon distribution.
+  - **Tier 2 (Critical / Stale, `>= threshold2`):** Blocks automated coupon math cross-contract (`BondError::OracleStaleManualInterventionRequired`), requiring manual administrative or governance review.
+
+## CarbonChain Asynchronous True-Up Adjustments (#194)
+- **Forward Application:** Audit updates or CarbonChain certification reconciliations are submitted via `submit_true_up_adjustment`.
+- **No Retroactive Clawback:** Accumulated true-up adjustments are applied forward during the next scheduled coupon distribution window (`offset == 0`) without altering historical ledger distributions.

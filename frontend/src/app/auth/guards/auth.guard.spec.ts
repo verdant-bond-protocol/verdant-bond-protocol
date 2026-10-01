@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Router, RouterStateSnapshot, UrlTree, provideRouter } from '@angular/router';
+import { Router, RouterStateSnapshot, UrlTree, provideRouter, RedirectCommand } from '@angular/router';
 import { Keypair } from '@stellar/stellar-sdk';
 import { adminGuard, authGuard, AUTH_REASON_PARAM, RETURN_URL_PARAM } from './auth.guard';
 import { WalletService } from '../wallet.service';
@@ -17,8 +17,9 @@ describe('route guards (issue #168)', () => {
 
   const stateFor = (url: string) => ({ url }) as RouterStateSnapshot;
 
+  // Both guards decide synchronously; narrow Angular's MaybeAsync<GuardResult>.
   const run = (guard: typeof authGuard, url: string) =>
-    TestBed.runInInjectionContext(() => guard({} as never, stateFor(url)));
+    TestBed.runInInjectionContext(() => guard({} as never, stateFor(url))) as boolean | UrlTree;
 
   beforeEach(() => {
     TestBed.configureTestingModule({
@@ -27,7 +28,13 @@ describe('route guards (issue #168)', () => {
         { provide: FREIGHTER_API, useValue: {} },
         {
           provide: AuthService,
-          useValue: { isAuthenticated: () => authenticated },
+          // A signed-in session's token carries the maintainer role (#228) only
+          // for the deployment's admin key.
+          useValue: {
+            isAuthenticated: () => authenticated,
+            hasRole: (role: string) =>
+              authenticated && role === 'maintainer' && wallet.address() === ADMIN_ADDRESS,
+          },
         },
       ],
     });
@@ -45,9 +52,14 @@ describe('route guards (issue #168)', () => {
     wallet.address.set(null);
   });
 
-  const expectRedirect = (result: boolean | UrlTree, url: string, reason: string) => {
-    expect(result instanceof UrlTree).toBeTrue();
-    const tree = result as UrlTree;
+  const expectRedirect = (result: any, url: string, reason: string) => {
+    let tree: UrlTree;
+    if (result instanceof RedirectCommand) {
+      tree = result.redirectTo;
+    } else {
+      expect(result instanceof UrlTree).toBeTrue();
+      tree = result as UrlTree;
+    }
     expect(TestBed.inject(Router).serializeUrl(tree)).toContain('/auth');
     expect(tree.queryParams[RETURN_URL_PARAM]).toBe(url);
     expect(tree.queryParams[AUTH_REASON_PARAM]).toBe(reason);

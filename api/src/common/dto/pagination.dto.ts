@@ -1,4 +1,4 @@
-import { IsOptional, IsInt, Min, Max } from 'class-validator';
+import { IsOptional, IsInt, Min, Max, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class PaginationDto {
@@ -15,14 +15,19 @@ export class PaginationDto {
   @Max(100)
   @Type(() => Number)
   limit?: number = 20;
+
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }
 
 export class PaginatedResponse<T> {
   data: T[];
   meta: {
-    page: number;
+    page?: number;
     limit: number;
     total: number;
-    totalPages: number;
+    totalPages?: number;
+    nextCursor?: string | number;
   };
 }

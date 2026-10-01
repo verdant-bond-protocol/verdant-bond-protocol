@@ -1,10 +1,9 @@
-import { Component, inject, OnInit, OnDestroy, ChangeDetectionStrategy, signal, computed, effect } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy, ChangeDetectionStrategy, signal, computed, effect, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ApiService, CouponEligibility } from '../../shared/services/api.service';
 import { WalletService } from '../../auth/wallet.service';
-import { AuthService } from '../../auth/auth.service';
 import { StatusBadgeComponent } from '../../shared/components/status-badge/status-badge.component';
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
 import { BondDetailReloadCoordinator } from './bond-detail.reload-coordinator';
@@ -14,13 +13,15 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { Bond, ClaimableCreditsResponse } from '../../shared/interfaces/bond.interface';
 import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
+import { appErrorMessage } from '../../shared/errors/api-error';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 @Component({
   selector: 'app-bond-detail',
   standalone: true,
   imports: [
     CommonModule, RouterModule, FormsModule, StatusBadgeComponent, LoadingSpinnerComponent,
-    ConnectPromptComponent, AdminSecretPromptComponent,
+    ConnectPromptComponent, AdminSecretPromptComponent, CreditQuantityComponent,
   ],
   providers: [BondDetailReloadCoordinator],
   template: `
@@ -28,6 +29,14 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
       <a class="back-link" routerLink="/bonds">← Back to Bonds</a>
 
       <app-connect-prompt action="Subscribing, claiming credits, and transferring tokens need a signed-in wallet." />
+
+      @for (n of txNotices(); track n.hash) {
+        <div class="tx-notice" [class.tx-notice-error]="n.reconciliation === 'rolled_back'"
+             [attr.role]="n.reconciliation === 'rolled_back' ? 'alert' : 'status'">
+          <span>{{ noticeText(n) }}</span>
+          <button class="btn btn-sm btn-outline" (click)="pendingTx.acknowledge(n.hash)">Dismiss</button>
+        </div>
+      }
 
       @if (refreshing()) {
         <div class="refresh-banner">Refreshing bond data…</div>
@@ -141,10 +150,18 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                     <p class="auth-hint">Connect your wallet and sign in to subscribe.</p>
                   }
                   @if (subscribeSuccess()) {
-                    <div class="success-msg">Subscribed! Tx: {{ subscribeTx() }}</div>
+                    <div class="success-msg" role="status" aria-live="polite">Subscribed! Tx: {{ subscribeTx() }}</div>
+                  }
+                  @if (walletService.address()) {
+                    <p class="my-holding">
+                      Your holding: {{ myHolding().value | number }}
+                      @if (myHolding().pending) {
+                        <span class="pending-tag">pending confirmation</span>
+                      }
+                    </p>
                   }
                   @if (subscribeError()) {
-                    <div class="error-msg">{{ subscribeError() }}</div>
+                    <div class="error-msg" role="alert" aria-live="assertive">{{ subscribeError() }}</div>
                   }
                 </div>
               }
@@ -180,7 +197,10 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                 <div class="muted">Loading claimable credits…</div>
               } @else if (claimable()) {
                 <div class="claimable-total">
-                  Claimable: {{ fmtCredits(claimable()!.total) }} credits
+                  Claimable: <app-credit-quantity [amount]="claimableTotal().value" [creditType]="b.creditType" />
+                  @if (claimableTotal().pending) {
+                    <span class="pending-tag">claim pending confirmation</span>
+                  }
                 </div>
                 @if (claimable()!.details.length > 0) {
                   <div class="claimable-detail-title">Provenance</div>
@@ -188,7 +208,7 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                     @for (d of claimable()!.details; track d.periodIndex + '-' + d.reportId) {
                       <li class="claimable-item">
                         <span class="claimable-period">Period {{ d.periodIndex + 1 }}</span>
-                        <span class="claimable-amount">{{ fmtCredits(d.amount) }}</span>
+                        <span class="claimable-amount"><app-credit-quantity [amount]="d.amount" [creditType]="d.creditType" /></span>
                         <span class="claimable-meta">
                           {{ d.creditType }} · {{ d.startTime * 1000 | date:'mediumDate' }}
                           – {{ d.endTime * 1000 | date:'mediumDate' }}
@@ -209,12 +229,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                 <p class="auth-hint">Connect your wallet and sign in to claim credits.</p>
               }
               @if (claimSuccess()) {
-                <div class="success-msg">
-                  Claimed {{ claimCredits() }} credits! Tx: {{ claimTx() }}
+                <div class="success-msg" role="status" aria-live="polite">
+                  Claimed <app-credit-quantity [amount]="claimCredits()" [creditType]="b.creditType" />! Tx: {{ claimTx() }}
                 </div>
               }
               @if (claimError()) {
-                <div class="error-msg">{{ claimError() }}</div>
+                <div class="error-msg" role="alert" aria-live="assertive">{{ claimError() }}</div>
               }
             </div>
 
@@ -259,12 +279,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                     <p class="auth-hint">Connect your wallet and sign in to transfer.</p>
                   }
                   @if (transferSuccess()) {
-                    <div class="success-msg">
+                    <div class="success-msg" role="status" aria-live="polite">
                       Transferred {{ transferAmount }} tokens to {{ transferTo }}! Tx: {{ transferTx() }}
                     </div>
                   }
                   @if (transferError()) {
-                    <div class="error-msg">{{ transferError() }}</div>
+                    <div class="error-msg" role="alert" aria-live="assertive">{{ transferError() }}</div>
                   }
                 </div>
               }
@@ -299,12 +319,12 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                   <div class="admin-note">Loading undistributed total...</div>
                 }
                 @if (sweepSuccess()) {
-                  <div class="success-msg">
+                  <div class="success-msg" role="status" aria-live="polite">
                     Swept {{ sweepSwept() }} credits! Tx: {{ sweepTx() }}
                   </div>
                 }
                 @if (sweepError()) {
-                  <div class="error-msg">{{ sweepError() }}</div>
+                  <div class="error-msg" role="alert" aria-live="assertive">{{ sweepError() }}</div>
                 }
                 <!-- Coupon Distribute -->
                 @if (couponEligibility() && couponEligibility()!.eligible) {
@@ -316,7 +336,7 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
                   @if (adminIntent.hasSecret()) {
                     <app-admin-secret-prompt
                       action="Distribute coupon"
-                      [description]="'Bond #' + b.id + ' — distribute coupon for period ' + couponEligibility()!.periodIndex + '.'"
+                      [description]="'Bond #' + b.id + ' — distribute coupon.'"
                       (unlocked)="onSecretUnlocked()"
                       (cancelled)="secretPromptOpen.set(false)"
                     />
@@ -419,6 +439,10 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
     .claim-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
     .claim-btn, .transfer-btn, .sweep-btn { width: 100%; }
     .claimable-total { font-size: 0.875rem; font-weight: 600; color: #1a1a2e; margin-bottom: 8px; }
+    .pending-tag { margin-left: 6px; font-size: 0.75rem; font-weight: 600; color: #92400e; background: #fef3c7; border-radius: 4px; padding: 1px 6px; }
+    .my-holding { font-size: 0.8125rem; color: #374151; margin-top: 8px; }
+    .tx-notice { display: flex; justify-content: space-between; align-items: center; gap: 12px; background: #fffbeb; color: #92400e; padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; font-size: 0.875rem; }
+    .tx-notice-error { background: #fef2f2; color: #b91c1c; }
     .claimable-detail-title { font-size: 0.75rem; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 4px; }
     .claimable-list { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
     .claimable-item { display: flex; flex-direction: column; gap: 2px; font-size: 0.8125rem; padding: 6px 10px; background: #f9fafb; border-radius: 6px; }
@@ -443,10 +467,13 @@ import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
 export class BondDetailComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly apiService = inject(ApiService);
-  private readonly walletService = inject(WalletService);
+  readonly walletService = inject(WalletService);
+  readonly pendingTx = inject(PendingTransactionsService);
+  readonly authService = inject(AuthService);
   private readonly adminAccess = inject(AdminAccessService);
   readonly adminIntent = inject(AdminIntentService);
   private readonly coordinator = inject(BondDetailReloadCoordinator);
+  private readonly pendingTx = inject(PendingTransactionsService);
 
   /**
    * Every panel (summary, holders, coupon, maturity) is derived from the single
@@ -473,7 +500,7 @@ export class BondDetailComponent implements OnInit, OnDestroy {
   readonly subscribeError = signal('');
   readonly claimSubmitting = signal(false);
   readonly claimSuccess = signal(false);
-  readonly claimCredits = signal(0);
+  readonly claimCredits = signal('0');
   readonly claimTx = signal('');
   readonly claimError = signal('');
   readonly transferSubmitting = signal(false);
@@ -532,8 +559,8 @@ export class BondDetailComponent implements OnInit, OnDestroy {
 
   /**
    * Load itemized claimable-credit provenance whenever the committed bond
-   * snapshot or the connected wallet changes (#156). Amounts are rendered in
-   * minor units via `formatCreditMinorUnits` (#157).
+   * snapshot or the connected wallet changes (#156). Amounts arrive in minor
+   * units (#157) and are rendered by `<app-credit-quantity>` (#210).
    */
   private readonly claimableEffect = effect(() => {
     const bond = this.coordinator.detail()?.bond;
@@ -555,14 +582,71 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     });
   }, { allowSignalWrites: true });
 
+  /**
+   * Optimistic values (#209): while a subscribe/claim transaction is
+   * unconfirmed, show the value it will produce, marked as pending. Once it
+   * settles the on-chain value is shown again and any mismatch is announced.
+   */
+  readonly myHolding = computed(() => {
+    const b = this.bond();
+    const address = this.walletService.address();
+    const optimistic = b ? this.pendingTx.optimisticValue('holder-balance', b.id, address) : null;
+    const actual = this.holders().find((h) => h.address === address)?.balance ?? '0';
+    return { value: optimistic ?? actual, pending: optimistic !== null };
+  });
+
+  readonly claimableTotal = computed(() => {
+    const b = this.bond();
+    const optimistic = b ? this.pendingTx.optimisticValue('claimable-credits', b.id, this.walletService.address()) : null;
+    return { value: optimistic ?? this.claimable()?.total ?? '0', pending: optimistic !== null };
+  });
+
+  readonly txNotices = computed(() => {
+    const b = this.bond();
+    return b ? this.pendingTx.notices(b.id) : [];
+  });
+
+  /**
+   * Reload on-chain state once whenever one of this bond's optimistic
+   * transactions settles. Transactions already settled when the bond first
+   * loads are recorded without a reload.
+   */
+  private settled: Set<string> | null = null;
+  private readonly settleEffect = effect(() => {
+    const b = this.bond();
+    if (!b) return;
+    const settledNow = this.pendingTx
+      .entries()
+      .filter((e) => e.effect?.bondId === b.id && e.status !== 'pending')
+      .map((e) => e.hash);
+    const firstRun = this.settled === null;
+    const seen = (this.settled ??= new Set<string>());
+    const fresh = settledNow.filter((hash) => !seen.has(hash));
+    fresh.forEach((hash) => seen.add(hash));
+    if (!firstRun && fresh.length > 0) untracked(() => this.reload(b.id));
+  });
+
+  noticeText(entry: PendingTx): string {
+    const action = entry.operation === 'claim' ? 'claim' : 'subscription';
+    const { expected, actual } = entry.effect ?? {};
+    switch (entry.reconciliation) {
+      case 'delayed':
+        return `Your ${action} is taking longer than usual to confirm. The value marked "pending" is not final yet.`;
+      case 'diverged':
+        return `Your ${action} confirmed, but another transaction changed the result first: the on-chain value is ${actual} instead of the expected ${expected}. The on-chain value is shown.`;
+      case 'rolled_back':
+        return entry.rollbackReason === 'expired'
+          ? `Your ${action} could not be confirmed within its validity window, so it was not applied. The on-chain values are shown again.`
+          : `Your ${action} failed on-chain and was not applied. The on-chain values are shown again.`;
+      default:
+        return '';
+    }
+  }
+
   subscribeAmount = 0;
   transferTo = '';
   transferAmount = 0;
 
-  /** Format a minor-unit credit quantity for display (#157). */
-  fmtCredits(minorUnits: string | number | bigint, maxDecimals?: number): string {
-    return formatCreditMinorUnits(minorUnits, maxDecimals);
-  }
   subscribeProgress(): number {
     const b = this.bond();
     if (!b || Number(b.totalSupply) === 0) return 0;
@@ -620,11 +704,23 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     this.subscribeSuccess.set(false);
     this.subscribeError.set('');
 
+    // Captured before submitting: the balance this subscription adds to.
+    const address = this.walletService.address();
+    const baseline = this.holders().find((h) => h.address === address)?.balance ?? '0';
+    const subscribeEffect = address && Number.isInteger(this.subscribeAmount)
+      ? {
+          kind: 'holder-balance' as const,
+          bondId: b.id,
+          address,
+          expected: (BigInt(baseline) + BigInt(this.subscribeAmount)).toString(),
+        }
+      : undefined;
+
     this.apiService.subscribeToBond(b.id, this.subscribeAmount).subscribe({
       next: (res) => {
         this.subscribeSuccess.set(true);
         this.subscribeTx.set(res.transactionHash);
-        this.pendingTx.register(res.transactionHash, 'subscribe');
+        this.pendingTx.register(res.transactionHash, 'subscribe', subscribeEffect);
         this.subscribeSubmitting.set(false);
         this.reload(b.id);
       },
@@ -645,9 +741,14 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     this.apiService.claimCredits(b.id).subscribe({
       next: (res) => {
         this.claimSuccess.set(true);
-        this.claimCredits.set(Number(res.credits));
+        this.claimCredits.set(res.credits);
         this.claimTx.set(res.transactionHash);
-        this.pendingTx.register(res.transactionHash, 'claim');
+        const address = this.walletService.address();
+        this.pendingTx.register(
+          res.transactionHash,
+          'claim',
+          address ? { kind: 'claimable-credits', bondId: b.id, address, expected: '0' } : undefined,
+        );
         this.claimSubmitting.set(false);
         this.reload(b.id);
       },
@@ -743,7 +844,7 @@ private submitSweep(): void {
     if (!confirmed) return;
 
     this.apiService.distributeCoupon(b.id, { periodIndex: 0 }).subscribe({
-      next: (res) => {
+      next: (_res) => {
         this.reload(b.id);
       },
       error: (err) => {
@@ -768,8 +869,10 @@ private submitSweep(): void {
     this.apiService.mature(b.id).subscribe({
       next: (res) => {
         this.matureSuccess.set(true);
-        this.matureTx.set(res.transactionHash);
-        this.pendingTx.register(res.transactionHash, 'mature');
+        this.matureTx.set(res.transactionHash || '');
+        if (res.transactionHash) {
+          this.pendingTx.register(res.transactionHash, 'mature');
+        }
         this.matureSubmitting.set(false);
         this.reload(b.id);
       },
@@ -791,7 +894,7 @@ private submitSweep(): void {
 
     this.reconcileSubmitting.set(true);
     this.apiService.reconcileHolders(b.id).subscribe({
-      next: (res) => {
+      next: (_res) => {
         this.reload(b.id);
       },
       error: (err) => {

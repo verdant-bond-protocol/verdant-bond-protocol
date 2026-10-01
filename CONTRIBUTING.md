@@ -97,6 +97,22 @@ verdant-bond-protocol/
 6. **Commit** using conventional commits (see below)
 7. **Push** and open a **Pull Request** against `main`
 
+## E2E Testing
+
+To run the end-to-end tests locally, use the following command in the `api` directory:
+
+```bash
+npm run test:e2e
+```
+
+For the highest-risk user journey (subscription with failure and recovery modes), run:
+
+```bash
+npx jest --config ./test/jest-e2e.json test/subscription-journey.e2e-spec.ts
+```
+
+Ensure you have a local Redis instance running if required, and mock environments are configured properly.
+
 ### Branch Naming
 
 - `feat/description` — New features
@@ -146,6 +162,25 @@ chore(ci): add cargo-audit to workflow
 - Tie validation errors to their fields with `aria-describedby`, and announce form-level failures with `role="alert"` or `aria-live`.
 - Verify dialogs, menus, and dropdowns can be opened, used, and dismissed without losing focus.
 - Add or update automated accessibility assertions for shared controls when changing core workflows.
+
+### Feature Flags
+
+- Use feature flags for high-risk changes and large new feature rollouts.
+- Maintain safe defaults in `FeatureFlagsService` so that missing config safely disables or falls back to standard behavior.
+- Document rollout and rollback steps in [docs/feature_flags.md](docs/feature_flags.md).
+- Do not introduce breaking changes without a feature flag that can disable the new path.
+
+### Operational Health & Dashboard
+
+Maintainers monitor the health of Verdant Bond Protocol via the **Ops Dashboard** (`GET /ops/dashboard`), which aggregates:
+- **Oracle Incidents**: Unresolved or escalating exceptions from data providers.
+- **Marketplace Reconciliation Drift**: Discrepancies between off-chain cache and on-chain balances.
+- **Bond Holder Index Staleness**: Bonds that have not been reconciled against on-chain records recently.
+
+When adding new background workers, external integrations, or caching mechanisms, contributors **must**:
+1. Surface relevant failures as aggregated metrics rather than just logging.
+2. Ensure counts match underlying records in tests or validation scripts.
+3. Hook these indicators into the `OpsModule` to keep the maintainer dashboard comprehensive.
 
 ## Testing
 
@@ -202,9 +237,12 @@ Mutation testing introduces controlled faults (mutants) into the codebase to ver
 
 ```bash
 cd api
-npm run mutate     # Run stryker mutation testing
+npm run mutate     # Run Stryker mutation testing
 npm run test:mutate # Run with threshold check (fails if score < 50%)
 ```
+
+Mutation testing runs locally, not in CI: the critical modules below produce
+about 2,400 mutants, which takes hours. Run it before merging changes to them.
 
 The mutation testing configuration is in `api/stryker-config.json`. Critical modules monitored:
 - Financial math: `api/src/bonds/`, `api/src/oracle/`
@@ -273,6 +311,17 @@ Use the [Feature Request template](.github/ISSUE_TEMPLATE/feature_request.md). I
 - Check existing [issues](https://github.com/prissca/verdant-bond-protocol/issues) and [discussions](https://github.com/prissca/verdant-bond-protocol/discussions)
 - Review [docs/](./docs/) for architecture and design details
 - Open a [discussion](https://github.com/prissca/verdant-bond-protocol/discussions) for questions
+
+## Role-Based Access Control (RBAC)
+
+Verdant Bond Protocol uses a centralized, consistently enforced role-based access control system across both API and UI boundaries. 
+The defined roles and their capabilities are:
+- **MAINTAINER**: Has all permissions. Usually assigned to the protocol admin.
+- **ISSUER**: Can create bonds, distribute coupons, mature bonds, export bonds, and approve/reject projects.
+- **INVESTOR**: Can subscribe to bonds, claim credits, and transfer bonds.
+- **SETTLEMENT_MANAGER**: Can reconcile holders, reindex holders, sweep undistributed funds, register oracle providers, and manage oracle incidents.
+
+Roles are granted based on wallet addresses matching configured environment variables (e.g., `ISSUER_PUBLIC_KEYS`, `SETTLEMENT_PUBLIC_KEYS`) or via the `STELLAR_PUBLIC_KEY` for the maintainer.
 
 ---
 

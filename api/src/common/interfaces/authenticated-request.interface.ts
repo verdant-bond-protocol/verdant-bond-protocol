@@ -39,6 +39,8 @@ export interface KycRecord {
 export interface AuthenticatedUser {
   walletAddress: string;
   kycStatus: KycStatus;
+  roles?: string[];
+  permissions?: string[];
 }
 
 export interface AuthenticatedRequest extends Request {

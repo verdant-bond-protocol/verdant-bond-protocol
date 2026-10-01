@@ -1,4 +1,5 @@
 import { RequestMethod } from '@nestjs/common';
+import { PERMISSIONS_KEY } from '../common/decorators/permissions.decorator';
 import {
   ROUTE_AUTHORIZATION_MATRIX,
   RouteAuthEntry,
@@ -123,18 +124,48 @@ describe('Route authorization matrix', () => {
 
   it('treats every mutation endpoint as either guarded, wallet-header, or explicitly public', () => {
     const unclassified = ROUTE_AUTHORIZATION_MATRIX.filter(
-      (e) => e.mutation && !['admin', 'authenticated', 'wallet-header', 'public'].includes(e.role),
+      (e) =>
+        e.mutation &&
+        !['admin', 'permissioned', 'authenticated', 'wallet-header', 'public'].includes(e.role),
     );
     expect(unclassified).toEqual([]);
   });
 
-  it('distinguishes admin-only routes from public/authenticated routes', () => {
-    const adminRoutes = ROUTE_AUTHORIZATION_MATRIX.filter((e) => e.role === 'admin');
-    expect(adminRoutes.length).toBeGreaterThan(0);
-    adminRoutes.forEach((route) => {
+  it('distinguishes privileged routes from public/authenticated routes', () => {
+    const privileged = ROUTE_AUTHORIZATION_MATRIX.filter(
+      (e) => e.role === 'admin' || e.role === 'permissioned',
+    );
+    expect(privileged.length).toBeGreaterThan(0);
+    privileged.forEach((route) => {
+      const roleGuard = route.role === 'admin' ? 'AdminGuard' : 'PermissionsGuard';
       expect(route.guards.map((g) => g.name)).toEqual(
-        expect.arrayContaining(['JwtAuthGuard', 'AdminGuard']),
+        expect.arrayContaining(['JwtAuthGuard', roleGuard]),
       );
     });
+  });
+
+  // PermissionsGuard allows any request whose handler declares no permissions,
+  // so a guarded route without @RequirePermissions would be silently open.
+  it('declares exactly the matrix permissions on every PermissionsGuard route', () => {
+    const failures: string[] = [];
+    ROUTE_AUTHORIZATION_MATRIX.forEach((entry) => {
+      const usesGuard = entry.guards.some((g) => g.name === 'PermissionsGuard');
+      const handler = entry.controller.prototype[entry.method];
+      const declared: string[] = Reflect.getMetadata(PERMISSIONS_KEY, handler) ?? [];
+      const label = `${entry.controller.name}.${entry.method}`;
+
+      if (usesGuard !== (entry.role === 'permissioned')) {
+        failures.push(`${label}: PermissionsGuard routes must use the 'permissioned' role`);
+      }
+      if (!usesGuard) return;
+      if (declared.length === 0) {
+        failures.push(`${label}: PermissionsGuard without @RequirePermissions is open to everyone`);
+      }
+      const expected = [...(entry.permissions ?? [])].sort();
+      if (JSON.stringify([...declared].sort()) !== JSON.stringify(expected)) {
+        failures.push(`${label}: permissions matrix=[${expected}] actual=[${declared}]`);
+      }
+    });
+    expect(failures).toEqual([]);
   });
 });

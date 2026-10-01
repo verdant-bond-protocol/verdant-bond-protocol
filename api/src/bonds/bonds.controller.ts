@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException
+  Controller, Get, Post, Body, Param, Query, Req, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException, ForbiddenException
 } from '@nestjs/common';
 import { BondsService } from './bonds.service';
 import { CreateBondDto } from './dto/create-bond.dto';
@@ -9,12 +9,17 @@ import { ClaimCreditsDto } from './dto/claim-credits.dto';
 import { TransferBondDto } from './dto/transfer-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { AdminGuard } from '../common/guards/admin.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../auth/rbac';
+import { RequireQuota } from '../common/decorators/quota.decorator';
+import { QuotaResource } from '../common/services/quota.service';
 import { RequireIntent } from '../common/decorators/require-intent.decorator';
 import { Idempotent } from '../common/decorators/idempotent.decorator';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import {
   BondResponse,
   SubscriptionResponse,
@@ -29,12 +34,16 @@ import {
   ClaimableCreditsResponse,
 } from './interfaces/bond.interface';
 
+@ApiTags('bonds')
+@ApiBearerAuth()
 @Controller('bonds')
 export class BondsController {
   constructor(private readonly bondsService: BondsService) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.CREATE_BOND)
+  @RequireQuota(QuotaResource.CREATE_BOND)
   @RequireIntent('create_bond')
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
@@ -46,10 +55,28 @@ export class BondsController {
     return this.bondsService.findAll(query.page, query.limit);
   }
 
+  /**
+   * Wallet-scoped holdings view (#174). A non-admin may only query holdings
+   * for their own authenticated wallet address; admins may query any address.
+   */
   @Get('held/:address')
+  @UseGuards(JwtAuthGuard)
   async findHeldByAddress(
     @Param('address') address: string,
+    @Req() req: any,
   ): Promise<HeldBondResponse[]> {
+    const requester = req.user?.walletAddress;
+    if (!requester) {
+      throw new ForbiddenException('Authenticated wallet required');
+    }
+
+    const isAdmin = Boolean(
+      process.env.STELLAR_PUBLIC_KEY && requester === process.env.STELLAR_PUBLIC_KEY,
+    );
+    if (address !== requester && !isAdmin) {
+      throw new ForbiddenException('You may only view your own holdings');
+    }
+
     return this.bondsService.findHeldByAddress(address);
   }
 
@@ -78,6 +105,11 @@ export class BondsController {
     return this.bondsService.subscribe(id, dto);
   }
 
+  /**
+   * Public on-chain holder list (#174). Documented intent: On-chain ledger
+   * holder positions are public blockchain data on Stellar, so this aggregate
+   * per-bond holder distribution endpoint remains public for market transparency.
+   */
   @Get(':id/holders')
   async getHolders(
     @Param('id', ParseIntPipe) id: number,
@@ -86,7 +118,8 @@ export class BondsController {
   }
 
   @Post(':id/coupon')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.DISTRIBUTE_COUPON)
   @RequireIntent('distribute_coupon')
   @HttpCode(HttpStatus.OK)
   async distributeCoupon(
@@ -133,7 +166,8 @@ export class BondsController {
   }
 
   @Post(':id/sweep-undistributed')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.SWEEP_UNDISTRIBUTED)
   @RequireIntent('sweep_undistributed')
   @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.OK)
@@ -159,7 +193,9 @@ export class BondsController {
    * single bond against on-chain balances. Discovers out-of-band transfers.
    */
   @Post(':id/reconcile-holders')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.RECONCILE_HOLDERS)
+  @RequireQuota(QuotaResource.RECONCILE_HOLDERS)
   @RequireIntent('reconcile_holders')
   @HttpCode(HttpStatus.OK)
   async reconcileHolders(
@@ -173,7 +209,8 @@ export class BondsController {
    * balances. Run after Redis loss or suspected direct contract transfers.
    */
   @Post('admin/reindex-holders')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.REINDEX_HOLDERS)
   @RequireIntent('reindex_holders', 'id', 'global')
   @HttpCode(HttpStatus.OK)
   async reindexHolders(): Promise<Array<{ bondId: number; total: number }>> {
@@ -181,7 +218,8 @@ export class BondsController {
   }
 
   @Post(':id/mature')
-  @UseGuards(JwtAuthGuard, AdminGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MATURE_BOND)
   @RequireIntent('mature_bond')
   @HttpCode(HttpStatus.OK)
   async mature(
@@ -191,7 +229,8 @@ export class BondsController {
   }
 
   @Get(':id/export')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.EXPORT_BOND)
   async exportBond(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: any,

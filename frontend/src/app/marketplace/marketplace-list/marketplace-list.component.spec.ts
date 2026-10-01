@@ -10,6 +10,9 @@ import { WalletService } from '../../auth/wallet.service';
 import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 import { Order, PaginatedResponse } from '../../shared/interfaces/bond.interface';
 
+/** Order query with no bond or status filter selected. */
+const NO_FILTER = { bondId: undefined, status: undefined };
+
 const ORDER: Order = {
   id: 1,
   seller: 'GBOB',
@@ -19,6 +22,7 @@ const ORDER: Order = {
   quoteAsset: 'USDC',
   status: 'Open',
   createdAt: new Date().toISOString(),
+  expiresAt: new Date(Date.now() + 86400000).toISOString(),
 };
 
 const META = { page: 1, limit: 20, total: 1, totalPages: 1 };
@@ -73,7 +77,7 @@ describe('MarketplaceListComponent', () => {
       providers: [
         provideRouter([]),
         { provide: ApiService, useValue: apiService },
-        { provide: AuthService, useValue: { token: signal(null), sessionReady } },
+        { provide: AuthService, useValue: { token: signal(null), sessionReady, isAuthenticated: () => sessionReady() } },
         { provide: WalletService, useValue: walletService },
         { provide: PendingTransactionsService, useValue: jasmine.createSpyObj('PendingTransactionsService', ['register']) },
       ],
@@ -177,7 +181,7 @@ describe('MarketplaceListComponent', () => {
 
       component.refreshOrders();
 
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, true);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, true);
     });
 
     it('replaces a stale response with fresh order data on refresh', () => {
@@ -217,32 +221,49 @@ describe('MarketplaceListComponent', () => {
 
       component.onBuy(ORDER);
 
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, true);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, true);
     });
   });
 
   describe('stale order reconciliation (#91)', () => {
-    it('polls for order status changes in the background without showing the loading spinner', fakeAsync(() => {
+    // The poll timer starts in ngOnInit, so create the component inside
+    // fakeAsync for tick() to drive it, and destroy it so no periodic timer
+    // stays queued.
+    const startPolling = () => {
+      fixture.destroy();
+      fixture = TestBed.createComponent(MarketplaceListComponent);
+      component = fixture.componentInstance;
+      fixture.detectChanges();
       apiService.getOrders.calls.reset();
+    };
+    // The embedded order-book depth widget (#208) fetches open orders on its
+    // own schedule; count only the list's unfiltered order queries.
+    const listFetches = () =>
+      apiService.getOrders.calls.allArgs().filter(([params]) => !params?.status && !params?.bondId);
+
+    it('polls for order status changes in the background without showing the loading spinner', fakeAsync(() => {
       apiService.getOrders.and.returnValue(of({ data: [FRESH_ORDER], meta: META }));
+      startPolling();
 
       tick(ORDERS_POLL_INTERVAL_MS);
 
-      expect(apiService.getOrders).toHaveBeenCalledTimes(1);
+      expect(listFetches().length).toBe(1);
       expect(component.orders()[0].status).toBe('Filled');
       expect(component.loading()).toBe(false);
 
       tick(ORDERS_POLL_INTERVAL_MS);
-      expect(apiService.getOrders).toHaveBeenCalledTimes(2);
+      expect(listFetches().length).toBe(2);
+      fixture.destroy();
     }));
 
     it('does not force cache bypass on a background poll (respects the server cache)', fakeAsync(() => {
-      apiService.getOrders.calls.reset();
       apiService.getOrders.and.returnValue(of({ data: [ORDER], meta: META }));
+      startPolling();
 
       tick(ORDERS_POLL_INTERVAL_MS);
 
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, false);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, false);
+      fixture.destroy();
     }));
 
     it('cancels an open order and refreshes the list on success', () => {
@@ -253,7 +274,7 @@ describe('MarketplaceListComponent', () => {
 
       expect(apiService.cancelOrder).toHaveBeenCalledWith(1);
       expect(component.cancellingOrderId()).toBeNull();
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, true);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, true);
     });
 
     it('surfaces a clear error and still refreshes the list when a cancel is rejected as stale', () => {
@@ -270,7 +291,7 @@ describe('MarketplaceListComponent', () => {
 
       expect(component.cancelError()).toContain('no longer available');
       expect(component.cancellingOrderId()).toBeNull();
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, true);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, true);
     });
 
     it('closes the buy form and refreshes when a buy is rejected because the order state changed (409)', () => {
@@ -286,7 +307,7 @@ describe('MarketplaceListComponent', () => {
       component.onBuy(ORDER);
 
       expect(component.buyOrderId()).toBeNull();
-      expect(apiService.getOrders).toHaveBeenCalledWith(undefined, true);
+      expect(apiService.getOrders).toHaveBeenCalledWith(NO_FILTER, true);
     });
 
     it('keeps the buy form open on a non-conflict error (e.g. insufficient funds) so the user can adjust', () => {

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Permission } from '../auth/rbac';
 import { INestApplication, BadRequestException } from '@nestjs/common';
 import * as request from 'supertest';
 import * as crypto from 'crypto';
@@ -27,7 +28,11 @@ describe('Data Export Endpoints', () => {
   const mockJwtAuthGuard = {
     canActivate: (context: any) => {
       const req = context.switchToHttp().getRequest();
-      req.user = { walletAddress: 'G_AUDITOR_ADDRESS_123' };
+      // The bond export requires EXPORT_BOND (#228); an auditor's token carries it.
+      req.user = {
+        walletAddress: 'G_AUDITOR_ADDRESS_123',
+        permissions: [Permission.EXPORT_BOND],
+      };
       return true;
     },
   };

@@ -1,4 +1,4 @@
-import { AdminGuard } from '../common/guards/admin.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
 import { ProjectsController } from './projects.controller';
@@ -16,10 +16,10 @@ describe('ProjectsController guards and ownership', () => {
     expect(Reflect.getMetadata('__guards__', ProjectsController.prototype.register)).toBeUndefined();
   });
 
-  it.each(['approve', 'reject'] as const)('requires JWT and admin guards for %s', (method) => {
+  it.each(['approve', 'reject'] as const)('requires JWT and permission guards for %s', (method) => {
     expect(Reflect.getMetadata('__guards__', ProjectsController.prototype[method])).toEqual([
       JwtAuthGuard,
-      AdminGuard,
+      PermissionsGuard,
       IntentGuard,
     ]);
   });

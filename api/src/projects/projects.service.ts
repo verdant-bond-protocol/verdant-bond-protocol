@@ -7,7 +7,7 @@ import { RedisService } from '../common/services/redis.service';
 import { SigningKeyProvider } from '../common/services/signing-key.provider';
 import { nativeToScVal, scValToNative, Address, xdr } from '@stellar/stellar-sdk';
 import { CreateProjectDto } from './dto/create-project.dto';
-import { ProjectResponse, ProjectStatusEnum, DocumentUploadResponse, ProjectProvenanceResponse, ProvenanceEvent } from './interfaces/project.interface';
+import { ProjectResponse, ProjectStatusEnum, DocumentUploadResponse, ProjectProvenanceResponse, ProvenanceEvent, CertificationKind, CertificationVersion, CouponCertification } from './interfaces/project.interface';
 import { encodeCid, decodeCid, toBigIntString } from '../common/utils';
 import { ConfigService } from '../config/config.service';
 import { validateGeoJsonBoundary } from './utils/geojson-validator';
@@ -85,8 +85,9 @@ export class ProjectsService {
     return { ...project, transactionHash };
   }
 
-  async findAll(page = 1, limit = 20) {
-    const cacheKey = `projects:${page}:${limit}`;
+  async findAll(page = 1, limit = 20, cursor?: string | number) {
+    const cursorValue = typeof cursor === 'string' ? parseInt(cursor, 10) : cursor;
+    const cacheKey = cursorValue !== undefined ? `projects:c:${cursorValue}:${limit}` : `projects:${page}:${limit}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -99,15 +100,45 @@ export class ProjectsService {
     } catch {}
 
     const projects: ProjectResponse[] = [];
-    const start = (page - 1) * limit;
-    const end = Math.min(start + limit, total);
-
-    for (let id = 1; id <= total; id++) {
-      if (id > start && id <= end) {
+    
+    if (cursorValue !== undefined) {
+      let currentId = cursorValue + 1;
+      while (projects.length < limit && currentId <= total) {
         try {
-          projects.push(await this.buildProjectResponse(id));
+          // If buildProjectResponse throws due to hidden or deleted status, the record is skipped.
+          // Because we iterate deterministically, these skips don't shift offsets.
+          projects.push(await this.buildProjectResponse(currentId));
         } catch {}
+        currentId++;
       }
+      const nextCursor = currentId <= total ? currentId - 1 : undefined;
+      const result = {
+        data: projects,
+        meta: { limit, total, nextCursor, totalPages: Math.ceil(total / limit) || 1 },
+      };
+      await this.redis.setEx(cacheKey, 60, JSON.stringify(result));
+      return result;
+    }
+
+    const start = (page - 1) * limit;
+    let skipped = 0;
+    let currentId = 1;
+    
+    while (skipped < start && currentId <= total) {
+      try {
+        // Skip hidden/deleted records during offset traversal
+        await this.buildProjectResponse(currentId);
+        skipped++;
+      } catch {}
+      currentId++;
+    }
+
+    while (projects.length < limit && currentId <= total) {
+      try {
+        // Skip hidden/deleted records while fulfilling limit
+        projects.push(await this.buildProjectResponse(currentId));
+      } catch {}
+      currentId++;
     }
 
     const result = {
@@ -170,7 +201,112 @@ export class ProjectsService {
     const allHashes = existing ? [...JSON.parse(existing), ...documentHashes] : documentHashes;
     await this.redis.set(`project:${id}:documents`, JSON.stringify(allHashes));
 
+    // Each upload is a distinct immutable IPFS object: record every hash as
+    // a new certification version (append-only, issue #213) without changing
+    // this method's existing response shape. Re-uploads of already-versioned
+    // content are skipped so the endpoint stays idempotent.
+    const known = new Set(
+      (await this.getCertificationHistory(id)).map((v) => v.cid),
+    );
+    for (const hash of documentHashes) {
+      if (!known.has(hash)) {
+        await this.addCertification(id, hash, 'document');
+        known.add(hash);
+      }
+    }
+
     return { projectId: id, documentHashes, gatewayUrls };
+  }
+
+  /**
+   * Append a new certification version (issue #213). Versions are immutable
+   * and append-only: the new entry links to the previous CID but no existing
+   * entry is ever modified or overwritten.
+   */
+  async addCertification(
+    id: number,
+    cid: string,
+    kind: CertificationKind = 'document',
+  ): Promise<CertificationVersion> {
+    if (!cid || typeof cid !== 'string') {
+      throw new BadRequestException('Certification CID is required');
+    }
+    const history = await this.getCertificationHistory(id);
+    if (history.some((v) => v.cid === cid)) {
+      throw new BadRequestException('Certification version already recorded');
+    }
+    const version: CertificationVersion = {
+      version: history.length + 1,
+      cid,
+      previousCid: history.length > 0 ? history[history.length - 1].cid : null,
+      kind,
+      uploadedAt: new Date().toISOString(),
+    };
+    await this.redis.set(
+      `project:${id}:certifications`,
+      JSON.stringify([...history, version]),
+    );
+    return version;
+  }
+
+  async getCertificationHistory(id: number): Promise<CertificationVersion[]> {
+    const raw = await this.redis.get(`project:${id}:certifications`);
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  /**
+   * Reconstruct which certification version justified a historical coupon
+   * payment (issue #213). On-chain, the coupon engine's `PeriodInfo`
+   * records the `report_id` used for the calculation and the oracle
+   * `Report` records the exact `ipfs_evidence_hash` (CID) — together they
+   * are the tamper-evident anchor. The first resolution for a
+   * (bond, period) is snapshotted immutably, so later superseding
+   * certifications can never rewrite history.
+   */
+  async getCouponCertification(
+    projectId: number,
+    bondId: number,
+    periodIndex: number,
+  ): Promise<CouponCertification> {
+    const couponKey = `bond:${bondId}:coupon-certs`;
+    const raw = await this.redis.get(couponKey);
+    const log: CouponCertification[] = raw ? JSON.parse(raw) : [];
+    const snapshot = log.find((e) => e.periodIndex === periodIndex);
+    if (snapshot) return snapshot;
+
+    const infoRaw = await this.contractService.simulateCall({
+      contractAddress: this.configService.getCouponEngineAddress(),
+      method: 'get_period_info',
+      args: [
+        nativeToScVal(BigInt(bondId), { type: 'u64' }),
+        nativeToScVal(periodIndex, { type: 'u32' }),
+      ],
+    });
+    const info = scValToNative(infoRaw) as any[];
+    const reportId = Number(info[5]);
+
+    const reportRaw = await this.contractService.simulateCall({
+      contractAddress: this.configService.getOracleConsumerAddress(),
+      method: 'get_report',
+      args: [nativeToScVal(BigInt(reportId), { type: 'u64' })],
+    });
+    const report = scValToNative(reportRaw) as any[];
+    const certificationCid = decodeCid(report[8] as Uint8Array);
+
+    const history = await this.getCertificationHistory(projectId);
+    const match = history.find((v) => v.cid === certificationCid);
+
+    const resolved: CouponCertification = {
+      bondId,
+      periodIndex,
+      reportId,
+      certificationCid,
+      gatewayUrl: `https://gateway.pinata.cloud/ipfs/${certificationCid}`,
+      certificationVersion: match ? match.version : null,
+      recordedAt: new Date().toISOString(),
+    };
+    await this.redis.set(couponKey, JSON.stringify([...log, resolved]));
+    return resolved;
   }
 
   async getProvenance(id: number): Promise<ProjectProvenanceResponse> {

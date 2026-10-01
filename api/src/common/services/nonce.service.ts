@@ -50,6 +50,12 @@ export class NonceService {
     }
   }
 
+  async next(contractAddress: string, address: string): Promise<number> {
+    const key = `nonce:${contractAddress}:${address}`;
+    const incremented = await this.redis.incrOrThrow(key);
+    return incremented - 1;
+  }
+
   private async acquire(key: string, token: string): Promise<void> {
     const timeoutMs = this.positiveInteger(process.env.NONCE_LOCK_WAIT_MS, 180_000);
     const ttlMs = this.positiveInteger(process.env.NONCE_LOCK_TTL_MS, 300_000);

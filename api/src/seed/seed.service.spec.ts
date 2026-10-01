@@ -79,8 +79,9 @@ describe('SeedService', () => {
 
   it('produces a stable dataset across runs (deterministic)', async () => {
     const { buildSeedDataset } = await import('./fixtures');
-    const a = buildSeedDataset();
-    const b = buildSeedDataset();
+    const now = Date.UTC(2026, 0, 15);
+    const a = buildSeedDataset(now);
+    const b = buildSeedDataset(now);
 
     expect(a.projects.map((p) => p.name)).toEqual(b.projects.map((p) => p.name));
     expect(a.bonds.map((bd) => bd.id)).toEqual(b.bonds.map((bd) => bd.id));

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { DexService } from './dex.service';
 import {
   PriceFeedResponse,
@@ -6,6 +6,7 @@ import {
   SlippageResponse,
   OrderStatus,
   FillabilityStatus,
+  QuoteAsset,
 } from './interfaces/marketplace.interface';
 import { RedisService } from '../common/services/redis.service';
 import { toBigIntString } from '../common/utils';
@@ -17,39 +18,49 @@ export class LiquidityService {
     private readonly redis: RedisService,
   ) {}
 
-  async getPriceFeed(bondId?: number): Promise<PriceFeedResponse[]> {
-    const cacheKey = `pricefeed:${bondId || 'all'}`;
+  async getPriceFeed(bondId?: number, quoteAsset?: QuoteAsset): Promise<PriceFeedResponse[]> {
+    const cacheKey = `pricefeed:${bondId || 'all'}:${quoteAsset || 'all'}`;
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
     const ordersResult = await this.dexService.listOrders(bondId, 'Open', 1, 100);
     const openOrders = ordersResult.data;
 
-    const grouped = new Map<number, { prices: bigint[]; amounts: bigint[]; totalVolume: bigint }>();
+    const grouped = new Map<
+      string,
+      { bondId: number; quoteAsset: QuoteAsset; totalAmount: bigint; totalQuote: bigint; bestPrice: bigint; totalOrders: number }
+    >();
 
     for (const order of openOrders) {
-      if (order.status !== OrderStatus.Open) continue;
-
-      const group = grouped.get(order.bondId) || { prices: [], amounts: [], totalVolume: BigInt(0) };
-      group.prices.push(BigInt(order.pricePerToken));
-      group.amounts.push(BigInt(order.amount));
-      group.totalVolume += BigInt(order.amount) * BigInt(order.pricePerToken);
-      grouped.set(order.bondId, group);
+      if (order.status !== OrderStatus.Open || (quoteAsset && order.quoteAsset !== quoteAsset)) continue;
+      const key = `${order.bondId}:${order.quoteAsset}`;
+      const price = BigInt(order.pricePerToken);
+      const amount = BigInt(order.amount);
+      const group = grouped.get(key) || {
+        bondId: order.bondId,
+        quoteAsset: order.quoteAsset,
+        totalAmount: BigInt(0),
+        totalQuote: BigInt(0),
+        bestPrice: price,
+        totalOrders: 0,
+      };
+      group.totalAmount += amount;
+      group.totalQuote += amount * price;
+      if (price < group.bestPrice) group.bestPrice = price;
+      group.totalOrders += 1;
+      grouped.set(key, group);
     }
 
     const feeds: PriceFeedResponse[] = [];
 
-    for (const [id, group] of grouped) {
-      const bestPrice = group.prices.reduce((a, b) => a < b ? a : b, BigInt(0));
-      const sumPrices = group.prices.reduce((a, b) => a + b, BigInt(0));
-      const averagePrice = group.prices.length > 0 ? sumPrices / BigInt(group.prices.length) : BigInt(0);
-
+    for (const group of grouped.values()) {
       feeds.push({
-        bondId: id,
-        bestPrice: toBigIntString(bestPrice),
-        averagePrice: toBigIntString(averagePrice),
-        totalOrders: group.prices.length,
-        totalVolume: toBigIntString(group.totalVolume),
+        bondId: group.bondId,
+        quoteAsset: group.quoteAsset,
+        bestPrice: toBigIntString(group.bestPrice),
+        averagePrice: toBigIntString(group.totalQuote / group.totalAmount),
+        totalOrders: group.totalOrders,
+        totalVolume: toBigIntString(group.totalQuote),
       });
     }
 
@@ -57,9 +68,15 @@ export class LiquidityService {
     return feeds;
   }
 
-  async getBestPrice(bondId: number, _side: 'buy' | 'sell'): Promise<PriceLevel> {
+  async getBestPrice(
+    bondId: number,
+    _side: 'buy' | 'sell',
+    quoteAsset?: QuoteAsset,
+  ): Promise<PriceLevel> {
     const ordersResult = await this.dexService.listOrders(bondId, 'Open', 1, 100);
-    const openOrders = ordersResult.data;
+    const openOrders = ordersResult.data.filter(
+      (order) => !quoteAsset || order.quoteAsset === quoteAsset,
+    );
 
     const sorted = [...openOrders].sort((a, b) => {
       const priceA = BigInt(a.pricePerToken);
@@ -81,9 +98,17 @@ export class LiquidityService {
     };
   }
 
-  async calculateSlippage(bondId: number, amount: number): Promise<SlippageResponse> {
+  async calculateSlippage(
+    bondId: number,
+    amount: string,
+    quoteAsset: QuoteAsset = 'USDC',
+  ): Promise<SlippageResponse> {
+    if (!/^[1-9]\d*$/.test(amount)) {
+      throw new BadRequestException('amount must be a positive integer string');
+    }
+    const requestedAmount = BigInt(amount);
     const ordersResult = await this.dexService.listOrders(bondId, 'Open', 1, 100);
-    const openOrders = ordersResult.data;
+    const openOrders = ordersResult.data.filter((order) => order.quoteAsset === quoteAsset);
 
     const sorted = [...openOrders].sort((a, b) => {
       const priceA = BigInt(a.pricePerToken);
@@ -91,7 +116,7 @@ export class LiquidityService {
       return priceA < priceB ? -1 : priceA > priceB ? 1 : 0;
     });
 
-    let remaining = BigInt(amount);
+    let remaining = requestedAmount;
     let totalCost = BigInt(0);
     let totalAmount = BigInt(0);
 
@@ -104,7 +129,7 @@ export class LiquidityService {
       remaining -= take;
     }
 
-    const fillableAmount = BigInt(amount) - remaining;
+    const fillableAmount = requestedAmount - remaining;
     const unfilledAmount = remaining;
     
     let fillabilityStatus: FillabilityStatus;
@@ -117,8 +142,8 @@ export class LiquidityService {
     }
 
     const averagePrice = totalAmount > BigInt(0) ? totalCost / totalAmount : BigInt(0);
-    const idealCost = BigInt(amount) > BigInt(0) && sorted.length > 0 
-      ? BigInt(amount) * BigInt(sorted[0].pricePerToken) 
+    const idealCost = fillableAmount > BigInt(0) && sorted.length > 0
+      ? fillableAmount * BigInt(sorted[0].pricePerToken)
       : BigInt(0);
     const slippagePercent = idealCost > BigInt(0) 
       ? Number(((totalCost - idealCost) * BigInt(100)) / idealCost)
@@ -126,7 +151,7 @@ export class LiquidityService {
 
     return {
       bondId,
-      requestedAmount: toBigIntString(amount),
+      requestedAmount: toBigIntString(requestedAmount),
       fillableAmount: toBigIntString(fillableAmount),
       unfilledAmount: toBigIntString(unfilledAmount),
       averagePrice: toBigIntString(averagePrice),

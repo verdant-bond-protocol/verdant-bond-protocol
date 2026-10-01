@@ -140,6 +140,34 @@ pub fn generate_storage_fixtures(
         fx("Admin", encode(env, CouponEngineKey::Admin)),
     );
     coupon_engine.insert(
+        "PerformanceHistory(1)".to_string(),
+        fx(
+            "PerformanceHistory(1)",
+            encode(env, CouponEngineKey::PerformanceHistory(1)),
+        ),
+    );
+    coupon_engine.insert(
+        "PerformanceFlag(1)".to_string(),
+        fx(
+            "PerformanceFlag(1)",
+            encode(env, CouponEngineKey::PerformanceFlag(1)),
+        ),
+    );
+    coupon_engine.insert(
+        "MinPerformanceAttestations".to_string(),
+        fx(
+            "MinPerformanceAttestations",
+            encode(env, CouponEngineKey::MinPerformanceAttestations),
+        ),
+    );
+    coupon_engine.insert(
+        "MigrationWindow(1)".to_string(),
+        fx(
+            "MigrationWindow(1)",
+            encode(env, CouponEngineKey::MigrationWindow(1)),
+        ),
+    );
+    coupon_engine.insert(
         "PeriodInfo(1, 1)".to_string(),
         fx(
             "PeriodInfo(1, 1)",
@@ -161,19 +189,19 @@ pub fn generate_storage_fixtures(
         ),
     );
     coupon_engine.insert(
-        "AccruedCredits(1, addr)".to_string(),
+        "EscrowedCredits(1, addr)".to_string(),
         fx(
-            "AccruedCredits(1, addr)",
-            encode(env, CouponEngineKey::AccruedCredits(1, addr.clone())),
+            "EscrowedCredits(1, addr)",
+            encode(env, CouponEngineKey::EscrowedCredits(1, addr.clone())),
         ),
     );
     coupon_engine.insert(
-        "AccruedCreditsByType(1, addr, Carbon)".to_string(),
+        "EscrowedCreditsByType(1, addr, Carbon)".to_string(),
         fx(
-            "AccruedCreditsByType(1, addr, Carbon)",
+            "EscrowedCreditsByType(1, addr, Carbon)",
             encode(
                 env,
-                CouponEngineKey::AccruedCreditsByType(1, addr.clone(), CreditType::Carbon),
+                CouponEngineKey::EscrowedCreditsByType(1, addr.clone(), CreditType::Carbon),
             ),
         ),
     );
@@ -231,6 +259,20 @@ pub fn generate_storage_fixtures(
                 env,
                 CouponEngineKey::PeriodHolder(1, 1, addr.clone(), CreditType::BlueCarbon),
             ),
+        ),
+    );
+    coupon_engine.insert(
+        "TrueUpAdjustment(1, 0)".to_string(),
+        fx(
+            "TrueUpAdjustment(1, 0)",
+            encode(env, CouponEngineKey::TrueUpAdjustment(1, 0)),
+        ),
+    );
+    coupon_engine.insert(
+        "TrueUpCount(1)".to_string(),
+        fx(
+            "TrueUpCount(1)",
+            encode(env, CouponEngineKey::TrueUpCount(1)),
         ),
     );
     contracts.insert("coupon-engine".to_string(), coupon_engine);
@@ -515,6 +557,41 @@ pub fn generate_storage_fixtures(
         fx(
             "SlashHistory(addr)",
             encode(env, OracleConsumerKey::SlashHistory(addr.clone())),
+        ),
+    );
+    oracle_consumer.insert(
+        "MinimumQuorum".to_string(),
+        fx(
+            "MinimumQuorum",
+            encode(env, OracleConsumerKey::MinimumQuorum),
+        ),
+    );
+    oracle_consumer.insert(
+        "MinimumDisputeBond".to_string(),
+        fx(
+            "MinimumDisputeBond",
+            encode(env, OracleConsumerKey::MinimumDisputeBond),
+        ),
+    );
+    oracle_consumer.insert(
+        "ProjectDisputed(path)".to_string(),
+        fx(
+            "ProjectDisputed(path)",
+            encode(env, OracleConsumerKey::ProjectDisputed(path.clone())),
+        ),
+    );
+    oracle_consumer.insert(
+        "ProjectStalenessConfig(path)".to_string(),
+        fx(
+            "ProjectStalenessConfig(path)",
+            encode(env, OracleConsumerKey::ProjectStalenessConfig(path.clone())),
+        ),
+    );
+    oracle_consumer.insert(
+        "ProjectLastVerifiedAt(path)".to_string(),
+        fx(
+            "ProjectLastVerifiedAt(path)",
+            encode(env, OracleConsumerKey::ProjectLastVerifiedAt(path.clone())),
         ),
     );
     contracts.insert("oracle-consumer".to_string(), oracle_consumer);

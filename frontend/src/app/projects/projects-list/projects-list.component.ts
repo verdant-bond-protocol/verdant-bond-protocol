@@ -71,7 +71,7 @@ import { AdminAccessService } from '../../shared/services/admin-access.service';
 })
 export class ProjectsListComponent implements OnInit {
   private readonly apiService = inject(ApiService);
-  private readonly adminAccess = inject(AdminAccessService);
+  readonly adminAccess = inject(AdminAccessService);
 
   readonly projects = signal<Project[]>([]);
   readonly loading = signal(true);

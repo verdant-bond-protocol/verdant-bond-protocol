@@ -45,7 +45,7 @@ describe('OracleController authorization (behavioral)', () => {
       await request(app.getHttpServer())
         .get('/oracle/incidents')
         .set('x-test-role', 'user' as TestRole)
-        .expect(401);
+        .expect(403);
       expect(incidents.findMany).not.toHaveBeenCalled();
     });
 
@@ -65,7 +65,7 @@ describe('OracleController authorization (behavioral)', () => {
         .post('/oracle/incidents/abc/resolve')
         .set('x-test-role', 'user' as TestRole)
         .send({ resolutionNote: 'done' })
-        .expect(401);
+        .expect(403);
       expect(incidents.resolve).not.toHaveBeenCalled();
     });
   });

@@ -23,3 +23,39 @@ Where:
 4. **Maturity**: After bond maturity, the fundamental conservation rule still holds. Late claims are permitted against previously accrued balances.
 
 These rules are verified on-chain and through cross-contract integration tests ensuring no edge case (such as zero-balance holders, partial distributions, or precision loss) can break the accounting. The executable form of each rule, and the generators used to search for counterexamples, are described in coupon-math-invariants.md.
+
+## Senior-first waterfall (Issue #182)
+
+`CouponEngine.settle_waterfall` is an additive settlement path for aggregate
+tranche obligations. Each entry identifies a distinct `tranche_bond_id` and
+must be ordered by strictly ascending `priority`; priority `0` is senior.
+Carbon and biodiversity obligations are funded independently, and each asset
+is paid senior-first without substitution. The caller supplies the due amounts
+for the coupon period, including any partial-period accrual determined from
+verified project performance, as well as the available amounts for settlement.
+
+Any unpaid amount is persisted per bond and merged into the next settlement
+before newly supplied obligations. Matching priority entries merge only when
+they refer to the same tranche bond. The bounded state stores one aggregate
+entry per priority, never one entry per investor, and retains each settlement
+under a monotonically increasing settlement index.
+
+`claim_waterfall` is the pull-based holder path. It reads the holder balance
+`BondIssuer` checkpoints holder balances and subscribed supply whenever they
+change. Settlement records each tranche's current checkpoint version.
+`claim_waterfall` uses that immutable version, so a transfer, subscription, or
+redemption after settlement cannot redirect the period's allocation. It
+records a one-time claim for that holder, priority, and settlement. The
+resulting carbon and biodiversity amounts enter the normal `CouponEngine`
+accrued balance. They can then be claimed through `claim_credits` or consumed
+by the existing retirement flow. No transaction iterates over investors;
+checkpoint lookup is logarithmic in that account's balance-change history.
+`waterfall_claimable` returns a quote for the latest settlement;
+`waterfall_claimable_for_holder` is a quote helper for adapters with an
+existing balance snapshot and is not the settlement path.
+
+The coupon contract accounts for credits but does not custody external credit
+tokens. The authorized settlement caller must ensure the supplied available
+balances are actually backed by the deployment's credit escrow or retirement
+source. Partial-period performance accrual is likewise calculated from
+verified reports by the caller before providing each period's due amounts.

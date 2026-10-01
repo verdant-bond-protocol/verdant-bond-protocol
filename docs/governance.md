@@ -1,65 +1,72 @@
-# Governance
+# Decentralized Timelocked Governance
 
-## Admin Control Model
+## Overview
 
-The Verdant Bond Protocol uses a **3-of-5 multisig + 48-hour timelock** governance model to control all critical contract administration functions.
+The Verdant Bond Protocol employs a **decentralized, risk-tiered, timelocked governance mechanism** for all critical protocol parameters and emergency controls. This architecture addresses centralization risks and prevents governance manipulation attacks (such as flash-loan voting) while maintaining responsive circuit breakers.
 
-### Deployment Architecture
+---
 
-1. **Governance Contract** is deployed first with an externally-owned account (EOA) admin for initial setup
-2. **Operational Contracts** are deployed with the Governance contract address set as their admin:
-   - `ProjectRegistry` — project approval/rejection
-   - `BondIssuer` — bond configuration and maturity control
-   - `CouponEngine` — coupon distribution parameters
-   - `OracleConsumer` — oracle provider management and configuration
-   - `DEXRouter` — order management
-   - `CreditRetirement` — retirement transaction oversight
+## 1. Multi-Track Governance Model
 
-### Admin Rotation
+Governance proposals are categorized into distinct tracks based on their risk profile. Each track enforces tailored timelock delays, approval thresholds, and quorum requirements:
 
-Every operational contract includes public `set_admin(current_admin, new_admin, nonce)` and `get_admin()` functions. This enables:
+| Governance Track | Target Operations | Timelock Delay | Quorum / Approval Threshold |
+| :--- | :--- | :--- | :--- |
+| **Routine** | Minor operational parameter tuning, routine allow-list additions | 24 hours (`86,400s`) | Standard multisig threshold (e.g. 3 of 5) |
+| **Critical** | Oracle staleness thresholds, credit-type registry additions, AMM price-deviation caps, dispute bond sizes, contract admin rotation | 72 hours (`259,200s`) | Elevated multisig threshold (e.g. 4 of 5) and/or token/stake weight quorum |
+| **Emergency** | Protocol circuit breaker (`pause` / emergency halts during discovered vulnerabilities) | 1 hour (`3,600s`) | Supermajority council consensus (5 of 5) |
 
-- **Initial transition**: EOA admin can rotate Governance's own admin to itself (or a multisig account) after governance signers are configured
-- **Runtime rotation**: Any contract admin can be rotated to a new address via multisig proposal + timelock execution
-- **Nonce protection**: Each admin rotation consumes a unique nonce to prevent replay attacks
+### Track Configuration
 
-### Multi-Stakeholder Committee
+Track parameters are stored on-chain and can be updated via the governance contract:
+- `set_track_config(track, timelock_seconds, threshold, min_approval_weight, nonce)`
+- `get_track_config(track) -> TrackConfig`
 
-Governance signers represent:
+---
 
-- Project Developers
-- Bond Issuers
-- Oracle Providers
-- Protocol Maintainers
-- Token Holders
+## 2. Flash-Loan Resistance via Pre-Proposal Snapshot Checkpointing
 
-### Governance Actions (3-of-5 Multi-sig + 48h Timelock)
+Flash loans allow an attacker to borrow vast amounts of capital within a single ledger transaction, vote to pass a malicious proposal, and repay the loan in the same transaction or block.
 
-Any contract admin action that requires governance approval must go through:
+To make flash-loan governance attacks mathematically impossible:
 
-1. **Proposal Creation** — A signer submits a proposal to invoke a target contract method with specific arguments
-2. **Voting Window** — Signers vote to approve or veto (3-of-5 threshold)
-   - 3 approvals → Proposal queued
-   - 3 vetoes → Proposal rejected
-3. **Timelock Delay** — Approved proposals enter a 48-hour cooldown
-4. **Execution** — After 48 hours, any account may execute the approved proposal
+1. **Historical Checkpoints**: Voting power changes (e.g., token staking or reputation updates) are recorded as ordered ledger checkpoints `(ledger_sequence, vote_weight)` for each address.
+2. **Strict Pre-Proposal Snapshot**: When a proposal is created at ledger sequence $N$, its snapshot sequence is strictly pinned to:
+   $$\text{snapshot\_sequence} = N - 1$$
+3. **Historical Evaluation**: When any voter casts an approval or veto, the contract performs a binary search over that voter's historical checkpoints at `snapshot_sequence`.
+4. **Flash Loan Inefficacy**:
+   - Any voting power acquired at ledger sequence $N$ (the block of proposal creation) or thereafter is completely invisible to the proposal's snapshot.
+   - Attackers borrowing millions of tokens in the same or subsequent blocks receive **zero voting weight** at $N - 1$, causing malicious voting attempts to fail with `GovernanceError::InsufficientVotingPower`.
 
-This design ensures all admin changes are:
+---
 
-- **Transparent** — Proposed and voted on-chain
-- **Time-locked** — Community has 48 hours to respond
-- **Multisig-protected** — Requires consensus of 3-of-5 signers
+## 3. Emergency Pause Circuit Breaker
 
-### Supported Governance Actions
+In the event of an active exploit or critical oracle feed failure, the protocol provides an emergency-pause path:
 
-Via `Governance.execute()` after proposal passes multisig + timelock:
+- **Proposal**: Created via `propose_emergency_pause(caller, target, nonce)` or `propose_with_track(..., GovernanceTrack::Emergency)`.
+- **Supermajority Consensus**: Requires 100% of designated signers (5 of 5) to reach approval.
+- **Short Timelock**: 1-hour delay allows automated monitoring systems and validators to verify legitimacy before execution.
+- **Pause State Inspection**: Any caller or smart contract can query `is_paused(target) -> bool` to enforce paused states across the protocol.
+- **Direct Emergency Pause**: Multisig signers can directly invoke `set_paused(target, is_paused)` under strict authentication.
 
-- Add/remove oracle providers → `OracleConsumer.register_provider()` / `remove_provider()`
-- Update credit conversion factors → `CouponEngine` configuration (if exposed as admin function)
-- Rotate any contract's admin → `{Contract}.set_admin()`
-- Modify KYC requirements → `ProjectRegistry` configuration (if exposed as admin function)
-- Adjust dispute resolution parameters → `OracleConsumer` configuration
+---
 
-### Deployment Verification
+## 4. Proposal Lifecycle
 
-The deployment scripts (`scripts/deploy-mainnet.sh`, `scripts/deploy-testnet.sh`) include a post-deployment verification step that confirms each operational contract's stored admin matches the deployed Governance contract address.
+```mermaid
+flowchart TD
+    A[Proposer Submits Proposal] --> B[Assign Track & Snapshot N-1]
+    B --> C[Voting Period]
+    C -->|Approvals Reach Quorum| D[Proposal Queued]
+    C -->|Vetoes Reach Quorum| E[Proposal Rejected]
+    D --> F[Timelock Cooldown: 1h / 24h / 72h]
+    F --> G[Execution via invoke_contract]
+```
+
+1. **Submission**: A council signer submits `propose_with_track(target, method, args, description, track, nonce)`. Target and method must exist in the governance allow-list.
+2. **Snapshot**: Snapshot ledger is captured as `env.ledger().sequence() - 1`.
+3. **Voting**: Voters submit `vote_approve(proposal_id, nonce)` or `vote_veto(proposal_id, nonce)`. Council signers contribute count, and staked voters contribute weight at snapshot.
+4. **Queuing**: Upon meeting track thresholds or min approval weight, proposal moves to `Queued` state and `queued_at` timestamp is recorded.
+5. **Timelock**: Proposal must wait for `timelock_seconds` to elapse before execution.
+6. **Execution**: Any account can call `execute(proposal_id, nonce)`. Governance dispatches the authorized contract invocation to `target.method(args)`.

@@ -108,7 +108,8 @@ export class AdminIntentService {
     }
     const keypair = Keypair.fromSecret(secret);
     const message = `${payload.action}|${payload.target}|${payload.chain}|${payload.expiry}|${payload.nonce}`;
-    const bytes = keypair.sign(Buffer.from(message));
+    // UTF-8 bytes of the canonical message; `Buffer` is not a browser global.
+    const bytes = keypair.sign(new TextEncoder().encode(message) as Buffer);
     return { ...payload, signature: toBase64(bytes) };
   }
 

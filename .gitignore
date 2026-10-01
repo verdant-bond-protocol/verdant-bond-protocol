@@ -23,6 +23,8 @@ Thumbs.db
 # Testing
 test_snapshots/
 coverage/
+.stryker-tmp/
+api/reports/mutation/
 
 # Build artifacts
 *.log

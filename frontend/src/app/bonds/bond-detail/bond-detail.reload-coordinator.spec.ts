@@ -1,4 +1,5 @@
 import { BondDetailReloadCoordinator } from './bond-detail.reload-coordinator';
+import { delay } from 'rxjs';
 import { ApiService, BondDetailResponse } from '../../shared/services/api.service';
 import { of, Subject } from 'rxjs';
 import { fakeAsync, tick } from '@angular/core/testing';
@@ -18,7 +19,8 @@ describe('BondDetailReloadCoordinator (issue #4 refresh model)', () => {
 
   beforeEach(() => {
     apiService = jasmine.createSpyObj('ApiService', ['getBondDetail']);
-    apiService.getBondDetail.and.returnValue(of(detail()));
+    // Respond asynchronously so the in-flight loading state is observable.
+    apiService.getBondDetail.and.returnValue(of(detail()).pipe(delay(0)));
     coordinator = new BondDetailReloadCoordinator(apiService);
   });
 

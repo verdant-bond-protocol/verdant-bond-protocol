@@ -17,6 +17,7 @@ import {
   OrderResponse,
   PriceFeedResponse,
   PriceLevel,
+  QuoteAsset,
   QuoteBalanceResponse,
   QuoteTransactionResponse,
   SlippageResponse,
@@ -55,6 +56,7 @@ export class MarketplaceController {
       status,
       pagination.page ?? 1,
       pagination.limit ?? 20,
+      pagination.cursor,
     );
   }
 
@@ -125,6 +127,7 @@ export class MarketplaceController {
   }
 
   @Delete('orders/:id')
+  @Idempotent()
   @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.NO_CONTENT)
   async cancelOrder(
@@ -145,24 +148,30 @@ export class MarketplaceController {
   @Get('prices')
   async getPriceFeed(
     @Query('bondId') bondId?: number,
+    @Query('quoteAsset') quoteAsset?: QuoteAsset,
   ): Promise<PriceFeedResponse[]> {
-    return this.liquidityService.getPriceFeed(bondId ? Number(bondId) : undefined);
+    return this.liquidityService.getPriceFeed(
+      bondId ? Number(bondId) : undefined,
+      quoteAsset,
+    );
   }
 
   @Get('prices/:bondId/best')
   async getBestPrice(
     @Param('bondId', ParseIntPipe) bondId: number,
     @Query('side') side: 'buy' | 'sell' = 'sell',
+    @Query('quoteAsset') quoteAsset?: QuoteAsset,
   ): Promise<PriceLevel> {
-    return this.liquidityService.getBestPrice(bondId, side);
+    return this.liquidityService.getBestPrice(bondId, side, quoteAsset);
   }
 
   @Get('prices/:bondId/slippage')
   async calculateSlippage(
     @Param('bondId', ParseIntPipe) bondId: number,
-    @Query('amount') amount: number,
+    @Query('amount') amount: string,
+    @Query('quoteAsset') quoteAsset: QuoteAsset = 'USDC',
   ): Promise<SlippageResponse> {
-    return this.liquidityService.calculateSlippage(bondId, Number(amount));
+    return this.liquidityService.calculateSlippage(bondId, amount, quoteAsset);
   }
 
   /**
