@@ -210,4 +210,147 @@ describe('ComplianceRulesEngine', () => {
       expect(decision.code).toBe('SANCTIONED_ADDRESS');
     });
   });
+
+  describe('Governance-updatable rules table without redeploy', () => {
+    it('updates jurisdiction rule dynamically and recomputes audit hash', () => {
+      const initialRuleset = engine.getActiveRuleset();
+      const newRuleset = engine.updateJurisdictionRule('US', {
+        maxRetailOfferingCap: '5000', // Lower US cap
+      }, 'GOVERNANCE_MULTISIG');
+
+      expect(newRuleset.version).toContain('2026.1.upd');
+      expect(newRuleset.auditHash).not.toBe(initialRuleset.auditHash);
+      expect(engine.getJurisdictionRule('US').maxRetailOfferingCap).toBe('5000');
+
+      // Now evaluating under updated cap
+      const decision = engine.evaluateEligibility({
+        investorAddress: TEST_INVESTOR,
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        jurisdiction: 'US',
+        purchaseAmount: '8000', // Exceeds new cap of 5000
+        kycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(decision.eligible).toBe(false);
+      expect(decision.code).toBe('OFFERING_CAP_EXCEEDED');
+    });
+  });
+
+  describe('Secondary market transfer compliance enforcement', () => {
+    const RECIPIENT = 'GRECIPIENTADDRESS00000000000000000000000000000000000';
+    const SENDER = 'GSENDERADDRESS00000000000000000000000000000000000000';
+
+    it('approves transfer when recipient is eligible and sender is unsanctioned', () => {
+      const decision = engine.evaluateTransferEligibility({
+        fromAddress: SENDER,
+        toAddress: RECIPIENT,
+        fromJurisdiction: 'EU',
+        toJurisdiction: 'EU',
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        amount: '1000',
+        toKycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(decision.eligible).toBe(true);
+      expect(decision.code).toBe('ELIGIBLE');
+    });
+
+    it('rejects transfer when recipient fails compliance criteria (e.g. unaccredited on restricted tranche in US)', () => {
+      const decision = engine.evaluateTransferEligibility({
+        fromAddress: SENDER,
+        toAddress: RECIPIENT,
+        fromJurisdiction: 'US',
+        toJurisdiction: 'US',
+        bondId: 1,
+        tranche: TrancheType.RESTRICTED_ACCREDITED,
+        amount: '1000',
+        toKycRecord: { status: KycStatus.VERIFIED }, // Verified but not accredited
+      });
+
+      expect(decision.eligible).toBe(false);
+      expect(decision.reason).toContain('Secondary transfer recipient non-compliant');
+    });
+
+    it('rejects transfer when sender is on sanctions list', () => {
+      sanctionsService.addSanctionedAddress(SENDER, 'Sanctioned sender test');
+
+      const decision = engine.evaluateTransferEligibility({
+        fromAddress: SENDER,
+        toAddress: RECIPIENT,
+        fromJurisdiction: 'US',
+        toJurisdiction: 'US',
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        amount: '1000',
+        toKycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(decision.eligible).toBe(false);
+      expect(decision.code).toBe('SANCTIONED_ADDRESS');
+      expect(decision.reason).toContain('Secondary transfer sender is sanctioned');
+    });
+  });
+
+  describe('Post-holding rule change scenario & forced-sale grace period window', () => {
+    it('returns COMPLIANT status when holder remains eligible after rule change', () => {
+      const check = engine.evaluatePostRuleChangeCompliance({
+        holderAddress: TEST_INVESTOR,
+        jurisdiction: 'EU',
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        holdingAmount: '5000',
+        holdingAcquiredTimestamp: Date.now() - 86400000 * 10,
+        kycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(check.status).toBe('COMPLIANT');
+      expect(check.violations).toHaveLength(0);
+    });
+
+    it('grants NON_COMPLIANT_GRACE_PERIOD with forced-sale window when rule changes after position is held', () => {
+      // Investor bought when jurisdiction 'US' allowed standard tranche with 10,000 cap
+      // Governance updates US rule to embargo/restrict
+      engine.updateJurisdictionRule('US', { isSanctionedOrEmbargoed: true });
+
+      const holdingAcquired = Date.now() - 86400000 * 5; // Held 5 days ago
+      const check = engine.evaluatePostRuleChangeCompliance({
+        holderAddress: TEST_INVESTOR,
+        jurisdiction: 'US',
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        holdingAmount: '5000',
+        holdingAcquiredTimestamp: holdingAcquired,
+        gracePeriodDays: 30,
+        kycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(check.status).toBe('NON_COMPLIANT_GRACE_PERIOD');
+      expect(check.forcedSaleWindowDays).toBe(30);
+      expect(check.gracePeriodExpiresAt).toBe(holdingAcquired + 30 * 86400 * 1000);
+      expect(check.actionRequired).toContain('Holder must sell/divest position');
+      expect(check.violations.length).toBeGreaterThan(0);
+    });
+
+    it('transitions to NON_COMPLIANT_EXPIRED after grace period window expires', () => {
+      engine.updateJurisdictionRule('US', { isSanctionedOrEmbargoed: true });
+
+      const holdingAcquired = Date.now() - 86400000 * 40; // Held 40 days ago (> 30 days grace period)
+      const check = engine.evaluatePostRuleChangeCompliance({
+        holderAddress: TEST_INVESTOR,
+        jurisdiction: 'US',
+        bondId: 1,
+        tranche: TrancheType.STANDARD,
+        holdingAmount: '5000',
+        holdingAcquiredTimestamp: holdingAcquired,
+        gracePeriodDays: 30,
+        kycRecord: { status: KycStatus.VERIFIED },
+      });
+
+      expect(check.status).toBe('NON_COMPLIANT_EXPIRED');
+      expect(check.actionRequired).toContain('Grace period expired');
+    });
+  });
 });
+

@@ -136,4 +136,60 @@ export class ComplianceController {
   ): Promise<SanctionsStatus> {
     return this.sanctionsService.refreshSanctionsList(body);
   }
+
+  /**
+   * Governance endpoint to update jurisdiction rules without a contract redeploy.
+   */
+  @Post('ruleset/update')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateJurisdictionRule(
+    @Body() body: { jurisdiction: string; updates: Partial<import('../interfaces/compliance.interface').JurisdictionRule> },
+    @Req() req: any,
+  ): Promise<VersionedRuleset> {
+    const user = req.user?.walletAddress || 'GOVERNANCE';
+    return this.rulesEngine.updateJurisdictionRule(body.jurisdiction, body.updates, user);
+  }
+
+  /**
+   * Evaluate compliance eligibility for secondary market transfers.
+   */
+  @Post('evaluate-transfer')
+  @HttpCode(HttpStatus.OK)
+  async evaluateTransfer(
+    @Body() dto: import('../interfaces/compliance.interface').TransferEligibilityContext,
+  ): Promise<EligibilityDecision> {
+    const toKycRecord = await this.kycStore.get(dto.toAddress);
+    const fromKycRecord = await this.kycStore.get(dto.fromAddress);
+    return this.rulesEngine.evaluateTransferEligibility({
+      ...dto,
+      toKycRecord: toKycRecord ? { status: toKycRecord.status, expiresAt: toKycRecord.expiresAt } : undefined,
+      fromKycRecord: fromKycRecord ? { status: fromKycRecord.status, expiresAt: fromKycRecord.expiresAt } : undefined,
+    });
+  }
+
+  /**
+   * Evaluate existing position holders after a rule change, enforcing forced-sale grace period handling.
+   */
+  @Post('evaluate-post-rule-change')
+  @HttpCode(HttpStatus.OK)
+  async evaluatePostRuleChange(
+    @Body() body: {
+      holderAddress: string;
+      jurisdiction: string;
+      bondId: number;
+      tranche: TrancheType;
+      holdingAmount: string;
+      holdingAcquiredTimestamp: number;
+      ruleChangedTimestamp?: number;
+      gracePeriodDays?: number;
+    },
+  ): Promise<import('../interfaces/compliance.interface').PostRuleChangeComplianceCheck> {
+    const kycRecord = await this.kycStore.get(body.holderAddress);
+    return this.rulesEngine.evaluatePostRuleChangeCompliance({
+      ...body,
+      kycRecord: kycRecord ? { status: kycRecord.status, expiresAt: kycRecord.expiresAt } : undefined,
+    });
+  }
 }
+

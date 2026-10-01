@@ -86,3 +86,41 @@ export interface SanctionsStatus {
   maxStalenessHours: number;
   alertRaised: boolean;
 }
+
+export interface TransferEligibilityContext {
+  fromAddress: string;
+  toAddress: string;
+  fromJurisdiction: string;
+  toJurisdiction: string;
+  bondId: number;
+  tranche: TrancheType;
+  amount: string;
+  toKycRecord?: {
+    status: KycStatus;
+    expiresAt?: number | null;
+  };
+  fromKycRecord?: {
+    status: KycStatus;
+    expiresAt?: number | null;
+  };
+}
+
+export enum PostRuleChangeComplianceStatus {
+  COMPLIANT = 'COMPLIANT',
+  NON_COMPLIANT_GRACE_PERIOD = 'NON_COMPLIANT_GRACE_PERIOD',
+  NON_COMPLIANT_EXPIRED = 'NON_COMPLIANT_EXPIRED',
+}
+
+export interface PostRuleChangeComplianceCheck {
+  status: PostRuleChangeComplianceStatus;
+  holderAddress: string;
+  bondId: number;
+  tranche: TrancheType;
+  holdingAmount: string;
+  jurisdiction: string;
+  gracePeriodExpiresAt?: number;
+  forcedSaleWindowDays?: number;
+  actionRequired?: string;
+  violations: EvaluatedRuleResult[];
+}
+
