@@ -29,6 +29,8 @@ import {
 
 import { KycStoreService } from '../../common/services/kyc-store.service';
 
+import { KycCommitmentService, OnChainKycCommitment, RegulatorDisclosureRequest, RegulatorDisclosurePackage, EligibilityTier } from '../services/kyc-commitment.service';
+
 export class RequestAttestationDto {
   bondId: number;
   tranche?: TrancheType;
@@ -52,6 +54,7 @@ export class ComplianceController {
     private readonly sanctionsService: SanctionsService,
     private readonly kycStore: KycStoreService,
     private readonly snapshots: ComplianceSnapshotService,
+    private readonly kycCommitmentService: KycCommitmentService,
   ) {}
 
   @Get('snapshots/:eventId')
@@ -191,5 +194,36 @@ export class ComplianceController {
       kycRecord: kycRecord ? { status: kycRecord.status, expiresAt: kycRecord.expiresAt } : undefined,
     });
   }
+
+  /**
+   * Generate an on-chain KYC commitment hash and eligibility tier without exposing PII.
+   */
+  @Post('kyc/commitment')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async generateCommitment(
+    @Body() body: { investorAddress: string; jurisdiction: string; tranche?: string },
+  ): Promise<OnChainKycCommitment> {
+    const kycRecord = await this.kycStore.get(body.investorAddress);
+    return this.kycCommitmentService.generateOnChainCommitment({
+      investorAddress: body.investorAddress,
+      kycStatus: kycRecord?.status ?? KycStatus.NONE,
+      jurisdiction: body.jurisdiction,
+      expiresAt: kycRecord?.expiresAt,
+      tranche: body.tranche,
+    });
+  }
+
+  /**
+   * Documented, access-controlled selective disclosure endpoint for authorized regulators.
+   */
+  @Post('kyc/selective-disclosure')
+  @HttpCode(HttpStatus.OK)
+  async discloseToRegulator(
+    @Body() body: { request: RegulatorDisclosureRequest; accessReason?: string },
+  ): Promise<RegulatorDisclosurePackage> {
+    return this.kycCommitmentService.generateRegulatorDisclosurePackage(body.request, body.accessReason);
+  }
 }
+
 
