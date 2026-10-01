@@ -1,4 +1,4 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, OnDestroy } from '@angular/core';
 import { Subscription } from 'rxjs';
 import { ApiService, BondDetailResponse } from '../../shared/services/api.service';
 
@@ -24,7 +24,7 @@ const IDLE_SECTIONS: SectionLoading = { bond: false, holders: false, coupon: fal
  * supports staleness checks.
  */
 @Injectable()
-export class BondDetailReloadCoordinator {
+export class BondDetailReloadCoordinator implements OnDestroy {
   readonly detail = signal<BondDetailResponse | null>(null);
   readonly loading = signal(false);
   readonly sectionLoading = signal<SectionLoading>(IDLE_SECTIONS);
@@ -49,7 +49,7 @@ export class BondDetailReloadCoordinator {
         this.lastLoadedAt.set(detail.loadedAt);
         this.commitIdle();
       },
-      error: (err: any) => {
+      error: (err: { error?: { detail?: string }; message?: string }) => {
         this.error.set(err?.error?.detail || err?.message || 'Failed to refresh bond data');
         this.commitIdle();
       },

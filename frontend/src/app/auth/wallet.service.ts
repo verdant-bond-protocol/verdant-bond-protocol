@@ -141,7 +141,7 @@ private async verifyNetwork(): Promise<void> {
   }
 
   /** Invalidate API caches that are namespaceled by network. */
-  private invalidateCachesForNetwork(oldStatus: WalletStatus, newPassphrase: string): void {
+  private invalidateCachesForNetwork(oldStatus: WalletStatus, _newPassphrase: string): void {
     // When switching networks, clear any cached data that was keyed on the old network
     // We use a simple approach: clear caches that might have stale testnet/mainnet data
     // The API service will handle namespace-based caching via _t params or network-aware keys
