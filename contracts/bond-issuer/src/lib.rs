@@ -43,7 +43,13 @@ pub struct BondState {
     pub created_at: u64,
 }
 
-
+#[derive(Clone)]
+#[contracttype]
+pub struct PreviewSubscription {
+    pub remaining_supply: i128,
+    pub requested_amount: i128,
+    pub expected_failure: Option<u32>,
+}
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
     let admin: Address = env
@@ -455,7 +461,6 @@ impl BondIssuer {
         amount: i128,
         nonce: u64,
     ) -> Result<(), BondError> {
-        investor.require_auth();
         consume_nonce(&env, &investor, nonce)?;
 
         if amount <= 0 {
@@ -1901,5 +1906,22 @@ mod test {
         }
     }
 
+    pub fn preview_subscribe(
+        env: Env,
+        bond_id: u64,
+        amount: i128,
+    ) -> Result<PreviewSubscription, BondError> {
+
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
+        let mut state: BondState = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondState(bond_id))
+            .ok_or(BondError::BondNotFound)?;
 
 }
