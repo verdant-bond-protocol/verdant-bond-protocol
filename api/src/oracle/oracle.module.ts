@@ -12,6 +12,8 @@ import { SatelliteProvider } from './providers/satellite.provider';
 import { BlueCarbonProvider } from './providers/blue-carbon.provider';
 import { IotProvider } from './providers/iot.provider';
 
+import { CircuitBreakerService } from './circuit-breaker.service';
+
 @Module({
   imports: [ScheduleModule.forRoot(), ProjectsModule],
   controllers: [OracleController],
@@ -25,7 +27,9 @@ import { IotProvider } from './providers/iot.provider';
     SatelliteProvider,
     BlueCarbonProvider,
     IotProvider,
+    CircuitBreakerService,
   ],
-  exports: [OracleService, OracleMonitoringService, OracleIncidentRepository],
+  exports: [OracleService, OracleMonitoringService, OracleIncidentRepository, CircuitBreakerService],
 })
 export class OracleModule {}
+

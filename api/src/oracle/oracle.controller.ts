@@ -34,12 +34,15 @@ import { OracleIncident } from './interfaces/oracle-incident.interface';
 import { OracleIncidentRepository } from './oracle-incident.repository';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
 
+import { CircuitBreakerService, CircuitBreakerState } from './circuit-breaker.service';
+
 @Controller('oracle')
 export class OracleController {
   constructor(
     private readonly oracleService: OracleService,
     private readonly monitoringService: OracleMonitoringService,
     private readonly incidents: OracleIncidentRepository,
+    private readonly circuitBreaker: CircuitBreakerService,
   ) {}
 
   @Post('reports')
@@ -185,4 +188,45 @@ export class OracleController {
     const resolvedBy = req.headers['x-wallet-address'] as string || '';
     return this.incidents.resolve(id, resolvedBy, dto.resolutionNote);
   }
+
+  /**
+   * Check circuit breaker pause status for a project or tranche (#332).
+   */
+  @Get('circuit-breaker/:projectId')
+  async getCircuitBreakerStatus(
+    @Param('projectId') projectId: string,
+    @Query('tranche') tranche?: string,
+  ): Promise<{ isPaused: boolean; state: CircuitBreakerState | null }> {
+    const isPaused = this.circuitBreaker.isProjectPaused(projectId, tranche);
+    const state = this.circuitBreaker.getCircuitBreakerState(projectId, tranche);
+    return { isPaused, state };
+  }
+
+  /**
+   * Governance/multisig action to unpause and resume project distribution & trading (#332).
+   * Circuit breaker NEVER unpauses automatically via timeout.
+   */
+  @Post('circuit-breaker/resume')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @HttpCode(HttpStatus.OK)
+  async resumeProject(
+    @Body() body: {
+      projectId: string;
+      tranche?: string;
+      multisigSignatures: string[];
+      resumptionReason: string;
+    },
+    @Req() req: any,
+  ): Promise<CircuitBreakerState> {
+    const governanceActor = req.user?.walletAddress || 'GOVERNANCE_MULTISIG';
+    return this.circuitBreaker.resumeProject({
+      projectId: body.projectId,
+      tranche: body.tranche,
+      governanceActor,
+      multisigSignatures: body.multisigSignatures,
+      resumptionReason: body.resumptionReason,
+    });
+  }
 }
+
