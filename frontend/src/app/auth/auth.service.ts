@@ -94,6 +94,8 @@ export class AuthService {
         if (!canRetry) throw err;
       }
     }
+
+    throw new Error('Unable to complete wallet authentication');
   }
 
   async refresh(): Promise<void> {
