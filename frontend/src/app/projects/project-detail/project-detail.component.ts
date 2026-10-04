@@ -167,9 +167,8 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   onApprove(): void {
-    const id = this.project()?.id;
-    if (id === undefined || !confirm(`Approve project #${id}?`)) return;
-    this.apiService.approveProject(id).subscribe({
+    if (!confirm(`Approve project #${this.project()?.id}?`)) return;
+    this.apiService.approveProject(this.project()!.id).subscribe({
       next: () => {
         this.loadProject(id);
       },
@@ -180,9 +179,8 @@ export class ProjectDetailComponent implements OnInit {
   }
 
   onReject(): void {
-    const id = this.project()?.id;
-    if (id === undefined || !confirm(`Reject project #${id}?`)) return;
-    this.apiService.rejectProject(id).subscribe({
+    if (!confirm(`Reject project #${this.project()?.id}?`)) return;
+    this.apiService.rejectProject(this.project()!.id).subscribe({
       next: () => {
         this.loadProject(id);
       },

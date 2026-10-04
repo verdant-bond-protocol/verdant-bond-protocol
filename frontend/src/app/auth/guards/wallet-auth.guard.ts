@@ -9,7 +9,7 @@ export const walletAuthGuard: CanActivateFn = (_route, state) => {
   const authService = inject(AuthService);
   const router = inject(Router);
 
-  if (authService.sessionReady()) return true;
+  if (authService.isAuthenticated()) return true;
 
   return router.createUrlTree(['/auth'], { queryParams: { returnUrl: state.url } });
 };

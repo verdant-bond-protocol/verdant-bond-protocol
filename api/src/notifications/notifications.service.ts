@@ -155,12 +155,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
-  /** Unread count for an inbox, so a client can badge without paging the list. */
-  countUnread(userId: string): number {
-    return this.getNotifications(userId, { unreadOnly: true }).length;
-  }
-
-  markAsRead(userId: string, id: string, now: Date = new Date()): Notification | null {
+  markAsRead(userId: string, id: string): Notification | undefined {
     const notification = this.notifications.find(n => n.id === id && n.userId === userId);
     if (notification && !notification.read) {
       notification.read = true;

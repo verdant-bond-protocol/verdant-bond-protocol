@@ -22,7 +22,7 @@ const ORDER: Order = {
   quoteAsset: 'USDC',
   status: 'Open',
   createdAt: new Date().toISOString(),
-  expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  expiresAt: new Date(Date.now() + 86400000).toISOString(),
 };
 
 const META = { page: 1, limit: 20, total: 1, totalPages: 1 };

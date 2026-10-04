@@ -111,7 +111,6 @@ export class PolicyService {
 
   calculateRedemptionPenalty(amount: bigint, performanceScore: number, daysRemaining: number): bigint {
     const baseAmount = amount;
-    // Underperformance (negative score) raises the penalty; outperformance lowers it.
     const performanceFactor = Math.max(0, 1 - performanceScore * 0.01);
     const timeFactor = Math.max(0.5, 1 - (daysRemaining / 365) * 0.5);
     const penaltyPercentage = this.policyConfig.redeemptionPenaltyPercentage || 5;

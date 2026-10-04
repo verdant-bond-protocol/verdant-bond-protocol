@@ -94,7 +94,6 @@ export interface Order {
   status: 'Open' | 'PartiallyFilled' | 'Filled' | 'Cancelled' | 'Expired';
   createdAt: string;
   expiresAt: string;
-  /** Present on the response to a just-submitted listing; absent on reads. */
   transactionHash?: string;
 }
 
@@ -217,50 +216,15 @@ export interface TransactionStatusResponse {
   status: TransactionStatus;
 }
 
-/** GET /api/portfolio (#116); mirrors api/src/portfolio/portfolio.interface.ts. */
-export interface PortfolioBond {
-  id: number;
-  balance: string;
-  status: string;
-  maturityStatus: string;
-  maturityDate: number;
-}
-
-export interface PortfolioListing {
-  id: number;
+export interface CouponDistributionResponse {
   bondId: number;
-  amount: string;
-  pricePerToken: string;
-  quoteAsset: string;
-  status: string;
-  createdAt: string;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
 }
 
-export interface PortfolioClaimableCredit {
+export interface HolderListResponse {
   bondId: number;
-  amount: string;
-}
-
-export interface PortfolioRetiredCredit {
-  id: number;
-  bondId: number;
-  amount: string;
-  creditType: string;
-  retiredAt: number;
-}
-
-export interface PortfolioPendingAction {
-  type: 'coupon_claim' | 'maturity' | 'open_listing';
-  bondId?: number;
-  detail?: string;
-}
-
-export interface PortfolioResponse {
-  address: string;
-  bondsHeld: PortfolioBond[];
-  openListings: PortfolioListing[];
-  claimableCredits: PortfolioClaimableCredit[];
-  retiredCredits: PortfolioRetiredCredit[];
-  pendingActions: PortfolioPendingAction[];
-  generatedAt: string;
+  holders: HolderResponse[];
+  total: number;
 }

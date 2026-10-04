@@ -81,7 +81,7 @@ Cross-call graph (caller → callee):
 
 | Caller | Callee | Dependency constraint |
 | --- | --- | --- |
-| `coupon-engine` | `bond-issuer` | reads `total_subscribed`, `get_holder_balance` |
+| `coupon-engine` | `bond-issuer` | reads `total_subscribed`, `get_holder_balance`, and versioned balance checkpoints for waterfall settlement |
 | `coupon-engine` | `oracle-consumer` | reads `get_report`, `get_verification_count` |
 | `credit-retirement` | `bond-issuer`, `coupon-engine` | address references |
 | `dex-router` | `bond-issuer` | holder balances for settlement |

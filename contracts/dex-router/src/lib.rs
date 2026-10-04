@@ -1,7 +1,10 @@
 #![no_std]
 #![allow(deprecated)]
 use nbbs_shared::DEXError;
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal,
+    Symbol, Vec,
+};
 
 /// Issue #188: versioned-interface convention. Bump on a breaking storage
 /// layout or interface change; see docs/upgrade-migrations.md.
@@ -20,6 +23,19 @@ pub enum DataKey {
     Balance(Symbol, Address),
     BondEscrow(u64, Address),
     Nonce(Address),
+    /// Rolling time-and-price observations per bond, feeding `get_twap`.
+    PriceObs(u64, Symbol),
+}
+
+/// A single executed-trade price observation used to derive a time-weighted
+/// average price (TWAP). Recorded on every fill in `execute_purchase`.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct PriceObservation {
+    /// Ledger timestamp at which the trade executed.
+    pub timestamp: u64,
+    /// Executed price per token (the filled order's `price_per_token`).
+    pub price: i128,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +77,10 @@ pub struct CleanExpiredResult {
 /// call cannot exhaust the ledger resource budget even if the caller passes a
 /// large `limit`.
 const MAX_CLEAN_BATCH: u32 = 100;
+
+/// Maximum number of price observations retained per bond. Bounds the storage
+/// and the `get_twap` scan so a single call cannot exhaust the resource budget.
+const MAX_PRICE_OBS: u32 = 32;
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), DEXError> {
     let admin: Address = env
@@ -115,6 +135,103 @@ fn set_bond_escrow(env: &Env, bond_id: u64, addr: &Address, amount: i128) {
 
 fn is_order_expired(env: &Env, order: &Order) -> bool {
     env.ledger().timestamp() >= order.expires_at
+}
+
+fn get_price_obs(env: &Env, bond_id: u64, quote_asset: &Symbol) -> Vec<PriceObservation> {
+    env.storage()
+        .instance()
+        .get(&DataKey::PriceObs(bond_id, quote_asset.clone()))
+        .unwrap_or_else(|| vec![env])
+}
+
+/// Append an executed-trade observation for `bond_id`, keeping only the most
+/// recent [`MAX_PRICE_OBS`] entries (FIFO). Best-effort: never fails a fill.
+fn record_price_observation(env: &Env, bond_id: u64, quote_asset: &Symbol, price: i128) {
+    let mut obs = get_price_obs(env, bond_id, quote_asset);
+    let timestamp = env.ledger().timestamp();
+
+    // Multiple fills in one ledger timestamp have no time between them. Keep
+    // only the latest price for that timestamp so a burst of same-timestamp
+    // fills cannot evict older observations that provide the time coverage.
+    if let Some(last) = obs.pop_back() {
+        if last.timestamp == timestamp {
+            obs.push_back(PriceObservation { timestamp, price });
+        } else {
+            obs.push_back(last);
+            obs.push_back(PriceObservation { timestamp, price });
+        }
+    } else {
+        obs.push_back(PriceObservation { timestamp, price });
+    }
+    while obs.len() > MAX_PRICE_OBS {
+        obs.pop_front();
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::PriceObs(bond_id, quote_asset.clone()), &obs);
+}
+
+/// Compute the time-weighted average price (TWAP) for `bond_id` over the trailing
+/// `window_seconds`.
+///
+/// Each observation's price prevails from its own timestamp until the next
+/// observation (the latest prevails until `now`); only the portion of each
+/// interval that falls inside the window is counted, so a single-transaction
+/// price spike contributes weight proportional to the (tiny) time it persisted,
+/// not to its magnitude. This is the flash-loan-resistant price any financial
+/// consumer must use instead of the last trade / spot price (see
+/// docs/security/flash-loan-price-manipulation.md).
+fn compute_twap(
+    env: &Env,
+    bond_id: u64,
+    quote_asset: &Symbol,
+    window_seconds: u64,
+) -> Result<i128, DEXError> {
+    if window_seconds == 0 {
+        return Err(DEXError::ZeroAmount);
+    }
+    let obs = get_price_obs(env, bond_id, quote_asset);
+    let n = obs.len();
+    if n == 0 {
+        return Err(DEXError::NoPriceData);
+    }
+
+    let now = env.ledger().timestamp();
+    let cutoff = now.saturating_sub(window_seconds);
+
+    let mut weighted_sum: i128 = 0;
+    let mut total_weight: i128 = 0;
+
+    for i in 0..n {
+        let cur = obs.get(i).unwrap();
+        // This price prevails until the next observation, or `now` for the last.
+        let seg_end = if i + 1 < n {
+            obs.get(i + 1).unwrap().timestamp
+        } else {
+            now
+        }
+        .min(now);
+        // Clamp the segment start into the window: an observation older than the
+        // window still carries its price forward from `cutoff`.
+        let seg_start = cur.timestamp.max(cutoff);
+        if seg_end <= seg_start {
+            continue;
+        }
+        let weight = (seg_end - seg_start) as i128;
+        let contribution = cur.price.checked_mul(weight).ok_or(DEXError::Overflow)?;
+        weighted_sum = weighted_sum
+            .checked_add(contribution)
+            .ok_or(DEXError::Overflow)?;
+        total_weight += weight;
+    }
+
+    // Do not fall back to the latest spot price when there is no elapsed
+    // history. That would let a same-timestamp burst bypass TWAP protection.
+    if total_weight == 0 {
+        return Err(DEXError::NoPriceData);
+    }
+
+    Ok(weighted_sum / total_weight)
 }
 
 /// Persist `Expired` on an open/partial order that has passed its deadline.
@@ -172,20 +289,8 @@ impl DEXRouter {
             .set(&DataKey::CouponEngineAddress, &coupon_engine_address);
     }
 
-    pub fn set_admin(
-        env: Env,
-        current_admin: Address,
-        new_admin: Address,
-        nonce: u64,
-    ) -> Result<(), DEXError> {
+    pub fn set_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), DEXError> {
         current_admin.require_auth();
-
-        let expected_nonce = get_nonce(&env, &current_admin);
-        if nonce != expected_nonce {
-            return Err(DEXError::InvalidNonce);
-        }
-        set_nonce(&env, &current_admin, expected_nonce + 1);
-
         require_admin(&env, &current_admin)?;
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events().publish(
@@ -212,6 +317,360 @@ impl DEXRouter {
 
     pub fn get_nonce(env: Env, address: Address) -> u64 {
         get_nonce(&env, &address)
+    }
+
+    pub fn configure_market(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        quote_asset: Symbol,
+        minimum_oracle_volume: i128,
+        maximum_trade_deviation_bps: u32,
+        maximum_block_deviation_bps: u32,
+        circuit_breaker_deviation_bps: u32,
+        maximum_ledger_quote_volume: i128,
+        maximum_oracle_age_seconds: u64,
+        divergence_grace_seconds: u64,
+        nonce: u64,
+    ) -> Result<(), DEXError> {
+        caller.require_auth();
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(
+            &env,
+            &caller,
+            expected_nonce.checked_add(1).ok_or(DEXError::Overflow)?,
+        );
+        require_admin(&env, &caller)?;
+
+        if minimum_oracle_volume <= 0
+            || maximum_trade_deviation_bps > BASIS_POINTS as u32
+            || maximum_block_deviation_bps > BASIS_POINTS as u32
+            || circuit_breaker_deviation_bps > BASIS_POINTS as u32
+            || maximum_ledger_quote_volume <= 0
+            || maximum_oracle_age_seconds == 0
+            || divergence_grace_seconds == 0
+        {
+            return Err(DEXError::InvalidMarketConfig);
+        }
+        let config = MarketConfig {
+            minimum_oracle_volume,
+            maximum_trade_deviation_bps,
+            maximum_block_deviation_bps,
+            circuit_breaker_deviation_bps,
+            maximum_ledger_quote_volume,
+            maximum_oracle_age_seconds,
+            divergence_grace_seconds,
+        };
+        let key = DataKey::MarketConfig(bond_id, quote_asset.clone());
+        env.storage().persistent().set(&key, &config);
+        extend_market_ttl(&env, &key);
+        env.events().publish(
+            (Symbol::new(&env, "market_configured"),),
+            (bond_id, quote_asset),
+        );
+        Ok(())
+    }
+
+    /// Accept an authenticated TWAP snapshot from the deployment's trusted
+    /// oracle publisher. A divergent update pauses trading through a grace
+    /// period; stable updates never shorten an active pause.
+    pub fn update_oracle_reference(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        quote_asset: Symbol,
+        twap_price: i128,
+        observed_at: u64,
+        sample_volume: i128,
+        nonce: u64,
+    ) -> Result<(), DEXError> {
+        caller.require_auth();
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(
+            &env,
+            &caller,
+            expected_nonce.checked_add(1).ok_or(DEXError::Overflow)?,
+        );
+        require_admin(&env, &caller)?;
+
+        let config_key = DataKey::MarketConfig(bond_id, quote_asset.clone());
+        let config: MarketConfig = env
+            .storage()
+            .persistent()
+            .get(&config_key)
+            .ok_or(DEXError::MarketNotConfigured)?;
+        if twap_price <= 0 {
+            return Err(DEXError::InvalidOraclePrice);
+        }
+        if sample_volume == 0 {
+            return Err(DEXError::OracleZeroVolume);
+        }
+        if sample_volume < config.minimum_oracle_volume {
+            return Err(DEXError::OracleLowVolume);
+        }
+        let now = env.ledger().timestamp();
+        if observed_at > now
+            || now.checked_sub(observed_at).ok_or(DEXError::OracleStale)?
+                > config.maximum_oracle_age_seconds
+        {
+            return Err(DEXError::OracleStale);
+        }
+
+        let reference_key = DataKey::OracleReference(bond_id, quote_asset.clone());
+        let previous: Option<OracleReference> = env.storage().persistent().get(&reference_key);
+        let pause_until = if let Some(previous) = previous {
+            if observed_at <= previous.observed_at {
+                return Err(DEXError::OracleStale);
+            }
+            if exceeds_deviation(
+                twap_price,
+                previous.twap_price,
+                config.circuit_breaker_deviation_bps,
+            )? {
+                now.checked_add(config.divergence_grace_seconds)
+                    .ok_or(DEXError::Overflow)?
+            } else {
+                previous.pause_until
+            }
+        } else {
+            0
+        };
+        let reference = OracleReference {
+            twap_price,
+            observed_at,
+            sample_volume,
+            pause_until,
+        };
+        env.storage().persistent().set(&reference_key, &reference);
+        extend_market_ttl(&env, &config_key);
+        extend_market_ttl(&env, &reference_key);
+        env.events().publish(
+            (Symbol::new(&env, "oracle_reference_updated"),),
+            (bond_id, quote_asset, twap_price, observed_at, pause_until),
+        );
+        Ok(())
+    }
+
+    pub fn get_market_config(
+        env: Env,
+        bond_id: u64,
+        quote_asset: Symbol,
+    ) -> Result<MarketConfig, DEXError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MarketConfig(bond_id, quote_asset))
+            .ok_or(DEXError::MarketNotConfigured)
+    }
+
+    pub fn get_oracle_reference(
+        env: Env,
+        bond_id: u64,
+        quote_asset: Symbol,
+    ) -> Result<OracleReference, DEXError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::OracleReference(bond_id, quote_asset))
+            .ok_or(DEXError::MarketNotConfigured)
+    }
+
+    pub fn is_market_paused(env: Env, bond_id: u64, quote_asset: Symbol) -> Result<bool, DEXError> {
+        let reference: OracleReference = env
+            .storage()
+            .persistent()
+            .get(&DataKey::OracleReference(bond_id, quote_asset))
+            .ok_or(DEXError::MarketNotConfigured)?;
+        Ok(reference.pause_until > env.ledger().timestamp())
+    }
+
+    /// Return the sealed purchase digest to build a commit off-chain. The
+    /// buyer, order, price cap, amount and random salt are all bound to it.
+    pub fn purchase_commitment(
+        env: Env,
+        buyer: Address,
+        order_id: u64,
+        max_price: i128,
+        amount: i128,
+        salt: BytesN<32>,
+    ) -> BytesN<32> {
+        commitment_hash(&env, &buyer, order_id, max_price, amount, &salt)
+    }
+
+    /// Lock a fixed quote-asset bond while the caller's purchase remains
+    /// hidden. Reveal occurs in a later ledger to prevent same-ledger ordering
+    /// from exposing the order before inclusion.
+    pub fn commit_purchase(
+        env: Env,
+        buyer: Address,
+        commitment: BytesN<32>,
+        quote_asset: Symbol,
+        nonce: u64,
+    ) -> Result<u64, DEXError> {
+        buyer.require_auth();
+        let expected_nonce = get_nonce(&env, &buyer);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(&env, &buyer, expected_nonce + 1);
+
+        let balance = get_balance(&env, &buyer, &quote_asset);
+        if balance < PURCHASE_COMMIT_BOND {
+            return Err(DEXError::InsufficientFunds);
+        }
+        set_balance(&env, &buyer, &quote_asset, balance - PURCHASE_COMMIT_BOND);
+
+        let count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PurchaseCommitCount)
+            .unwrap_or(0);
+        let commit_id = count.checked_add(1).ok_or(DEXError::Overflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::PurchaseCommitCount, &commit_id);
+        let purchase_commit = PurchaseCommit {
+            buyer: buyer.clone(),
+            commitment,
+            quote_asset,
+            ledger_sequence: env.ledger().sequence(),
+            revealed: false,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::PurchaseCommit(commit_id), &purchase_commit);
+        env.events().publish(
+            (Symbol::new(&env, "purchase_committed"),),
+            (commit_id, buyer),
+        );
+        Ok(commit_id)
+    }
+
+    /// Reveal a committed purchase and settle at the listing's fixed price.
+    /// The bonded amount is refunded only after the commitment has been
+    /// verified and settlement succeeds.
+    pub fn reveal_purchase(
+        env: Env,
+        buyer: Address,
+        commit_id: u64,
+        order_id: u64,
+        max_price: i128,
+        amount: i128,
+        salt: BytesN<32>,
+        nonce: u64,
+    ) -> Result<(), DEXError> {
+        buyer.require_auth();
+        let expected_nonce = get_nonce(&env, &buyer);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(&env, &buyer, expected_nonce + 1);
+
+        let mut purchase_commit: PurchaseCommit = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PurchaseCommit(commit_id))
+            .ok_or(DEXError::OrderNotFound)?;
+        if purchase_commit.buyer != buyer || purchase_commit.revealed {
+            return Err(DEXError::Unauthorized);
+        }
+        let sequence = env.ledger().sequence();
+        let earliest = purchase_commit
+            .ledger_sequence
+            .checked_add(PURCHASE_REVEAL_DELAY)
+            .ok_or(DEXError::Overflow)?;
+        let deadline = purchase_commit
+            .ledger_sequence
+            .checked_add(PURCHASE_REVEAL_WINDOW)
+            .ok_or(DEXError::Overflow)?;
+        if sequence < earliest || sequence > deadline {
+            return Err(if sequence < earliest {
+                DEXError::RevealTooEarly
+            } else {
+                DEXError::RevealWindowClosed
+            });
+        }
+        if commitment_hash(&env, &buyer, order_id, max_price, amount, &salt)
+            != purchase_commit.commitment
+        {
+            return Err(DEXError::InvalidCommitment);
+        }
+        let order: Order = env
+            .storage()
+            .instance()
+            .get(&DataKey::Order(order_id))
+            .ok_or(DEXError::OrderNotFound)?;
+        if order.quote_asset != purchase_commit.quote_asset {
+            return Err(DEXError::InvalidCommitment);
+        }
+
+        purchase_commit.revealed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PurchaseCommit(commit_id), &purchase_commit);
+        let balance = get_balance(&env, &buyer, &purchase_commit.quote_asset);
+        let refunded_balance = balance
+            .checked_add(PURCHASE_COMMIT_BOND)
+            .ok_or(DEXError::Overflow)?;
+        set_balance(&env, &buyer, &purchase_commit.quote_asset, refunded_balance);
+        let settlement_nonce = expected_nonce.checked_add(1).ok_or(DEXError::Overflow)?;
+        Self::execute_purchase(env, buyer, order_id, max_price, amount, settlement_nonce)
+    }
+
+    /// Forfeit an unrevealed commitment after its reveal window. Anyone may
+    /// call this bounded single-record cleanup; the locked bond is credited
+    /// to the contract's penalty reserve and cannot be reclaimed by the buyer.
+    pub fn forfeit_purchase_commit(env: Env, commit_id: u64) -> Result<(), DEXError> {
+        let mut purchase_commit: PurchaseCommit = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PurchaseCommit(commit_id))
+            .ok_or(DEXError::OrderNotFound)?;
+        if purchase_commit.revealed {
+            return Err(DEXError::OrderAlreadyFilled);
+        }
+        let deadline = purchase_commit
+            .ledger_sequence
+            .checked_add(PURCHASE_REVEAL_WINDOW)
+            .ok_or(DEXError::Overflow)?;
+        if env.ledger().sequence() <= deadline {
+            return Err(DEXError::RevealTooEarly);
+        }
+
+        purchase_commit.revealed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PurchaseCommit(commit_id), &purchase_commit);
+        let reserve: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PenaltyBalance(
+                purchase_commit.quote_asset.clone(),
+            ))
+            .unwrap_or(0);
+        let new_reserve = reserve
+            .checked_add(PURCHASE_COMMIT_BOND)
+            .ok_or(DEXError::Overflow)?;
+        env.storage().persistent().set(
+            &DataKey::PenaltyBalance(purchase_commit.quote_asset.clone()),
+            &new_reserve,
+        );
+        env.events().publish(
+            (Symbol::new(&env, "purchase_commit_forfeited"),),
+            (commit_id, purchase_commit.buyer, PURCHASE_COMMIT_BOND),
+        );
+        Ok(())
+    }
+
+    pub fn get_penalty_balance(env: Env, quote_asset: Symbol) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PenaltyBalance(quote_asset))
+            .unwrap_or(0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -415,6 +874,13 @@ impl DEXRouter {
         if buyer_balance < proceeds {
             return Err(DEXError::InsufficientFunds);
         }
+        record_market_trade(
+            &env,
+            order.bond_id,
+            &order.quote_asset,
+            order.price_per_token,
+            proceeds,
+        )?;
         set_balance(&env, &buyer, &order.quote_asset, buyer_balance - proceeds);
 
         let seller_balance = get_balance(&env, &order.seller, &order.quote_asset);
@@ -468,6 +934,31 @@ impl DEXRouter {
                 amount.into_val(&env),
                 seller_bond_nonce.into_val(&env),
             ],
+        );
+
+        // Release escrowed tokens on successful fill
+        let new_seller_escrow = seller_escrow - amount;
+        set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
+
+        if amount == order.amount {
+            order.status = OrderStatus::Filled;
+        } else {
+            order.status = OrderStatus::PartiallyFilled;
+            order.amount -= amount;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Order(order_id), &order);
+
+        // Record the executed price for TWAP. Any downstream financial use of a
+        // bond's market price must read `get_twap`, never the last/spot price, so
+        // a single-transaction distortion cannot move a valuation (#216).
+        record_price_observation(
+            &env,
+            order.bond_id,
+            &order.quote_asset,
+            order.price_per_token,
         );
 
         env.events().publish(
@@ -562,6 +1053,35 @@ impl DEXRouter {
             .instance()
             .get(&DataKey::Order(order_id))
             .ok_or(DEXError::OrderNotFound)
+    }
+
+    /// Time-weighted average executed price for `bond_id` and `quote_asset`
+    /// over the trailing `window_seconds`.
+    ///
+    /// This is the manipulation-resistant price that any function with financial
+    /// consequences (collateral valuation, redemption pricing, …) must consume
+    /// instead of the most recent trade price: a large single-transaction price
+    /// distortion contributes weight proportional only to the brief time it
+    /// persisted, so it cannot meaningfully move the average (see
+    /// docs/security/flash-loan-price-manipulation.md). Returns `NoPriceData`
+    /// when the bond has never traded.
+    pub fn get_twap(
+        env: Env,
+        bond_id: u64,
+        quote_asset: Symbol,
+        window_seconds: u64,
+    ) -> Result<i128, DEXError> {
+        compute_twap(&env, bond_id, &quote_asset, window_seconds)
+    }
+
+    /// Raw price observations retained for `bond_id` and `quote_asset` (most
+    /// recent last), for off-chain analysis / monitoring.
+    pub fn get_price_observations(
+        env: Env,
+        bond_id: u64,
+        quote_asset: Symbol,
+    ) -> Vec<PriceObservation> {
+        get_price_obs(&env, bond_id, &quote_asset)
     }
 
     pub fn get_bond_orders(env: Env, bond_id: u64) -> Vec<u64> {
@@ -725,6 +1245,71 @@ mod test {
         (issuer_admin, issuer_id, bond_id, holder)
     }
 
+    fn configure_test_market(
+        env: &Env,
+        client: &DEXRouterClient,
+        admin: &Address,
+        bond_id: u64,
+        quote_asset: &Symbol,
+        reference_price: i128,
+    ) {
+        configure_market_with_limits(
+            env,
+            client,
+            admin,
+            bond_id,
+            quote_asset,
+            reference_price,
+            1,
+            10_000,
+            10_000,
+            10_000,
+            i128::MAX,
+            3_600,
+            60,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn configure_market_with_limits(
+        env: &Env,
+        client: &DEXRouterClient,
+        admin: &Address,
+        bond_id: u64,
+        quote_asset: &Symbol,
+        reference_price: i128,
+        minimum_oracle_volume: i128,
+        maximum_trade_deviation_bps: u32,
+        maximum_block_deviation_bps: u32,
+        circuit_breaker_deviation_bps: u32,
+        maximum_ledger_quote_volume: i128,
+        maximum_oracle_age_seconds: u64,
+        divergence_grace_seconds: u64,
+    ) {
+        client.configure_market(
+            admin,
+            &bond_id,
+            quote_asset,
+            &minimum_oracle_volume,
+            &maximum_trade_deviation_bps,
+            &maximum_block_deviation_bps,
+            &circuit_breaker_deviation_bps,
+            &maximum_ledger_quote_volume,
+            &maximum_oracle_age_seconds,
+            &divergence_grace_seconds,
+            &0,
+        );
+        client.update_oracle_reference(
+            admin,
+            &bond_id,
+            quote_asset,
+            &reference_price,
+            &env.ledger().timestamp(),
+            &1,
+            &1,
+        );
+    }
+
     #[test]
     fn test_list_tokens() {
         let env = Env::default();
@@ -784,6 +1369,14 @@ mod test {
             (admin.clone(), issuer_id.clone(), Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -817,6 +1410,316 @@ mod test {
     }
 
     #[test]
+    fn test_committed_purchase_hides_trade_until_reveal_and_refunds_bond() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set_sequence_number(100);
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+        client.deposit_quote(&buyer, &Symbol::new(&env, "USDC"), &20_000i128, &0);
+
+        let salt = BytesN::from_array(&env, &[7; 32]);
+        let commitment = client.purchase_commitment(&buyer, &order_id, &100i128, &100i128, &salt);
+        let commit_id = client.commit_purchase(&buyer, &commitment, &Symbol::new(&env, "USDC"), &1);
+        assert_eq!(
+            client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
+            19_000
+        );
+
+        env.ledger().set_sequence_number(101);
+        client.reveal_purchase(&buyer, &commit_id, &order_id, &100i128, &100i128, &salt, &2);
+
+        assert_eq!(client.get_order(&order_id).status, OrderStatus::Filled);
+        assert_eq!(
+            client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
+            9_000
+        );
+        assert_eq!(
+            client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")),
+            10_000
+        );
+        assert_eq!(client.get_penalty_balance(&Symbol::new(&env, "USDC")), 0);
+    }
+
+    #[test]
+    fn test_unrevealed_purchase_commit_is_slashed_after_window() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set_sequence_number(100);
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, _bond_id, _seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let quote_asset = Symbol::new(&env, "USDC");
+        client.deposit_quote(&buyer, &quote_asset, &2_000i128, &0);
+        let commitment = BytesN::from_array(&env, &[9; 32]);
+        let commit_id = client.commit_purchase(&buyer, &commitment, &quote_asset, &1);
+
+        env.ledger()
+            .set_sequence_number(100 + PURCHASE_REVEAL_WINDOW + 1);
+        client.forfeit_purchase_commit(&commit_id);
+
+        assert_eq!(
+            client.get_penalty_balance(&quote_asset),
+            PURCHASE_COMMIT_BOND
+        );
+        assert_eq!(client.get_quote_balance(&buyer, &quote_asset), 1_000);
+        assert_eq!(
+            client.try_forfeit_purchase_commit(&commit_id),
+            Err(Ok(DEXError::OrderAlreadyFilled))
+        );
+    }
+
+    #[test]
+    fn test_purchase_commit_rejects_early_and_invalid_reveals() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set_sequence_number(100);
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+        let quote_asset = Symbol::new(&env, "USDC");
+        client.deposit_quote(&buyer, &quote_asset, &20_000i128, &0);
+        let salt = BytesN::from_array(&env, &[3; 32]);
+        let commitment = client.purchase_commitment(&buyer, &order_id, &100i128, &100i128, &salt);
+        let commit_id = client.commit_purchase(&buyer, &commitment, &quote_asset, &1);
+
+        assert_eq!(
+            client
+                .try_reveal_purchase(&buyer, &commit_id, &order_id, &100i128, &100i128, &salt, &2,),
+            Err(Ok(DEXError::RevealTooEarly))
+        );
+        env.ledger().set_sequence_number(101);
+        let wrong_salt = BytesN::from_array(&env, &[4; 32]);
+        assert_eq!(
+            client.try_reveal_purchase(
+                &buyer,
+                &commit_id,
+                &order_id,
+                &100i128,
+                &100i128,
+                &wrong_salt,
+                &2,
+            ),
+            Err(Ok(DEXError::InvalidCommitment))
+        );
+        assert_eq!(
+            client.get_quote_balance(&buyer, &quote_asset),
+            20_000 - PURCHASE_COMMIT_BOND
+        );
+    }
+
+    #[test]
+    fn test_oracle_rejects_low_volume_stale_samples_and_wide_asks() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let quote_asset = Symbol::new(&env, "USDC");
+
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &quote_asset,
+            100,
+            10,
+            500,
+            500,
+            500,
+            i128::MAX,
+            3_600,
+            60,
+        );
+        assert_eq!(
+            client.try_update_oracle_reference(&admin, &bond_id, &quote_asset, &100, &0, &0, &2,),
+            Err(Ok(DEXError::OracleZeroVolume))
+        );
+        assert_eq!(
+            client.try_update_oracle_reference(&admin, &bond_id, &quote_asset, &100, &0, &9, &2,),
+            Err(Ok(DEXError::OracleLowVolume))
+        );
+
+        env.ledger().set_timestamp(3_601);
+        assert_eq!(
+            client.try_update_oracle_reference(&admin, &bond_id, &quote_asset, &100, &0, &10, &2,),
+            Err(Ok(DEXError::OracleStale))
+        );
+
+        env.ledger().set_timestamp(3_602);
+        client.update_oracle_reference(&admin, &bond_id, &quote_asset, &100, &3_602, &10, &2);
+        let order_id =
+            client.list_bond_tokens(&seller, &bond_id, &10, &106, &quote_asset, &3_600, &0);
+        client.deposit_quote(&buyer, &quote_asset, &10_000, &0);
+        assert_eq!(
+            client.try_execute_purchase(&buyer, &order_id, &106, &1, &1),
+            Err(Ok(DEXError::PriceDeviationExceeded))
+        );
+    }
+
+    #[test]
+    fn test_market_caps_ledger_volume_and_intra_ledger_price_movement() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let quote_asset = Symbol::new(&env, "USDC");
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &quote_asset,
+            100,
+            1,
+            1_000,
+            200,
+            1_000,
+            150,
+            3_600,
+            60,
+        );
+        let first_order =
+            client.list_bond_tokens(&seller, &bond_id, &10, &100, &quote_asset, &3_600, &0);
+        let second_order =
+            client.list_bond_tokens(&seller, &bond_id, &10, &103, &quote_asset, &3_600, &1);
+        client.deposit_quote(&buyer, &quote_asset, &10_000, &0);
+        client.execute_purchase(&buyer, &first_order, &100, &1, &1);
+        assert_eq!(
+            client.try_execute_purchase(&buyer, &second_order, &103, &1, &2),
+            Err(Ok(DEXError::PriceDeviationExceeded))
+        );
+
+        let same_price_order =
+            client.list_bond_tokens(&seller, &bond_id, &10, &100, &quote_asset, &3_600, &2);
+        assert_eq!(
+            client.try_execute_purchase(&buyer, &same_price_order, &100, &1, &2),
+            Err(Ok(DEXError::LedgerVolumeExceeded))
+        );
+
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1);
+        client.execute_purchase(&buyer, &same_price_order, &100, &1, &2);
+    }
+
+    #[test]
+    fn test_circuit_breaker_blocks_both_purchase_paths_until_grace_expires() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        env.ledger().set_sequence_number(100);
+        env.ledger().set_timestamp(1);
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let quote_asset = Symbol::new(&env, "USDC");
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &quote_asset,
+            100,
+            1,
+            1_000,
+            1_000,
+            1_000,
+            i128::MAX,
+            3_600,
+            60,
+        );
+        env.ledger().set_timestamp(2);
+        client.update_oracle_reference(&admin, &bond_id, &quote_asset, &120, &2, &1, &2);
+        assert!(client.is_market_paused(&bond_id, &quote_asset));
+
+        let order_id =
+            client.list_bond_tokens(&seller, &bond_id, &10, &120, &quote_asset, &3_600, &0);
+        client.deposit_quote(&buyer, &quote_asset, &10_000, &0);
+        assert_eq!(
+            client.try_execute_purchase(&buyer, &order_id, &120, &1, &1),
+            Err(Ok(DEXError::OraclePaused))
+        );
+        let salt = BytesN::from_array(&env, &[5; 32]);
+        let commitment = client.purchase_commitment(&buyer, &order_id, &120, &1, &salt);
+        let commit_id = client.commit_purchase(&buyer, &commitment, &quote_asset, &1);
+
+        env.ledger().set_sequence_number(101);
+        assert_eq!(
+            client.try_reveal_purchase(&buyer, &commit_id, &order_id, &120, &1, &salt, &2),
+            Err(Ok(DEXError::OraclePaused))
+        );
+        assert_eq!(
+            client.get_quote_balance(&buyer, &quote_asset),
+            10_000 - PURCHASE_COMMIT_BOND
+        );
+
+        env.ledger().set_timestamp(62);
+        client.update_oracle_reference(&admin, &bond_id, &quote_asset, &120, &62, &1, &3);
+        assert!(!client.is_market_paused(&bond_id, &quote_asset));
+        client.reveal_purchase(&buyer, &commit_id, &order_id, &120, &1, &salt, &2);
+        assert_eq!(
+            client.get_order(&order_id).status,
+            OrderStatus::PartiallyFilled
+        );
+    }
+
+    #[test]
     fn test_buy_partial_fill() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
@@ -831,6 +1734,14 @@ mod test {
             (admin.clone(), issuer_id.clone(), Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -899,6 +1810,14 @@ mod test {
             (admin.clone(), issuer_id, Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1015,6 +1934,14 @@ mod test {
             (admin.clone(), issuer_id, Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1609,6 +2536,245 @@ mod test {
         assert_eq!(result, Err(Ok(DEXError::OrderExpired)));
     }
 
+    // --- TWAP / flash-loan price-manipulation resistance (#216) ---
+
+    #[test]
+    fn test_twap_is_time_weighted_average() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 100_000, 50_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let usdc = Symbol::new(&env, "USDC");
+
+        env.ledger().set_timestamp(1000);
+        let o1 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &0,
+        );
+        let o2 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &300i128,
+            &usdc,
+            &1_000_000u64,
+            &1,
+        );
+        client.deposit_quote(&buyer, &usdc, &10_000_000i128, &0);
+
+        // Trade at price 100 @ t=1000, then price 300 @ t=2000.
+        env.ledger().set_timestamp(1000);
+        client.execute_purchase(&buyer, &o1, &100i128, &100i128, &1);
+        env.ledger().set_timestamp(2000);
+        client.execute_purchase(&buyer, &o2, &300i128, &100i128, &2);
+
+        // At t=3000: price 100 prevailed [1000,2000) and price 300 [2000,3000],
+        // so TWAP = (100*1000 + 300*1000) / 2000 = 200.
+        env.ledger().set_timestamp(3000);
+        assert_eq!(client.get_twap(&bond_id, &usdc, &5000u64), 200);
+    }
+
+    #[test]
+    fn test_twap_resists_single_transaction_spike() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 100_000, 50_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let usdc = Symbol::new(&env, "USDC");
+
+        env.ledger().set_timestamp(1000);
+        let o1 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &0,
+        );
+        let o2 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &1,
+        );
+        let o3 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &2,
+        );
+        // The attacker's manipulated trade: 100x the honest price for one unit.
+        let spike = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1i128,
+            &10_000i128,
+            &usdc,
+            &1_000_000u64,
+            &3,
+        );
+        client.deposit_quote(&buyer, &usdc, &100_000_000i128, &0);
+
+        // Honest trades at price 100 across the window.
+        env.ledger().set_timestamp(1000);
+        client.execute_purchase(&buyer, &o1, &100i128, &100i128, &1);
+        env.ledger().set_timestamp(2000);
+        client.execute_purchase(&buyer, &o2, &100i128, &100i128, &2);
+        env.ledger().set_timestamp(3000);
+        client.execute_purchase(&buyer, &o3, &100i128, &100i128, &3);
+        // Flash spike at t=3001.
+        env.ledger().set_timestamp(3001);
+        client.execute_purchase(&buyer, &spike, &10_000i128, &1i128, &4);
+
+        // One second later: the spike price (10_000) persisted for only 1s out of
+        // ~2000s, so TWAP stays near the honest 100 even though the last trade
+        // (spot) was 10_000 — a 100x distortion the TWAP absorbs to <2x.
+        env.ledger().set_timestamp(3002);
+        let twap = client.get_twap(&bond_id, &usdc, &5000u64);
+        assert!(
+            twap < 200,
+            "TWAP {twap} must stay near the honest price, not the 10_000 spike"
+        );
+        // Sanity: the raw last trade really was the 10_000 spike.
+        assert_eq!(client.get_order(&spike).price_per_token, 10_000);
+    }
+
+    #[test]
+    fn test_twap_without_trades_errors() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, _seller) =
+            setup_bond_and_holder(&env, 100_000, 50_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        // A bond that has never traded has no price to report.
+        let result = client.try_get_twap(&bond_id, &Symbol::new(&env, "USDC"), &1000u64);
+        assert_eq!(result, Err(Ok(DEXError::NoPriceData)));
+    }
+
+    #[test]
+    fn test_twap_zero_window_rejected() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 100_000, 50_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let usdc = Symbol::new(&env, "USDC");
+
+        env.ledger().set_timestamp(1000);
+        let o1 = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &100i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &0,
+        );
+        client.deposit_quote(&buyer, &usdc, &1_000_000i128, &0);
+        client.execute_purchase(&buyer, &o1, &100i128, &100i128, &1);
+
+        let result = client.try_get_twap(&bond_id, &Symbol::new(&env, "USDC"), &0u64);
+        assert_eq!(result, Err(Ok(DEXError::ZeroAmount)));
+    }
+
+    #[test]
+    fn test_same_timestamp_fills_preserve_history_and_never_fallback_to_spot() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 100_000, 50_000);
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let usdc = Symbol::new(&env, "USDC");
+
+        // Establish real historical coverage at the honest price.
+        env.ledger().set_timestamp(1000);
+        let history = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1i128,
+            &100i128,
+            &usdc,
+            &1_000_000u64,
+            &0,
+        );
+        client.deposit_quote(&buyer, &usdc, &1_000_000i128, &0);
+        client.execute_purchase(&buyer, &history, &100i128, &1i128, &1);
+
+        // Thirty-two same-timestamp fills must coalesce, not evict the older
+        // observation and leave TWAP with only an attacker-controlled spot.
+        env.ledger().set_timestamp(2000);
+        for index in 1..33u64 {
+            let order = client.list_bond_tokens(
+                &seller,
+                &bond_id,
+                &1i128,
+                &10_000i128,
+                &usdc,
+                &1_000_000u64,
+                &index,
+            );
+            client.execute_purchase(&buyer, &order, &10_000i128, &1i128, &(index + 1));
+        }
+
+        env.ledger().set_timestamp(2001);
+        let twap = client.get_twap(&bond_id, &usdc, &5_000u64);
+        assert!(twap < 200, "TWAP {twap} must retain historical coverage");
+        assert_ne!(twap, 10_000);
+    }
+
     // --- Order replay / stale-state hardening (#215) ---
     //
     // Cross-network and cross-contract replay are enforced by the Soroban host's
@@ -1634,6 +2800,14 @@ mod test {
             (admin.clone(), issuer_id, Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1670,6 +2844,14 @@ mod test {
             (admin.clone(), issuer_id, Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1708,6 +2890,14 @@ mod test {
             (admin.clone(), issuer_id, Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
 
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1903,6 +3093,14 @@ mod test {
                     (admin.clone(), issuer_id.clone(), Address::generate(&env)),
                 );
                 let client = DEXRouterClient::new(&env, &contract_id);
+                configure_test_market(
+                    &env,
+                    &client,
+                    &admin,
+                    bond_id,
+                    &Symbol::new(&env, "USDC"),
+                    price,
+                );
                 let issuer_client =
                     nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
                 let quote = Symbol::new(&env, "USDC");

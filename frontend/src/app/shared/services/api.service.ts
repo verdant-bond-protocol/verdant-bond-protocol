@@ -11,9 +11,7 @@ import {
   UndistributedTotalResponse, SweepUndistributedResponse,
   QuoteBalanceResponse, QuoteTransactionResponse,
   QuoteAsset, DepositQuoteDto, WithdrawQuoteDto, HolderResponse,
-  ClaimableCreditDetail, ClaimableCreditsResponse,
-  HolderListResponse, CouponDistributionResponse, TransactionStatusResponse,
-  PortfolioResponse,
+  ClaimableCreditsResponse, CouponDistributionResponse, HolderListResponse, TransactionStatusResponse,
 } from '../interfaces/bond.interface';
 
 export interface ProblemDetails {
@@ -378,11 +376,11 @@ export class ApiService {
     return this.withProblemDetails(this.http.post<QuoteTransactionResponse>('/api/marketplace/withdraw', data, { headers }));
   }
 
-  getPortfolio(address?: string, force = false): Observable<PortfolioResponse> {
+  getPortfolio(address?: string, force = false): Observable<Record<string, unknown>> {
     let params = new HttpParams();
     if (address) params = params.set('address', address);
     if (force) params = params.set('force', 'true');
-    return this.withProblemDetails(this.http.get<PortfolioResponse>('/api/portfolio', {
+    return this.withProblemDetails(this.http.get<Record<string, unknown>>('/api/portfolio', {
       params,
       headers: this.headers(),
     }));
@@ -419,5 +417,9 @@ export class ApiService {
     return this.withProblemDetails(
       this.http.get<BondDetailResponse>(`/api/bonds/${id}/detail`, { params }),
     );
+  }
+
+  getTransactionStatus(hash: string): Observable<TransactionStatusResponse> {
+    return this.withProblemDetails(this.http.get<TransactionStatusResponse>(`/api/stellar/transactions/${hash}`));
   }
 }

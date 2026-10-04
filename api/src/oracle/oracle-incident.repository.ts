@@ -218,6 +218,7 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
     let offsetClause = '';
     let offsetParams: any[] = [];
     const queryParams: any[] = status ? [status] : [];
+    let queryParams: any[] = status ? [status] : [];
     
     if (cursor) {
       const cursorDate = new Date(cursor).toISOString();

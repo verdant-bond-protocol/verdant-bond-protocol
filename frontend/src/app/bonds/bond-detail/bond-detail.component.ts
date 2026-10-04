@@ -4,7 +4,6 @@ import { RouterModule, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ApiService, CouponEligibility } from '../../shared/services/api.service';
 import { WalletService } from '../../auth/wallet.service';
-import { AuthService } from '../../auth/auth.service';
 import { StatusBadgeComponent } from '../../shared/components/status-badge/status-badge.component';
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
 import { BondDetailReloadCoordinator } from './bond-detail.reload-coordinator';
@@ -13,9 +12,9 @@ import { AdminSecretPromptComponent } from '../../shared/components/admin-secret
 import { AdminAccessService } from '../../shared/services/admin-access.service';
 import { AdminIntentService } from '../../shared/services/admin-intent.service';
 import { Bond, ClaimableCreditsResponse } from '../../shared/interfaces/bond.interface';
-import { PendingTransactionsService, PendingTx } from '../../shared/services/pending-transactions.service';
-import { CreditQuantityComponent } from '../../shared/components/credit-quantity/credit-quantity.component';
+import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
 import { appErrorMessage } from '../../shared/errors/api-error';
+import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
 
 @Component({
   selector: 'app-bond-detail',
@@ -474,6 +473,7 @@ export class BondDetailComponent implements OnInit, OnDestroy {
   private readonly adminAccess = inject(AdminAccessService);
   readonly adminIntent = inject(AdminIntentService);
   private readonly coordinator = inject(BondDetailReloadCoordinator);
+  private readonly pendingTx = inject(PendingTransactionsService);
 
   /**
    * Every panel (summary, holders, coupon, maturity) is derived from the single
@@ -844,7 +844,7 @@ private submitSweep(): void {
     if (!confirmed) return;
 
     this.apiService.distributeCoupon(b.id, { periodIndex: 0 }).subscribe({
-      next: (res) => {
+      next: (_res) => {
         this.reload(b.id);
       },
       error: (err) => {
@@ -869,8 +869,10 @@ private submitSweep(): void {
     this.apiService.mature(b.id).subscribe({
       next: (res) => {
         this.matureSuccess.set(true);
-        this.matureTx.set(res.transactionHash ?? '');
-        this.pendingTx.register(res.transactionHash, 'mature');
+        this.matureTx.set(res.transactionHash || '');
+        if (res.transactionHash) {
+          this.pendingTx.register(res.transactionHash, 'mature');
+        }
         this.matureSubmitting.set(false);
         this.reload(b.id);
       },
@@ -892,7 +894,7 @@ private submitSweep(): void {
 
     this.reconcileSubmitting.set(true);
     this.apiService.reconcileHolders(b.id).subscribe({
-      next: (res) => {
+      next: (_res) => {
         this.reload(b.id);
       },
       error: (err) => {

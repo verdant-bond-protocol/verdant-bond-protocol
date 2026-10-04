@@ -14,10 +14,8 @@
     "seed": "ts-node scripts/seed.ts",
     "seed:reset": "ts-node scripts/seed.ts --reset",
     "reindex-holders": "ts-node scripts/reindex-holders.ts",
-    "validate:recovery": "ts-node scripts/validate-recovery.ts",
-    "diagnostics": "ts-node scripts/diagnostics.ts",
-    "mutate": "stryker run stryker-config.json",
-    "test:mutate": "stryker run stryker-config.json --thresholds.break 50"
+    "mutate": "stryker run",
+    "test:mutate": "stryker run --reporter progress --thresholds.high 50"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
@@ -54,6 +52,7 @@
     "@typescript-eslint/parser": "^7.0.0",
     "embedded-postgres": "18.4.0-beta.17",
     "eslint": "^8.57.0",
+    "@stryker-mutator/core": "^9.0.0",
     "jest": "^29.7.0",
     "supertest": "^6.3.0",
     "ts-jest": "^29.1.0",

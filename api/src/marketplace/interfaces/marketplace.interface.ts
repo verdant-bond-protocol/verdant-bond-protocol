@@ -43,6 +43,7 @@ export interface QuoteTransactionResponse {
 
 export interface PriceFeedResponse {
   bondId: number;
+  quoteAsset: QuoteAsset;
   bestPrice: string;
   averagePrice: string;
   totalOrders: number;

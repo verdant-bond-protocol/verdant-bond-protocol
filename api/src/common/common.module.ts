@@ -18,18 +18,21 @@ import { QuotaGuard } from './guards/quota.guard';
 import { StellarModule } from '../stellar/stellar.module';
 import { QuotaController } from './quota.controller';
 
-const SHARED = [
-  NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService,
-  HolderIndexService, IntentService, IntentGuard, IdempotencyService,
-  SearchIndexService, EnvConfigValidator,
-  TelemetryService, TelemetryInterceptor, QuotaService, QuotaGuard,
-];
-
 @Global()
 @Module({
   imports: [StellarModule],
   controllers: [RedisHealthController, QuotaController],
-  providers: SHARED,
-  exports: SHARED,
+  providers: [
+    NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService,
+    HolderIndexService, IntentService, IntentGuard, IdempotencyService,
+    SearchIndexService, EnvConfigValidator, TelemetryService, TelemetryInterceptor,
+    QuotaService, QuotaGuard
+  ],
+  exports: [
+    NonceService, RedisService, SigningKeyProvider, ConfigService, KycStoreService,
+    HolderIndexService, IntentService, IntentGuard, IdempotencyService,
+    SearchIndexService, EnvConfigValidator, TelemetryService, TelemetryInterceptor,
+    QuotaService, QuotaGuard
+  ],
 })
 export class CommonModule {}
