@@ -34,11 +34,16 @@ import {
   ClaimableCreditsResponse,
 } from './interfaces/bond.interface';
 
+import { CouponBacktestService, PerformanceDataset, BacktestReport } from './coupon-backtest.service';
+
 @ApiTags('bonds')
 @ApiBearerAuth()
 @Controller('bonds')
 export class BondsController {
-  constructor(private readonly bondsService: BondsService) {}
+  constructor(
+    private readonly bondsService: BondsService,
+    private readonly backtestService: CouponBacktestService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
@@ -238,4 +243,27 @@ export class BondsController {
     const auditorAddress = req.user?.walletAddress || '';
     return this.bondsService.exportBond(id, auditorAddress);
   }
+
+  /**
+   * Run historical performance backtesting for coupon math (#333).
+   * Evaluates imported or synthetic multi-year datasets against contract logic.
+   */
+  @Post('backtest')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async runCouponBacktest(
+    @Body() body: { dataset?: PerformanceDataset; syntheticYears?: number; formulaVersion?: 'V1' | 'V2' | 'COMPARE' },
+  ): Promise<BacktestReport> {
+    const dataset =
+      body.dataset ||
+      this.backtestService.generateSyntheticDataset({
+        years: body.syntheticYears || 5,
+        baseCarbon: 1000,
+        includeSpike: true,
+        includeDrop: true,
+      });
+
+    return this.backtestService.runBacktest(dataset, body.formulaVersion || 'COMPARE');
+  }
 }
+

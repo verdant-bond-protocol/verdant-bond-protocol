@@ -7,7 +7,7 @@ import {
   TrancheType,
   VersionedRuleset,
 } from '../interfaces/compliance.interface';
-import { CANONICAL_RULESET_V2026_1 } from '../rules/default-ruleset';
+import { CANONICAL_RULESET_V2026_1, computeRulesetAuditHash } from '../rules/default-ruleset';
 import { SanctionsService } from './sanctions.service';
 import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
 
@@ -232,4 +232,173 @@ export class ComplianceRulesEngine {
       evaluatedRules,
     };
   }
+
+  /**
+   * Governance-updatable rules table method. Updates a jurisdiction rule dynamically
+   * in the active ruleset without requiring a contract or service redeploy.
+   */
+  updateJurisdictionRule(
+    jurisdiction: string,
+    ruleUpdates: Partial<JurisdictionRule>,
+    governanceActor: string = 'GOVERNANCE_MULTISIG',
+  ): VersionedRuleset {
+    const activeRuleset = this.getActiveRuleset();
+    const upper = jurisdiction.toUpperCase();
+    const currentRule = this.getJurisdictionRule(upper, activeRuleset.version);
+
+    const updatedJurisdictions = {
+      ...activeRuleset.jurisdictions,
+      [upper]: {
+        ...currentRule,
+        ...ruleUpdates,
+        jurisdiction: upper,
+      },
+    };
+
+    const newRawRuleset = {
+      version: `${activeRuleset.version}.upd`,
+      effectiveDate: new Date().toISOString(),
+      jurisdictions: updatedJurisdictions,
+      defaultRule: activeRuleset.defaultRule,
+    };
+
+    const newAuditHash = computeRulesetAuditHash(newRawRuleset);
+    const newRuleset: VersionedRuleset = {
+      ...newRawRuleset,
+      auditHash: newAuditHash,
+    };
+
+    this.registerRuleset(newRuleset);
+    this.activeVersion = newRuleset.version;
+
+    this.logger.log(
+      `Governance action by ${governanceActor}: updated rule for jurisdiction ${upper}. New ruleset version: ${newRuleset.version}`,
+    );
+
+    return newRuleset;
+  }
+
+  /**
+   * Evaluates compliance eligibility for secondary-market transfers.
+   * Enforces rules consistently across both recipient eligibility and sender status.
+   */
+  evaluateTransferEligibility(
+    context: import('../interfaces/compliance.interface').TransferEligibilityContext,
+  ): EligibilityDecision {
+    // Evaluates recipient eligibility at secondary transfer
+    const recipientDecision = this.evaluateEligibility({
+      investorAddress: context.toAddress,
+      jurisdiction: context.toJurisdiction,
+      tranche: context.tranche,
+      bondId: context.bondId,
+      purchaseAmount: context.amount,
+      kycRecord: context.toKycRecord,
+    });
+
+    if (!recipientDecision.eligible) {
+      return {
+        ...recipientDecision,
+        reason: `Secondary transfer recipient non-compliant: ${recipientDecision.reason}`,
+      };
+    }
+
+    // Evaluates sender sanctions status
+    const senderSanctions = this.sanctionsService.checkSanctions(
+      context.fromAddress,
+      context.fromJurisdiction,
+    );
+    if (senderSanctions.sanctioned) {
+      return {
+        eligible: false,
+        code: 'SANCTIONED_ADDRESS',
+        reason: `Secondary transfer sender is sanctioned: ${senderSanctions.reason}`,
+        rulesetVersion: this.activeVersion,
+        jurisdiction: context.fromJurisdiction,
+        tranche: context.tranche,
+        requiresAttestation: false,
+        evaluatedRules: [
+          { ruleName: 'SENDER_SANCTIONS_CHECK', passed: false, reason: senderSanctions.reason },
+        ],
+      };
+    }
+
+    return recipientDecision;
+  }
+
+  /**
+   * Evaluates existing position holders after a rule or jurisdiction change.
+   * Implements a defined, non-punitive handling path (forced-sale grace period window)
+   * rather than an instant freeze.
+   */
+  evaluatePostRuleChangeCompliance(context: {
+    holderAddress: string;
+    jurisdiction: string;
+    bondId: number;
+    tranche: TrancheType;
+    holdingAmount: string;
+    holdingAcquiredTimestamp: number; // Unix timestamp in ms
+    ruleChangedTimestamp?: number; // Unix timestamp in ms
+    gracePeriodDays?: number;
+    kycRecord?: {
+      status: KycStatus;
+      expiresAt?: number | null;
+    };
+  }): import('../interfaces/compliance.interface').PostRuleChangeComplianceCheck {
+    const currentEligibility = this.evaluateEligibility({
+      investorAddress: context.holderAddress,
+      jurisdiction: context.jurisdiction,
+      tranche: context.tranche,
+      bondId: context.bondId,
+      purchaseAmount: context.holdingAmount,
+      kycRecord: context.kycRecord,
+    });
+
+    if (currentEligibility.eligible) {
+      return {
+        status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.COMPLIANT,
+        holderAddress: context.holderAddress,
+        bondId: context.bondId,
+        tranche: context.tranche,
+        holdingAmount: context.holdingAmount,
+        jurisdiction: context.jurisdiction,
+        violations: [],
+      };
+    }
+
+    const graceDays = context.gracePeriodDays ?? 30;
+    const baseTime = context.ruleChangedTimestamp ?? context.holdingAcquiredTimestamp;
+    const gracePeriodExpiresAt = baseTime + graceDays * 86400 * 1000;
+    const now = Date.now();
+
+    const failedRules = currentEligibility.evaluatedRules.filter((r) => !r.passed);
+
+    if (now < gracePeriodExpiresAt) {
+      return {
+        status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.NON_COMPLIANT_GRACE_PERIOD,
+        holderAddress: context.holderAddress,
+        bondId: context.bondId,
+        tranche: context.tranche,
+        holdingAmount: context.holdingAmount,
+        jurisdiction: context.jurisdiction,
+        gracePeriodExpiresAt,
+        forcedSaleWindowDays: graceDays,
+        actionRequired: `Holder must sell/divest position or update compliance status before grace period expires at ${new Date(gracePeriodExpiresAt).toISOString()}`,
+        violations: failedRules,
+      };
+    }
+
+    return {
+      status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.NON_COMPLIANT_EXPIRED,
+      holderAddress: context.holderAddress,
+      bondId: context.bondId,
+      tranche: context.tranche,
+      holdingAmount: context.holdingAmount,
+      jurisdiction: context.jurisdiction,
+      gracePeriodExpiresAt,
+      forcedSaleWindowDays: graceDays,
+      actionRequired: 'Grace period expired. Position frozen for secondary accumulation; forced liquidation or governance resolution required.',
+      violations: failedRules,
+    };
+  }
 }
+
