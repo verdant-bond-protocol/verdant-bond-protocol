@@ -34,6 +34,9 @@ pub enum BondError {
     WaterfallAlreadyClaimed = 21,
     /// Requested issuer balance checkpoint is newer than the stored snapshot.
     InvalidBalanceSnapshot = 22,
+    RedemptionQueueRequired = 23,
+    DuplicateRedemptionRequest = 24,
+    InvalidRedemptionBudget = 25,
 }
 
 #[derive(Clone, Debug, PartialEq)]
