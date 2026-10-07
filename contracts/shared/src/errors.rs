@@ -79,6 +79,19 @@ pub enum DEXError {
     InsufficientFunds = 10,
     Overflow = 11,
     NoPriceData = 12,
+    InvalidMarketConfig = 13,
+    MarketNotConfigured = 14,
+    InvalidOraclePrice = 15,
+    OracleZeroVolume = 16,
+    OracleLowVolume = 17,
+    OracleStale = 18,
+    OraclePaused = 19,
+    PriceDeviationExceeded = 20,
+    LedgerVolumeExceeded = 21,
+    InvalidCommitment = 22,
+    RevealTooEarly = 23,
+    RevealWindowClosed = 24,
+    TransferPreconditionFailed = 40,
 }
 
 #[derive(Clone, Debug, PartialEq)]

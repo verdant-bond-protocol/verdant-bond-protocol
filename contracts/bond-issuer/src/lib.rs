@@ -35,6 +35,7 @@ pub enum DataKey {
     RedemptionRequest(u64, u64),
     RedemptionId(u64, Address, BytesN<32>),
     RedemptionReserved(u64, Address),
+    TransferBlocked(Address),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -549,6 +550,38 @@ impl BondIssuer {
         Ok(())
     }
 
+    /// Read-only preflight shared by the atomic DEX settlement and transfer.
+    pub fn check_transfer(
+        env: Env,
+        from: Address,
+        to: Address,
+        bond_id: u64,
+        amount: i128,
+    ) -> Result<(), BondError> {
+        validate_transfer(&env, &from, &to, bond_id, amount)
+    }
+
+    /// Issuer compliance authority can block either trade participant.
+    pub fn set_transfer_blocked(
+        env: Env,
+        caller: Address,
+        holder: Address,
+        blocked: bool,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+        require_admin(&env, &caller)?;
+        consume_nonce(&env, &caller, nonce)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TransferBlocked(holder.clone()), &blocked);
+        env.events().publish(
+            (Symbol::new(&env, "transfer_compliance"),),
+            (holder, blocked),
+        );
+        Ok(())
+    }
+
     pub fn transfer(
         env: Env,
         from: Address,
@@ -560,37 +593,9 @@ impl BondIssuer {
         from.require_auth();
         consume_nonce(&env, &from, nonce)?;
 
-        if to == from {
-            return Err(BondError::Unauthorized);
-        }
-        if amount <= 0 {
-            return Err(BondError::ZeroAmount);
-        }
-
-        let config: BondConfig = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondConfig(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-
-        let state: BondState = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondState(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-        if state.status != BondStatus::Active {
-            return Err(BondError::BondAlreadyMatured);
-        }
-
-        if env.ledger().timestamp() >= config.maturity_date {
-            return Err(BondError::BondAlreadyMatured);
-        }
-
+        validate_transfer(&env, &from, &to, bond_id, amount)?;
         let from_key = DataKey::HolderBalance(bond_id, from.clone());
         let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
-        if from_balance < amount {
-            return Err(BondError::InsufficientSupply);
-        }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
@@ -1050,6 +1055,64 @@ impl BondIssuer {
 
 
 
+fn validate_transfer(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    bond_id: u64,
+    amount: i128,
+) -> Result<(), BondError> {
+    if to == from {
+        return Err(BondError::Unauthorized);
+    }
+    if amount <= 0 {
+        return Err(BondError::ZeroAmount);
+    }
+
+    let config: BondConfig = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondConfig(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+
+    let state: BondState = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondState(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+    if state.status != BondStatus::Active {
+        return Err(BondError::BondAlreadyMatured);
+    }
+
+    if env.ledger().timestamp() >= config.maturity_date {
+        return Err(BondError::BondAlreadyMatured);
+    }
+
+    let from_key = DataKey::HolderBalance(bond_id, from.clone());
+    let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
+    if from_balance < amount {
+        return Err(BondError::InsufficientSupply);
+    }
+
+    let to_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderBalance(bond_id, to.clone()))
+        .unwrap_or(0);
+    to_balance.checked_add(amount).ok_or(BondError::Overflow)?;
+    for party in [from, to] {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TransferBlocked(party.clone()))
+            .unwrap_or(false)
+        {
+            return Err(BondError::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
 fn settle_redemption(
     env: &Env,
     holder: Address,
@@ -1132,6 +1195,7 @@ fn settle_redemption(
 mod test {
     use super::*;
     mod redemption_queue_test { include!("redemption_queue_test.rs"); }
+    mod transfer_preflight_test { include!("transfer_preflight_test.rs"); }
     use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, BytesN};
 
     fn create_project_id(env: &Env, value: u8) -> BytesN<32> {
