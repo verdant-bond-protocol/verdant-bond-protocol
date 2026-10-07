@@ -12,6 +12,10 @@ import { authGuard } from './auth/guards/auth.guard';
  * write flows nested under `bonds` and `marketplace`.
  */
 export const routes: Routes = [
+  {
+    path: 'governance/simulation',
+    loadComponent: () => import('./governance/governance-simulation.component').then(m => m.GovernanceSimulationComponent),
+  },
   { path: '', redirectTo: '/dashboard', pathMatch: 'full' },
   {
     path: 'dashboard',
