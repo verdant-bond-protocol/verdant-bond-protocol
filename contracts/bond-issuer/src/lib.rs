@@ -4,6 +4,8 @@ use nbbs_shared::{BondConfig, BondError, BondStatus, CreditType, RedemptionCover
 use soroban_sdk::{BytesN, Vec, contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol};
 
 pub const MAX_SUPPLY: i128 = 1_000_000_000_000_000_000;
+mod redemption_queue;
+pub use redemption_queue::{RedemptionBudget, RedemptionRequest};
 
 /// Issue #188: versioned-interface convention. Bump on a breaking storage
 /// layout or interface change; see docs/upgrade-migrations.md.
@@ -26,6 +28,14 @@ pub enum DataKey {
     BondCount,
     Nonce(Address),
     ProjectRegistry,
+    RedemptionBudget(u64),
+    RedemptionCycle(u64),
+    RedemptionHead(u64),
+    RedemptionTail(u64),
+    RedemptionRequest(u64, u64),
+    RedemptionId(u64, Address, BytesN<32>),
+    RedemptionReserved(u64, Address),
+    TransferBlocked(Address),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,12 +53,26 @@ pub struct BondState {
     pub created_at: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub struct PreviewSubscription {
     pub remaining_supply: i128,
     pub requested_amount: i128,
     pub expected_failure: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct BalanceCheckpoint {
+    pub version: u64,
+    pub balance: i128,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct SupplyCheckpoint {
+    pub version: u64,
+    pub total_subscribed: i128,
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
@@ -526,6 +550,38 @@ impl BondIssuer {
         Ok(())
     }
 
+    /// Read-only preflight shared by the atomic DEX settlement and transfer.
+    pub fn check_transfer(
+        env: Env,
+        from: Address,
+        to: Address,
+        bond_id: u64,
+        amount: i128,
+    ) -> Result<(), BondError> {
+        validate_transfer(&env, &from, &to, bond_id, amount)
+    }
+
+    /// Issuer compliance authority can block either trade participant.
+    pub fn set_transfer_blocked(
+        env: Env,
+        caller: Address,
+        holder: Address,
+        blocked: bool,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+        require_admin(&env, &caller)?;
+        consume_nonce(&env, &caller, nonce)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TransferBlocked(holder.clone()), &blocked);
+        env.events().publish(
+            (Symbol::new(&env, "transfer_compliance"),),
+            (holder, blocked),
+        );
+        Ok(())
+    }
+
     pub fn transfer(
         env: Env,
         from: Address,
@@ -537,37 +593,9 @@ impl BondIssuer {
         from.require_auth();
         consume_nonce(&env, &from, nonce)?;
 
-        if to == from {
-            return Err(BondError::Unauthorized);
-        }
-        if amount <= 0 {
-            return Err(BondError::ZeroAmount);
-        }
-
-        let config: BondConfig = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondConfig(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-
-        let state: BondState = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondState(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-        if state.status != BondStatus::Active {
-            return Err(BondError::BondAlreadyMatured);
-        }
-
-        if env.ledger().timestamp() >= config.maturity_date {
-            return Err(BondError::BondAlreadyMatured);
-        }
-
+        validate_transfer(&env, &from, &to, bond_id, amount)?;
         let from_key = DataKey::HolderBalance(bond_id, from.clone());
         let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
-        if from_balance < amount {
-            return Err(BondError::InsufficientSupply);
-        }
 
         let new_from_balance = from_balance
             .checked_sub(amount)
@@ -627,6 +655,8 @@ impl BondIssuer {
         Ok(())
     }
 
+    /// Compatibility path: succeeds synchronously only when the FIFO is idle
+    /// and both liquidity and this cycle's budget cover the complete request.
     pub fn redeem(
         env: Env,
         holder: Address,
@@ -635,78 +665,135 @@ impl BondIssuer {
         nonce: u64,
     ) -> Result<(), BondError> {
         holder.require_auth();
-        consume_nonce(&env, &holder, nonce)?;
-
-        if amount <= 0 {
-            return Err(BondError::ZeroAmount);
+        if nonce != Self::get_nonce(env.clone(), holder.clone()) {
+            return Err(BondError::InvalidNonce);
         }
-
-        let mut state: BondState = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondState(bond_id))
-            .ok_or(BondError::BondNotFound)?;
         let config: BondConfig = env
             .storage()
             .instance()
             .get(&DataKey::BondConfig(bond_id))
             .ok_or(BondError::BondNotFound)?;
-
+        let state: BondState = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondState(bond_id))
+            .ok_or(BondError::BondNotFound)?;
         if state.status != BondStatus::Matured {
             return Err(BondError::BondAlreadyMatured);
         }
-
-        let balance_key = DataKey::HolderBalance(bond_id, holder.clone());
-        let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
-        if current_balance < amount {
+        if amount <= 0 {
+            return Err(BondError::ZeroAmount);
+        }
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HolderBalance(bond_id, holder.clone()))
+            .unwrap_or(0);
+        if amount > balance {
             return Err(BondError::InsufficientSupply);
+        }
+        let head = redemption_queue::cursor(&env, &DataKey::RedemptionHead(bond_id));
+        let tail = redemption_queue::cursor(&env, &DataKey::RedemptionTail(bond_id));
+        if head != 0 && head <= tail {
+            return Err(BondError::RedemptionQueueRequired);
         }
         let payout = amount
             .checked_mul(config.face_value)
             .ok_or(BondError::Overflow)?;
-        let pool_key = DataKey::RedemptionPool(bond_id);
-        let pool: i128 = env.storage().persistent().get(&pool_key).unwrap_or(0);
+        let pool: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RedemptionPool(bond_id))
+            .unwrap_or(0);
         if pool < payout {
             return Err(BondError::RedemptionUnderfunded);
         }
-        env.storage().persistent().set(&pool_key, &(pool - payout));
-
-        let new_balance = current_balance
-            .checked_sub(amount)
-            .ok_or(BondError::Overflow)?;
-        env.storage().persistent().set(&balance_key, &new_balance);
-
-        let previous_total = state.total_subscribed;
-        state.total_subscribed = state
-            .total_subscribed
-            .checked_sub(amount)
-            .ok_or(BondError::Overflow)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::BondState(bond_id), &state);
-        let version = advance_balance_version(&env, bond_id)?;
-        append_holder_checkpoint(
-            &env,
-            bond_id,
-            &holder,
-            version,
-            current_balance,
-            new_balance,
-        )?;
-        append_supply_checkpoint(
-            &env,
-            bond_id,
-            version,
-            previous_total,
-            state.total_subscribed,
-        )?;
-
-        env.events().publish(
-            (Symbol::new(&env, "redeemed"),),
-            (bond_id, holder, amount, payout),
-        );
-
+        let budget = redemption_queue::budget(&env, bond_id);
+        let cycle = redemption_queue::cycle(&env, bond_id, &budget);
+        if payout > budget.principal_per_cycle - cycle.paid {
+            return Err(BondError::RedemptionQueueRequired);
+        }
+        let request_key = env
+            .crypto()
+            .sha256(&soroban_sdk::Bytes::from_array(&env, &nonce.to_be_bytes()))
+            .into();
+        let id = redemption_queue::enqueue(&env, holder, bond_id, amount, request_key, nonce)?;
+        if id <= tail {
+            return Err(BondError::DuplicateRedemptionRequest);
+        }
+        if redemption_queue::process(&env, bond_id, 1)? != 1 {
+            return Err(BondError::RedemptionQueueRequired);
+        }
         Ok(())
+    }
+
+    pub fn configure_redemption_budget(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        principal_per_cycle: i128,
+        ledgers_per_cycle: u32,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        caller.require_auth();
+        require_admin(&env, &caller)?;
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+        if principal_per_cycle < config.face_value || ledgers_per_cycle == 0 {
+            return Err(BondError::InvalidRedemptionBudget);
+        }
+        if redemption_queue::cursor(&env, &DataKey::RedemptionTail(bond_id)) != 0 {
+            return Err(BondError::InvalidRedemptionBudget);
+        }
+        consume_nonce(&env, &caller, nonce)?;
+        let key = DataKey::RedemptionBudget(bond_id);
+        let budget = RedemptionBudget {
+            principal_per_cycle,
+            ledgers_per_cycle,
+        };
+        env.storage().instance().set(&key, &budget);
+        env.events()
+            .publish((Symbol::new(&env, "redemption_budget"),), (bond_id, budget));
+        Ok(())
+    }
+
+    pub fn request_redemption(
+        env: Env,
+        holder: Address,
+        bond_id: u64,
+        amount: i128,
+        request_key: BytesN<32>,
+        nonce: u64,
+    ) -> Result<u64, BondError> {
+        holder.require_auth();
+        redemption_queue::enqueue(&env, holder, bond_id, amount, request_key, nonce)
+    }
+
+    /// Permissionless and bounded; callers cannot select or skip a holder.
+    pub fn process_redemptions(env: Env, bond_id: u64, limit: u32) -> Result<u32, BondError> {
+        redemption_queue::process(&env, bond_id, limit)
+    }
+
+    pub fn get_redemption_request(
+        env: Env,
+        bond_id: u64,
+        id: u64,
+    ) -> Result<RedemptionRequest, BondError> {
+        let key = DataKey::RedemptionRequest(bond_id, id);
+        let request = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(BondError::RedemptionQueueRequired)?;
+        redemption_queue::touch(&env, &key);
+        Ok(request)
+    }
+
+    pub fn get_redemption_budget(env: Env, bond_id: u64) -> RedemptionBudget {
+        redemption_queue::budget(&env, bond_id)
     }
 
     pub fn get_bond(env: Env, bond_id: u64) -> Result<BondConfig, BondError> {
@@ -966,9 +1053,149 @@ impl BondIssuer {
     }
 }
 
+
+
+fn validate_transfer(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    bond_id: u64,
+    amount: i128,
+) -> Result<(), BondError> {
+    if to == from {
+        return Err(BondError::Unauthorized);
+    }
+    if amount <= 0 {
+        return Err(BondError::ZeroAmount);
+    }
+
+    let config: BondConfig = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondConfig(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+
+    let state: BondState = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondState(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+    if state.status != BondStatus::Active {
+        return Err(BondError::BondAlreadyMatured);
+    }
+
+    if env.ledger().timestamp() >= config.maturity_date {
+        return Err(BondError::BondAlreadyMatured);
+    }
+
+    let from_key = DataKey::HolderBalance(bond_id, from.clone());
+    let from_balance: i128 = env.storage().persistent().get(&from_key).unwrap_or(0);
+    if from_balance < amount {
+        return Err(BondError::InsufficientSupply);
+    }
+
+    let to_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderBalance(bond_id, to.clone()))
+        .unwrap_or(0);
+    to_balance.checked_add(amount).ok_or(BondError::Overflow)?;
+    for party in [from, to] {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::TransferBlocked(party.clone()))
+            .unwrap_or(false)
+        {
+            return Err(BondError::Unauthorized);
+        }
+    }
+    Ok(())
+}
+
+fn settle_redemption(
+    env: &Env,
+    holder: Address,
+    bond_id: u64,
+    amount: i128,
+) -> Result<(), BondError> {
+    if amount <= 0 {
+        return Err(BondError::ZeroAmount);
+    }
+
+    let mut state: BondState = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondState(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+    let config: BondConfig = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondConfig(bond_id))
+        .ok_or(BondError::BondNotFound)?;
+
+    if state.status != BondStatus::Matured {
+        return Err(BondError::BondAlreadyMatured);
+    }
+
+    let balance_key = DataKey::HolderBalance(bond_id, holder.clone());
+    let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+    if current_balance < amount {
+        return Err(BondError::InsufficientSupply);
+    }
+    let payout = amount
+        .checked_mul(config.face_value)
+        .ok_or(BondError::Overflow)?;
+    let pool_key = DataKey::RedemptionPool(bond_id);
+    let pool: i128 = env.storage().persistent().get(&pool_key).unwrap_or(0);
+    if pool < payout {
+        return Err(BondError::RedemptionUnderfunded);
+    }
+    env.storage().persistent().set(&pool_key, &(pool - payout));
+
+    let new_balance = current_balance
+        .checked_sub(amount)
+        .ok_or(BondError::Overflow)?;
+    env.storage().persistent().set(&balance_key, &new_balance);
+
+    let previous_total = state.total_subscribed;
+    state.total_subscribed = state
+        .total_subscribed
+        .checked_sub(amount)
+        .ok_or(BondError::Overflow)?;
+    env.storage()
+        .instance()
+        .set(&DataKey::BondState(bond_id), &state);
+    let version = advance_balance_version(&env, bond_id)?;
+    append_holder_checkpoint(
+        &env,
+        bond_id,
+        &holder,
+        version,
+        current_balance,
+        new_balance,
+    )?;
+    append_supply_checkpoint(
+        &env,
+        bond_id,
+        version,
+        previous_total,
+        state.total_subscribed,
+    )?;
+
+    env.events().publish(
+        (Symbol::new(&env, "redeemed"),),
+        (bond_id, holder, amount, payout),
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    mod redemption_queue_test { include!("redemption_queue_test.rs"); }
+    mod transfer_preflight_test { include!("transfer_preflight_test.rs"); }
     use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, BytesN};
 
     fn create_project_id(env: &Env, value: u8) -> BytesN<32> {
@@ -1905,23 +2132,5 @@ mod test {
             }
         }
     }
-
-    pub fn preview_subscribe(
-        env: Env,
-        bond_id: u64,
-        amount: i128,
-    ) -> Result<PreviewSubscription, BondError> {
-
-        let config: BondConfig = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondConfig(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-
-        let mut state: BondState = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondState(bond_id))
-            .ok_or(BondError::BondNotFound)?;
 
 }

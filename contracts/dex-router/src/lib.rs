@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 use nbbs_shared::DEXError;
 use soroban_sdk::{
-    contract, contractimpl, contracttype, vec, xdr::ToXdr, Address, Bytes, BytesN, Env, IntoVal,
+    contract, contractimpl, contracttype, vec, xdr::ToXdr, Address, BytesN, Env, IntoVal,
     Symbol, Vec,
 };
 
@@ -25,6 +25,330 @@ pub enum DataKey {
     Nonce(Address),
     /// Rolling time-and-price observations per bond, feeding `get_twap`.
     PriceObs(u64, Symbol),
+    MarketConfig(u64, Symbol),
+    OracleReference(u64, Symbol),
+    MarketLedger(u64, Symbol),
+    PurchaseCommitCount,
+    PurchaseCommit(u64),
+    PenaltyBalance(Symbol),
+}
+
+const BASIS_POINTS: i128 = 10_000;
+pub const PURCHASE_COMMIT_BOND: i128 = 1_000;
+pub const PURCHASE_REVEAL_DELAY: u32 = 1;
+pub const PURCHASE_REVEAL_WINDOW: u32 = 20;
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct MarketConfig {
+    pub minimum_oracle_volume: i128,
+    pub maximum_trade_deviation_bps: u32,
+    pub maximum_block_deviation_bps: u32,
+    pub circuit_breaker_deviation_bps: u32,
+    pub maximum_ledger_quote_volume: i128,
+    pub maximum_oracle_age_seconds: u64,
+    pub divergence_grace_seconds: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct OracleReference {
+    pub twap_price: i128,
+    pub observed_at: u64,
+    pub sample_volume: i128,
+    pub pause_until: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
+struct MarketLedger {
+    sequence: u32,
+    first_price: i128,
+    quote_volume: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct PurchaseCommit {
+    pub buyer: Address,
+    pub commitment: BytesN<32>,
+    pub quote_asset: Symbol,
+    pub ledger_sequence: u32,
+    pub revealed: bool,
+}
+
+fn commitment_hash(
+    env: &Env,
+    buyer: &Address,
+    order: u64,
+    price: i128,
+    amount: i128,
+    salt: &BytesN<32>,
+) -> BytesN<32> {
+    env.crypto()
+        .sha256(&(buyer.clone(), order, price, amount, salt.clone()).to_xdr(env))
+        .into()
+}
+
+fn extend_market_ttl(env: &Env, key: &DataKey) {
+    let ttl = env.storage().max_ttl();
+    env.storage().persistent().extend_ttl(key, ttl / 2, ttl);
+}
+
+fn exceeds_deviation(actual: i128, reference: i128, bps: u32) -> Result<bool, DEXError> {
+    let difference = actual
+        .checked_sub(reference)
+        .and_then(i128::checked_abs)
+        .ok_or(DEXError::Overflow)?;
+    let allowance = reference
+        .checked_mul(bps as i128)
+        .ok_or(DEXError::Overflow)?
+        / BASIS_POINTS;
+    Ok(difference > allowance)
+}
+
+/// Existing oracle and throughput preconditions for the single settlement path.
+fn record_market_trade(
+    env: &Env,
+    bond: u64,
+    asset: &Symbol,
+    price: i128,
+    proceeds: i128,
+) -> Result<(), DEXError> {
+    let config_key = DataKey::MarketConfig(bond, asset.clone());
+    let reference_key = DataKey::OracleReference(bond, asset.clone());
+    let config: MarketConfig = env
+        .storage()
+        .persistent()
+        .get(&config_key)
+        .ok_or(DEXError::MarketNotConfigured)?;
+    let reference: OracleReference = env
+        .storage()
+        .persistent()
+        .get(&reference_key)
+        .ok_or(DEXError::MarketNotConfigured)?;
+    let now = env.ledger().timestamp();
+    if reference.pause_until > now {
+        return Err(DEXError::OraclePaused);
+    }
+    if reference.observed_at > now
+        || now - reference.observed_at > config.maximum_oracle_age_seconds
+    {
+        return Err(DEXError::OracleStale);
+    }
+    if exceeds_deviation(
+        price,
+        reference.twap_price,
+        config.maximum_trade_deviation_bps,
+    )? {
+        return Err(DEXError::PriceDeviationExceeded);
+    }
+    let key = DataKey::MarketLedger(bond, asset.clone());
+    let mut ledger: MarketLedger = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(MarketLedger {
+            sequence: env.ledger().sequence(),
+            first_price: price,
+            quote_volume: 0,
+        });
+    if ledger.sequence != env.ledger().sequence() {
+        ledger = MarketLedger {
+            sequence: env.ledger().sequence(),
+            first_price: price,
+            quote_volume: 0,
+        };
+    }
+    if exceeds_deviation(
+        price,
+        ledger.first_price,
+        config.maximum_block_deviation_bps,
+    )? {
+        return Err(DEXError::PriceDeviationExceeded);
+    }
+    ledger.quote_volume = ledger
+        .quote_volume
+        .checked_add(proceeds)
+        .ok_or(DEXError::Overflow)?;
+    if ledger.quote_volume > config.maximum_ledger_quote_volume {
+        return Err(DEXError::LedgerVolumeExceeded);
+    }
+    env.storage().persistent().set(&key, &ledger);
+    for key in [&config_key, &reference_key, &key] {
+        extend_market_ttl(env, key);
+    }
+    Ok(())
+}
+
+fn settle_purchase(
+    env: Env,
+    buyer: Address,
+    order_id: u64,
+    max_price: i128,
+    amount: i128,
+    nonce: u64,
+) -> Result<(), DEXError> {
+    let expected_nonce = get_nonce(&env, &buyer);
+    if nonce != expected_nonce {
+        return Err(DEXError::InvalidNonce);
+    }
+    let next_nonce = expected_nonce.checked_add(1).ok_or(DEXError::Overflow)?;
+
+    let mut order: Order = env
+        .storage()
+        .instance()
+        .get(&DataKey::Order(order_id))
+        .ok_or(DEXError::OrderNotFound)?;
+
+    if order.status != OrderStatus::Open && order.status != OrderStatus::PartiallyFilled {
+        return Err(DEXError::OrderAlreadyFilled);
+    }
+
+    if buyer == order.seller {
+        return Err(DEXError::SelfBuyNotAllowed);
+    }
+
+    // Note: we deliberately do NOT persist `Expired` here. A Soroban call
+    // that returns an error reverts all writes, so any hot-path marking on
+    // this error path could never take effect — see the tradeoff note on
+    // `clean_expired_orders`.
+    if is_order_expired(&env, &order) {
+        return Err(DEXError::OrderExpired);
+    }
+
+    if amount <= 0 {
+        return Err(DEXError::ZeroAmount);
+    }
+
+    if amount > order.amount {
+        return Err(DEXError::InsufficientBalance);
+    }
+
+    if max_price < order.price_per_token {
+        return Err(DEXError::InsufficientBalance);
+    }
+
+    // Verify seller has escrowed bond tokens before attempting transfer
+    let seller_escrow = get_bond_escrow(&env, order.bond_id, &order.seller);
+    if seller_escrow < amount {
+        return Err(DEXError::InsufficientBalance);
+    }
+
+    let proceeds = amount
+        .checked_mul(order.price_per_token)
+        .ok_or(DEXError::Overflow)?;
+
+    let buyer_balance = get_balance(&env, &buyer, &order.quote_asset);
+    if buyer_balance < proceeds {
+        return Err(DEXError::InsufficientFunds);
+    }
+    let seller_balance = get_balance(&env, &order.seller, &order.quote_asset);
+    let new_seller_balance = seller_balance
+        .checked_add(proceeds)
+        .ok_or(DEXError::Overflow)?;
+
+    let bond_issuer: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::BondIssuerAddress)
+        .ok_or(DEXError::NotInitialized)?;
+    let seller_bond_nonce: u64 = env.invoke_contract(
+        &bond_issuer,
+        &Symbol::new(&env, "get_nonce"),
+        vec![&env, order.seller.clone().into_val(&env)],
+    );
+
+    // Both parties authorize this single escrow invocation. A listing
+    // signature alone does not authorize a future issuer transfer.
+    order.seller.require_auth();
+    let preflight = env.try_invoke_contract::<(), nbbs_shared::BondError>(
+        &bond_issuer,
+        &Symbol::new(&env, "check_transfer"),
+        vec![
+            &env,
+            order.seller.clone().into_val(&env),
+            buyer.clone().into_val(&env),
+            order.bond_id.into_val(&env),
+            amount.into_val(&env),
+        ],
+    );
+    if !matches!(preflight, Ok(Ok(()))) {
+        return Err(DEXError::TransferPreconditionFailed);
+    }
+    // All order, funding, receiver arithmetic and issuer checks precede
+    // either settlement leg. Uncaught transfer failures revert this entire
+    // invocation, including quote balances, nonce, escrow and order state.
+    record_market_trade(
+        &env,
+        order.bond_id,
+        &order.quote_asset,
+        order.price_per_token,
+        proceeds,
+    )?;
+    set_nonce(&env, &buyer, next_nonce);
+    set_balance(&env, &buyer, &order.quote_asset, buyer_balance - proceeds);
+    set_balance(&env, &order.seller, &order.quote_asset, new_seller_balance);
+
+    // #191: checks-effects-interactions — every piece of local state a
+    // reentrant call into this contract could read (escrow, order
+    // status/remaining amount) must be finalized *before* the external
+    // invoke_contract calls below. bond_issuer.transfer() is an
+    // arbitrary cross-contract call from this contract's perspective;
+    // if it (directly or via a further hop) re-entered execute_purchase
+    // for the same order_id while escrow/order.amount still reflected
+    // the pre-fill state, the same escrowed bond tokens could be sold
+    // more than once before this call's own writes ever landed.
+    let new_seller_escrow = seller_escrow - amount;
+    set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
+
+    order.amount -= amount;
+    order.status = if order.amount == 0 {
+        OrderStatus::Filled
+    } else {
+        OrderStatus::PartiallyFilled
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Order(order_id), &order);
+
+    env.invoke_contract::<()>(
+        &bond_issuer,
+        &Symbol::new(&env, "transfer"),
+        vec![
+            &env,
+            order.seller.clone().into_val(&env),
+            buyer.clone().into_val(&env),
+            order.bond_id.into_val(&env),
+            amount.into_val(&env),
+            seller_bond_nonce.into_val(&env),
+        ],
+    );
+
+    // Record the executed price for TWAP. Any downstream financial use of a
+    // bond's market price must read `get_twap`, never the last/spot price, so
+    // a single-transaction distortion cannot move a valuation (#216).
+    record_price_observation(
+        &env,
+        order.bond_id,
+        &order.quote_asset,
+        order.price_per_token,
+    );
+
+    env.events().publish(
+        (Symbol::new(&env, "order_filled"),),
+        (
+            order_id,
+            buyer,
+            order.seller.clone(),
+            amount,
+            order.price_per_token,
+            proceeds,
+        ),
+    );
+
+    Ok(())
 }
 
 /// A single executed-trade price observation used to derive a time-weighted
@@ -618,7 +942,7 @@ impl DEXRouter {
             .ok_or(DEXError::Overflow)?;
         set_balance(&env, &buyer, &purchase_commit.quote_asset, refunded_balance);
         let settlement_nonce = expected_nonce.checked_add(1).ok_or(DEXError::Overflow)?;
-        Self::execute_purchase(env, buyer, order_id, max_price, amount, settlement_nonce)
+        settle_purchase(env, buyer, order_id, max_price, amount, settlement_nonce)
     }
 
     /// Forfeit an unrevealed commitment after its reveal window. Anyone may
@@ -820,160 +1144,7 @@ impl DEXRouter {
     ) -> Result<(), DEXError> {
         buyer.require_auth();
 
-        let expected_nonce = get_nonce(&env, &buyer);
-        if nonce != expected_nonce {
-            return Err(DEXError::InvalidNonce);
-        }
-        set_nonce(&env, &buyer, expected_nonce + 1);
-
-        let mut order: Order = env
-            .storage()
-            .instance()
-            .get(&DataKey::Order(order_id))
-            .ok_or(DEXError::OrderNotFound)?;
-
-        if order.status != OrderStatus::Open && order.status != OrderStatus::PartiallyFilled {
-            return Err(DEXError::OrderAlreadyFilled);
-        }
-
-        if buyer == order.seller {
-            return Err(DEXError::SelfBuyNotAllowed);
-        }
-
-        // Note: we deliberately do NOT persist `Expired` here. A Soroban call
-        // that returns an error reverts all writes, so any hot-path marking on
-        // this error path could never take effect — see the tradeoff note on
-        // `clean_expired_orders`.
-        if is_order_expired(&env, &order) {
-            return Err(DEXError::OrderExpired);
-        }
-
-        if amount <= 0 {
-            return Err(DEXError::ZeroAmount);
-        }
-
-        if amount > order.amount {
-            return Err(DEXError::InsufficientBalance);
-        }
-
-        if max_price < order.price_per_token {
-            return Err(DEXError::InsufficientBalance);
-        }
-
-        // Verify seller has escrowed bond tokens before attempting transfer
-        let seller_escrow = get_bond_escrow(&env, order.bond_id, &order.seller);
-        if seller_escrow < amount {
-            return Err(DEXError::InsufficientBalance);
-        }
-
-        let proceeds = amount
-            .checked_mul(order.price_per_token)
-            .ok_or(DEXError::Overflow)?;
-
-        let buyer_balance = get_balance(&env, &buyer, &order.quote_asset);
-        if buyer_balance < proceeds {
-            return Err(DEXError::InsufficientFunds);
-        }
-        record_market_trade(
-            &env,
-            order.bond_id,
-            &order.quote_asset,
-            order.price_per_token,
-            proceeds,
-        )?;
-        set_balance(&env, &buyer, &order.quote_asset, buyer_balance - proceeds);
-
-        let seller_balance = get_balance(&env, &order.seller, &order.quote_asset);
-        let new_seller_balance = seller_balance
-            .checked_add(proceeds)
-            .ok_or(DEXError::Overflow)?;
-        set_balance(&env, &order.seller, &order.quote_asset, new_seller_balance);
-
-        // #191: checks-effects-interactions — every piece of local state a
-        // reentrant call into this contract could read (escrow, order
-        // status/remaining amount) must be finalized *before* the external
-        // invoke_contract calls below. bond_issuer.transfer() is an
-        // arbitrary cross-contract call from this contract's perspective;
-        // if it (directly or via a further hop) re-entered execute_purchase
-        // for the same order_id while escrow/order.amount still reflected
-        // the pre-fill state, the same escrowed bond tokens could be sold
-        // more than once before this call's own writes ever landed.
-        let new_seller_escrow = seller_escrow - amount;
-        set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
-
-        if amount == order.amount {
-            order.status = OrderStatus::Filled;
-        } else {
-            order.status = OrderStatus::PartiallyFilled;
-            order.amount -= amount;
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
-
-        let bond_issuer: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondIssuerAddress)
-            .ok_or(DEXError::NotInitialized)?;
-        let seller_bond_nonce: u64 = env.invoke_contract(
-            &bond_issuer,
-            &Symbol::new(&env, "get_nonce"),
-            vec![&env, order.seller.clone().into_val(&env)],
-        );
-
-        env.invoke_contract::<()>(
-            &bond_issuer,
-            &Symbol::new(&env, "transfer"),
-            vec![
-                &env,
-                order.seller.clone().into_val(&env),
-                buyer.clone().into_val(&env),
-                order.bond_id.into_val(&env),
-                amount.into_val(&env),
-                seller_bond_nonce.into_val(&env),
-            ],
-        );
-
-        // Release escrowed tokens on successful fill
-        let new_seller_escrow = seller_escrow - amount;
-        set_bond_escrow(&env, order.bond_id, &order.seller, new_seller_escrow);
-
-        if amount == order.amount {
-            order.status = OrderStatus::Filled;
-        } else {
-            order.status = OrderStatus::PartiallyFilled;
-            order.amount -= amount;
-        }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
-
-        // Record the executed price for TWAP. Any downstream financial use of a
-        // bond's market price must read `get_twap`, never the last/spot price, so
-        // a single-transaction distortion cannot move a valuation (#216).
-        record_price_observation(
-            &env,
-            order.bond_id,
-            &order.quote_asset,
-            order.price_per_token,
-        );
-
-        env.events().publish(
-            (Symbol::new(&env, "order_filled"),),
-            (
-                order_id,
-                buyer,
-                order.seller.clone(),
-                amount,
-                order.price_per_token,
-                proceeds,
-            ),
-        );
-
-        Ok(())
+        settle_purchase(env, buyer, order_id, max_price, amount, nonce)
     }
 
     pub fn deposit_quote(
@@ -1204,6 +1375,7 @@ impl DEXRouter {
 #[cfg(test)]
 mod test {
     use super::*;
+    mod atomic_settlement_test { include!("atomic_settlement_test.rs"); }
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         vec, BytesN, Env, Symbol,
@@ -1305,7 +1477,7 @@ mod test {
             quote_asset,
             &reference_price,
             &env.ledger().timestamp(),
-            &1,
+            &minimum_oracle_volume,
             &1,
         );
     }
@@ -1419,7 +1591,7 @@ mod test {
         let buyer = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
             setup_bond_and_holder(&env, 10_000, 5_000);
-        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let contract_id = env.register(DEXRouter, (admin.clone(), issuer_id, Address::generate(&env)));
         let client = DEXRouterClient::new(&env, &contract_id);
         configure_test_market(
             &env,
@@ -1454,7 +1626,7 @@ mod test {
         assert_eq!(client.get_order(&order_id).status, OrderStatus::Filled);
         assert_eq!(
             client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
-            9_000
+            10_000
         );
         assert_eq!(
             client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")),
@@ -1472,7 +1644,7 @@ mod test {
         let buyer = Address::generate(&env);
         let (_issuer_admin, issuer_id, _bond_id, _seller) =
             setup_bond_and_holder(&env, 10_000, 5_000);
-        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let contract_id = env.register(DEXRouter, (admin.clone(), issuer_id, Address::generate(&env)));
         let client = DEXRouterClient::new(&env, &contract_id);
         let quote_asset = Symbol::new(&env, "USDC");
         client.deposit_quote(&buyer, &quote_asset, &2_000i128, &0);
@@ -1503,7 +1675,7 @@ mod test {
         let buyer = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
             setup_bond_and_holder(&env, 10_000, 5_000);
-        let contract_id = env.register(DEXRouter, (admin, issuer_id, Address::generate(&env)));
+        let contract_id = env.register(DEXRouter, (admin.clone(), issuer_id, Address::generate(&env)));
         let client = DEXRouterClient::new(&env, &contract_id);
         let order_id = client.list_bond_tokens(
             &seller,
@@ -1898,7 +2070,7 @@ mod test {
 
         // The purchase should fail with InsufficientBalance (escrow check catches it)
         let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &1);
-        assert_eq!(result, Err(Ok(DEXError::InsufficientBalance)));
+        assert_eq!(result, Err(Ok(DEXError::TransferPreconditionFailed)));
 
         // Verify state is unchanged - buyer was not debited
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 0);
@@ -2545,8 +2717,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
-        let (_issuer_admin, issuer_id, bond_id, seller) =
-            setup_bond_and_holder(&env, 100_000, 50_000);
+        let (_issuer_admin, issuer_id, bond_id, seller) = setup_bond_and_holder(&env, 100_000, 50_000);
 
         let contract_id = env.register(
             DEXRouter,
@@ -2556,6 +2727,23 @@ mod test {
         let usdc = Symbol::new(&env, "USDC");
 
         env.ledger().set_timestamp(1000);
+        // Keep oracle guards active while testing TWAP across widely spaced prices.
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &usdc,
+            10_000,
+            1,
+            10_000,
+            10_000,
+            10_000,
+            i128::MAX,
+            1_000_000,
+            60,
+        );
+
         let o1 = client.list_bond_tokens(
             &seller,
             &bond_id,
@@ -2580,6 +2768,8 @@ mod test {
         env.ledger().set_timestamp(1000);
         client.execute_purchase(&buyer, &o1, &100i128, &100i128, &1);
         env.ledger().set_timestamp(2000);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1);
         client.execute_purchase(&buyer, &o2, &300i128, &100i128, &2);
 
         // At t=3000: price 100 prevailed [1000,2000) and price 300 [2000,3000],
@@ -2595,8 +2785,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
-        let (_issuer_admin, issuer_id, bond_id, seller) =
-            setup_bond_and_holder(&env, 100_000, 50_000);
+        let (_issuer_admin, issuer_id, bond_id, seller) = setup_bond_and_holder(&env, 100_000, 50_000);
 
         let contract_id = env.register(
             DEXRouter,
@@ -2606,6 +2795,23 @@ mod test {
         let usdc = Symbol::new(&env, "USDC");
 
         env.ledger().set_timestamp(1000);
+        // Keep oracle guards active while testing TWAP across widely spaced prices.
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &usdc,
+            10_000,
+            1,
+            10_000,
+            10_000,
+            10_000,
+            i128::MAX,
+            1_000_000,
+            60,
+        );
+
         let o1 = client.list_bond_tokens(
             &seller,
             &bond_id,
@@ -2654,6 +2860,8 @@ mod test {
         client.execute_purchase(&buyer, &o3, &100i128, &100i128, &3);
         // Flash spike at t=3001.
         env.ledger().set_timestamp(3001);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1);
         client.execute_purchase(&buyer, &spike, &10_000i128, &1i128, &4);
 
         // One second later: the spike price (10_000) persisted for only 1s out of
@@ -2696,8 +2904,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
-        let (_issuer_admin, issuer_id, bond_id, seller) =
-            setup_bond_and_holder(&env, 100_000, 50_000);
+        let (_issuer_admin, issuer_id, bond_id, seller) = setup_bond_and_holder(&env, 100_000, 50_000);
 
         let contract_id = env.register(
             DEXRouter,
@@ -2707,6 +2914,15 @@ mod test {
         let usdc = Symbol::new(&env, "USDC");
 
         env.ledger().set_timestamp(1000);
+        configure_test_market(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &Symbol::new(&env, "USDC"),
+            100,
+        );
+
         let o1 = client.list_bond_tokens(
             &seller,
             &bond_id,
@@ -2730,8 +2946,7 @@ mod test {
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
-        let (_issuer_admin, issuer_id, bond_id, seller) =
-            setup_bond_and_holder(&env, 100_000, 50_000);
+        let (_issuer_admin, issuer_id, bond_id, seller) = setup_bond_and_holder(&env, 100_000, 50_000);
         let contract_id = env.register(
             DEXRouter,
             (admin.clone(), issuer_id, Address::generate(&env)),
@@ -2741,6 +2956,23 @@ mod test {
 
         // Establish real historical coverage at the honest price.
         env.ledger().set_timestamp(1000);
+        // Keep oracle guards active while testing TWAP across widely spaced prices.
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &usdc,
+            10_000,
+            1,
+            10_000,
+            10_000,
+            10_000,
+            i128::MAX,
+            1_000_000,
+            60,
+        );
+
         let history = client.list_bond_tokens(
             &seller,
             &bond_id,
@@ -2756,6 +2988,8 @@ mod test {
         // Thirty-two same-timestamp fills must coalesce, not evict the older
         // observation and leave TWAP with only an attacker-controlled spot.
         env.ledger().set_timestamp(2000);
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 1);
         for index in 1..33u64 {
             let order = client.list_bond_tokens(
                 &seller,
@@ -3131,12 +3365,7 @@ mod test {
 
                 let order = client.get_order(&order_id);
                 prop_assert_eq!(order.status, OrderStatus::Filled);
-                let final_remaining = if first == order_amount {
-                    order_amount
-                } else {
-                    order_amount - first
-                };
-                prop_assert_eq!(order.amount, final_remaining);
+                prop_assert_eq!(order.amount, 0);
 
                 prop_assert_eq!(client.get_quote_balance(&buyer, &quote), 0);
                 prop_assert_eq!(

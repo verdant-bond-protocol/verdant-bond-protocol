@@ -1,0 +1,15 @@
+[package]
+name = "nbbs-governance-sandbox"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Host tooling is separate from the deployable contracts workspace.
+[workspace]
+
+[dependencies]
+soroban-sdk = { version = "=26.0.1", features = ["testutils"] }
+soroban-ledger-snapshot = "26.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
