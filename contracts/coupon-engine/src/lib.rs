@@ -8,6 +8,10 @@ use nbbs_shared::{
 use soroban_sdk::{
     contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
 };
+mod covenants;
+pub use covenants::{CovenantConfig, CovenantCycle, CovenantState};
+mod equivalence;
+pub use equivalence::{CouponCalculation, EquivalenceFactor, EquivalenceTable};
 
 pub const FIXED_POINT: i128 = 10_000_000;
 pub const CREDIT_DIVISOR: i128 = 1_000;
@@ -481,7 +485,7 @@ impl CouponEngine {
             .unwrap_or(0)
     }
 
-    pub fn get_waterfall_settlement_allocations(
+    pub fn get_waterfall_settlement(
         env: Env,
         bond_id: u64,
         settlement_index: u32,
@@ -587,7 +591,7 @@ impl CouponEngine {
         require_no_migration_window(&env, bond_id)?;
 
         let allocations =
-            Self::get_waterfall_settlement_allocations(env.clone(), bond_id, settlement_index);
+            Self::get_waterfall_settlement(env.clone(), bond_id, settlement_index);
         let allocation = allocations
             .iter()
             .find(|allocation| allocation.priority == priority)
@@ -804,6 +808,7 @@ impl CouponEngine {
                 return Err(BondError::InvalidReport);
             }
         }
+        covenants::validate_cycle(&env, bond_id, period_index, &report, existing.is_some())?;
 
         let bond_issuer: Address = env
             .storage()
@@ -817,8 +822,9 @@ impl CouponEngine {
             .get(&DataKey::BondCreditType(bond_id))
             .ok_or(BondError::BondNotFound)?;
 
-        let carbon_total = report
-            .carbon_sequestered
+        let conversion = equivalence::conversion(&env, bond_id, period_index, &report, credit_type)?;
+        let carbon_total = conversion
+            .normalized_carbon
             .checked_div(CREDIT_DIVISOR)
             .ok_or(BondError::Overflow)?
             .checked_mul(CREDIT_MINOR_UNITS)
@@ -834,9 +840,6 @@ impl CouponEngine {
                 ref metrics => (carbon_total, compute_biodiversity_credits(metrics)?),
             },
         };
-        let mut total_credits = carbon_total
-            .checked_add(biodiversity_total)
-            .ok_or(BondError::Overflow)?;
 
         // Issue #192: Apply conservatism discount for Tier 1 staleness state
         if staleness_state.current_tier == 1 && staleness_state.discount_bps > 0 {
@@ -845,11 +848,9 @@ impl CouponEngine {
                 .ok_or(BondError::Overflow)?;
             carbon_total = checked_ratio(carbon_total, discount_multiplier, 10_000)?;
             biodiversity_total = checked_ratio(biodiversity_total, discount_multiplier, 10_000)?;
-            total_credits = carbon_total
-                .checked_add(biodiversity_total)
-                .ok_or(BondError::Overflow)?;
         }
 
+        let mut applied_true_up = 0i128;
         // Issue #194: Incorporate unapplied CarbonChain true-up adjustments forward without clawback
         if offset == 0 && existing.is_none() {
             let true_up_count: u32 = env
@@ -876,6 +877,7 @@ impl CouponEngine {
                 }
             }
             if accumulated_true_up != 0 {
+                applied_true_up = accumulated_true_up;
                 let adjusted_pool = if credit_type == CreditType::Biodiversity {
                     &mut biodiversity_total
                 } else {
@@ -885,20 +887,47 @@ impl CouponEngine {
                     .checked_add(accumulated_true_up)
                     .ok_or(BondError::Overflow)?
                     .max(0);
-                total_credits = carbon_total
-                    .checked_add(biodiversity_total)
-                    .ok_or(BondError::Overflow)?;
             }
         }
+        (carbon_total, biodiversity_total) = covenants::apply_terms(
+            &env,
+            bond_id,
+            period_index,
+            &report,
+            carbon_total,
+            biodiversity_total,
+        )?;
+        let discount = if staleness_state.current_tier == 1 {
+            staleness_state.discount_bps
+        } else {
+            0
+        };
+        let calculation = equivalence::pin_calculation(
+            &env,
+            bond_id,
+            period_index,
+            conversion,
+            carbon_total,
+            biodiversity_total,
+            discount,
+            applied_true_up,
+        )?;
+        carbon_total = calculation.carbon_pool;
+        biodiversity_total = calculation.biodiversity_pool;
+        let total_credits = carbon_total
+            .checked_add(biodiversity_total)
+            .ok_or(BondError::Overflow)?;
         if total_credits > MAX_COUPON_POOL {
             return Err(BondError::Overflow);
         }
 
-        let total_subscribed: i128 = env.invoke_contract(
-            &bond_issuer,
-            &Symbol::new(&env, "total_subscribed"),
-            vec![&env, bond_id.into_val(&env)],
-        );
+        let total_subscribed = calculation.total_subscribed;
+
+        let credits_per_token = if total_subscribed > 0 {
+            checked_ratio(total_credits, FIXED_POINT, total_subscribed)?
+        } else {
+            0
+        };
 
         let mut total_holder_credits: i128 = 0;
         let mut holder_count: u32 = 0;
@@ -929,8 +958,13 @@ impl CouponEngine {
 
             let balance: i128 = env.invoke_contract(
                 &bond_issuer,
-                &Symbol::new(&env, "get_holder_balance"),
-                vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
+                &Symbol::new(&env, "get_holder_balance_at_version"),
+                vec![
+                    &env,
+                    bond_id.into_val(&env),
+                    holder.clone().into_val(&env),
+                    calculation.balance_version.into_val(&env),
+                ],
             );
 
             if balance > 0 {
@@ -1354,7 +1388,7 @@ impl CouponEngine {
                 .persistent()
                 .set(&waterfall_key, &(entry - take));
 
-            let by_type_key = DataKey::AccruedCreditsByType(bond_id, holder.clone(), credit_type);
+            let by_type_key = DataKey::EscrowedCreditsByType(bond_id, holder.clone(), credit_type);
             let by_type: i128 = env.storage().persistent().get(&by_type_key).unwrap_or(0);
             env.storage().persistent().set(
                 &by_type_key,
@@ -1809,14 +1843,14 @@ fn accrue_waterfall_credit(
     if amount == 0 {
         return Ok(());
     }
-    let by_type_key = DataKey::AccruedCreditsByType(bond_id, holder.clone(), credit_type);
+    let by_type_key = DataKey::EscrowedCreditsByType(bond_id, holder.clone(), credit_type);
     let by_type: i128 = env.storage().persistent().get(&by_type_key).unwrap_or(0);
     env.storage().persistent().set(
         &by_type_key,
         &by_type.checked_add(amount).ok_or(BondError::Overflow)?,
     );
 
-    let combined_key = DataKey::AccruedCredits(bond_id, holder.clone());
+    let combined_key = DataKey::EscrowedCredits(bond_id, holder.clone());
     let combined: i128 = env.storage().persistent().get(&combined_key).unwrap_or(0);
     env.storage().persistent().set(
         &combined_key,
@@ -2073,6 +2107,8 @@ fn appears_before(holders: &Vec<Address>, holder: &Address, end_exclusive: u32) 
 
 #[cfg(test)]
 mod test {
+    mod equivalence_test { include!("equivalence_test.rs"); }
+    mod covenant_test { include!("covenant_test.rs"); }
     use super::*;
     use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, BytesN, Env, Symbol};
 
@@ -2146,8 +2182,7 @@ mod test {
         assert_eq!(full.biodiversity_remaining, 300);
         assert_eq!(
             t.client
-                .waterfall_claimable_for_holder(&1, &0, &1, &2)
-                .unwrap(),
+                .waterfall_claimable_for_holder(&1, &0, &1, &2),
             (50, 50)
         );
 
@@ -2221,7 +2256,7 @@ mod test {
             &0,
         );
         assert_eq!(
-            t.client.waterfall_claimable(&bond_id, &0, &holder).unwrap(),
+            t.client.waterfall_claimable(&bond_id, &0, &holder),
             (10, 0)
         );
     }
@@ -2261,13 +2296,13 @@ mod test {
             t.client.claim_waterfall(&transferee, &group_id, &0, &0, &0),
             (0, 0)
         );
-        assert_eq!(t.client.accrued_credits(&group_id, &holder), 20);
+        assert_eq!(t.client.escrowed_credits(&group_id, &holder), 20);
         assert_eq!(
             t.client.try_claim_waterfall(&holder, &group_id, &0, &0, &1),
             Err(Ok(BondError::WaterfallAlreadyClaimed))
         );
         assert_eq!(t.client.claim_credits(&holder, &group_id, &1), 20);
-        assert_eq!(t.client.accrued_credits(&group_id, &holder), 0);
+        assert_eq!(t.client.escrowed_credits(&group_id, &holder), 0);
 
         t.client
             .settle_waterfall(&t.admin, &group_id, &tranche, &100, &100, &1);
@@ -2276,15 +2311,15 @@ mod test {
             (10, 10)
         );
         t.client.consume_credits(&holder, &group_id, &10);
-        assert_eq!(t.client.accrued_credits(&group_id, &holder), 10);
+        assert_eq!(t.client.escrowed_credits(&group_id, &holder), 10);
         assert_eq!(
             t.client
-                .accrued_credits_by_type(&group_id, &holder, &CreditType::Carbon),
+                .escrowed_credits_by_type(&group_id, &holder, &CreditType::Carbon),
             0
         );
         assert_eq!(
             t.client
-                .accrued_credits_by_type(&group_id, &holder, &CreditType::Biodiversity),
+                .escrowed_credits_by_type(&group_id, &holder, &CreditType::Biodiversity),
             10
         );
     }
@@ -2399,27 +2434,9 @@ mod test {
         biodiversity: BiodiversityMetrics,
         admin_nonce: u64,
     ) -> u64 {
-        let oc = nbbs_oracle_consumer::OracleConsumerClient::new(env, &t.oracle_id);
-        let provider = Address::generate(env);
-        oc.register_provider(
-            &t.admin,
-            &provider,
-            &Symbol::new(env, "verra_vcs"),
-            &admin_nonce,
-        );
-        let report_id = oc.submit_report(
-            &provider,
-            project_id,
-            &1000u64,
-            &2000u64,
-            &carbon,
-            &biodiversity,
-            &Symbol::new(env, "verra_vcs"),
-            &make_ipfs_hash(env, 1),
-            &0,
-        );
-        oc.verify_report(&t.admin, &report_id, &(admin_nonce + 1));
-        report_id
+        submit_verified_report_with_period(
+            env, t, project_id, carbon, biodiversity, admin_nonce, 1000, 2000,
+        )
     }
 
     fn submit_unverified_report(
@@ -3037,7 +3054,7 @@ mod test {
             &project_id,
             200_000,
             BiodiversityMetrics::Absent,
-            2,
+            3,
         );
         t.client
             .distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id2, &2);
@@ -4110,7 +4127,7 @@ mod test {
             let pool = MAX_COUPON_POOL;
             let mut distributed = 0i128;
             for holder in &holders {
-                distributed += t.client.accrued_credits(&bond_id, holder);
+                distributed += t.client.escrowed_credits(&bond_id, holder);
             }
             let dust = t.client.get_undistributed_total(&bond_id);
             assert_eq!(distributed + dust, pool);
@@ -4123,7 +4140,7 @@ mod test {
             let mut index = holders.len();
             while index > 0 {
                 index -= 1;
-                reversed_holders.push_back(holders.get(index).unwrap());
+                reversed_holders.push_back(holders.get(index).unwrap().clone());
             }
             t.client
                 .distribute_coupon(&t.admin, &bond_id, &1, &reversed_holders, &report_id, &2);
@@ -4160,7 +4177,7 @@ mod test {
 
             let pool = carbon / CREDIT_DIVISOR * CREDIT_MINOR_UNITS;
             assert_eq!(pool, MAX_COUPON_POOL - CREDIT_MINOR_UNITS);
-            assert_eq!(t.client.accrued_credits(&bond_id, &holders[0]), pool);
+            assert_eq!(t.client.escrowed_credits(&bond_id, &holders[0]), pool);
             assert_eq!(result.total_credits, pool);
             assert_eq!(t.client.get_undistributed_total(&bond_id), 0);
             let double_rounded = (pool * FIXED_POINT / total_subscribed) * max_supply / FIXED_POINT;
@@ -4458,7 +4475,7 @@ mod test {
                         &create_project_id(&t._env, 7),
                         carbon,
                         BiodiversityMetrics::Absent,
-                        (period as u64) * 2,
+                        (period as u64) * 3,
                     );
                     t.client.distribute_coupon(
                         &t.admin,

@@ -37,6 +37,14 @@ pub enum BondError {
     RedemptionQueueRequired = 23,
     DuplicateRedemptionRequest = 24,
     InvalidRedemptionBudget = 25,
+    AuctionRequired = 26,
+    InvalidAuction = 27,
+    AuctionClosed = 28,
+    SubscriptionIneligible = 29,
+    IdentityCapExceeded = 30,
+    InvalidCovenant = 31,
+    InvalidEquivalence = 32,
+    UnknownEquivalence = 33,
 }
 
 #[derive(Clone, Debug, PartialEq)]
