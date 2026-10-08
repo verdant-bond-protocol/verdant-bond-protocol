@@ -5,6 +5,8 @@ use soroban_sdk::{BytesN, Vec, contract, contractimpl, contracttype, vec, Addres
 
 pub const MAX_SUPPLY: i128 = 1_000_000_000_000_000_000;
 mod redemption_queue;
+mod subscription_auction;
+pub use subscription_auction::{AuctionConfig, AuctionOrder, AuctionState};
 pub use redemption_queue::{RedemptionBudget, RedemptionRequest};
 
 /// Issue #188: versioned-interface convention. Bump on a breaking storage
@@ -485,6 +487,9 @@ impl BondIssuer {
         amount: i128,
         nonce: u64,
     ) -> Result<(), BondError> {
+        if subscription_auction::configured(&env, bond_id) {
+            return Err(BondError::AuctionRequired);
+        }
         consume_nonce(&env, &investor, nonce)?;
 
         if amount <= 0 {
@@ -1029,7 +1034,9 @@ impl BondIssuer {
             .get(&DataKey::BondState(bond_id))
             .ok_or(BondError::BondNotFound)?;
 
-        let expected_failure = if amount <= 0 {
+        let expected_failure = if subscription_auction::configured(&env, bond_id) {
+            Some(BondError::AuctionRequired as u32)
+        } else if amount <= 0 {
             Some(BondError::ZeroAmount as u32)
         } else if state.status != BondStatus::Active
             || env.ledger().timestamp() >= config.maturity_date
@@ -1196,6 +1203,7 @@ mod test {
     use super::*;
     mod redemption_queue_test { include!("redemption_queue_test.rs"); }
     mod transfer_preflight_test { include!("transfer_preflight_test.rs"); }
+    mod subscription_auction_test { include!("subscription_auction_test.rs"); }
     use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, BytesN};
 
     fn create_project_id(env: &Env, value: u8) -> BytesN<32> {
