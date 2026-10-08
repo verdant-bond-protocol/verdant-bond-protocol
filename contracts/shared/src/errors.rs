@@ -43,6 +43,8 @@ pub enum BondError {
     SubscriptionIneligible = 29,
     IdentityCapExceeded = 30,
     InvalidCovenant = 31,
+    InvalidEquivalence = 32,
+    UnknownEquivalence = 33,
 }
 
 #[derive(Clone, Debug, PartialEq)]

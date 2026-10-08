@@ -10,6 +10,8 @@ use soroban_sdk::{
 };
 mod covenants;
 pub use covenants::{CovenantConfig, CovenantCycle, CovenantState};
+mod equivalence;
+pub use equivalence::{CouponCalculation, EquivalenceFactor, EquivalenceTable};
 
 pub const FIXED_POINT: i128 = 10_000_000;
 pub const CREDIT_DIVISOR: i128 = 1_000;
@@ -820,8 +822,9 @@ impl CouponEngine {
             .get(&DataKey::BondCreditType(bond_id))
             .ok_or(BondError::BondNotFound)?;
 
-        let carbon_total = report
-            .carbon_sequestered
+        let conversion = equivalence::conversion(&env, bond_id, period_index, &report, credit_type)?;
+        let carbon_total = conversion
+            .normalized_carbon
             .checked_div(CREDIT_DIVISOR)
             .ok_or(BondError::Overflow)?
             .checked_mul(CREDIT_MINOR_UNITS)
@@ -847,6 +850,7 @@ impl CouponEngine {
             biodiversity_total = checked_ratio(biodiversity_total, discount_multiplier, 10_000)?;
         }
 
+        let mut applied_true_up = 0i128;
         // Issue #194: Incorporate unapplied CarbonChain true-up adjustments forward without clawback
         if offset == 0 && existing.is_none() {
             let true_up_count: u32 = env
@@ -873,6 +877,7 @@ impl CouponEngine {
                 }
             }
             if accumulated_true_up != 0 {
+                applied_true_up = accumulated_true_up;
                 let adjusted_pool = if credit_type == CreditType::Biodiversity {
                     &mut biodiversity_total
                 } else {
@@ -885,18 +890,38 @@ impl CouponEngine {
             }
         }
         (carbon_total, biodiversity_total) = covenants::apply_terms(
-            &env, bond_id, period_index, &report, carbon_total, biodiversity_total,
+            &env,
+            bond_id,
+            period_index,
+            &report,
+            carbon_total,
+            biodiversity_total,
         )?;
-        let total_credits = carbon_total.checked_add(biodiversity_total).ok_or(BondError::Overflow)?;
+        let discount = if staleness_state.current_tier == 1 {
+            staleness_state.discount_bps
+        } else {
+            0
+        };
+        let calculation = equivalence::pin_calculation(
+            &env,
+            bond_id,
+            period_index,
+            conversion,
+            carbon_total,
+            biodiversity_total,
+            discount,
+            applied_true_up,
+        )?;
+        carbon_total = calculation.carbon_pool;
+        biodiversity_total = calculation.biodiversity_pool;
+        let total_credits = carbon_total
+            .checked_add(biodiversity_total)
+            .ok_or(BondError::Overflow)?;
         if total_credits > MAX_COUPON_POOL {
             return Err(BondError::Overflow);
         }
 
-        let total_subscribed: i128 = env.invoke_contract(
-            &bond_issuer,
-            &Symbol::new(&env, "total_subscribed"),
-            vec![&env, bond_id.into_val(&env)],
-        );
+        let total_subscribed = calculation.total_subscribed;
 
         let credits_per_token = if total_subscribed > 0 {
             checked_ratio(total_credits, FIXED_POINT, total_subscribed)?
@@ -933,8 +958,13 @@ impl CouponEngine {
 
             let balance: i128 = env.invoke_contract(
                 &bond_issuer,
-                &Symbol::new(&env, "get_holder_balance"),
-                vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
+                &Symbol::new(&env, "get_holder_balance_at_version"),
+                vec![
+                    &env,
+                    bond_id.into_val(&env),
+                    holder.clone().into_val(&env),
+                    calculation.balance_version.into_val(&env),
+                ],
             );
 
             if balance > 0 {
@@ -2077,6 +2107,7 @@ fn appears_before(holders: &Vec<Address>, holder: &Address, end_exclusive: u32) 
 
 #[cfg(test)]
 mod test {
+    mod equivalence_test { include!("equivalence_test.rs"); }
     mod covenant_test { include!("covenant_test.rs"); }
     use super::*;
     use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, BytesN, Env, Symbol};
