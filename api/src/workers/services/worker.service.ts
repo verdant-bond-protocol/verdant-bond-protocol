@@ -57,7 +57,7 @@ export class WorkerService {
           actorType: 'system',
           result: 'success',
           durationMs: Date.now() - startTime,
-          correlationId: job.payload.correlationId || job.id,
+          correlationId: job.correlationId,
           userId: job.payload.userId,
         });
 
@@ -71,7 +71,7 @@ export class WorkerService {
           actorType: 'system',
           result: shouldRetry ? 'failure' : 'failure',
           durationMs: Date.now() - startTime,
-          correlationId: job.payload.correlationId || job.id,
+          correlationId: job.correlationId,
           userId: job.payload.userId,
           error: errorMsg,
           errorCode: shouldRetry ? '500' : 'DEAD_LETTER',

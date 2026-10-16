@@ -34,6 +34,7 @@ export class JobQueueService {
       payload,
       retries: 0,
       maxRetries,
+      correlationId: payload.correlationId ?? crypto.randomUUID(),
       createdAt: new Date(),
     };
 
@@ -44,7 +45,7 @@ export class JobQueueService {
     // Add to queue
     await this.redis.sAdd(this.QUEUE_KEY, jobId);
 
-    this.logger.log(`Enqueued job ${jobId} of type ${payload.type}`);
+    this.logger.log(`Enqueued job ${jobId} of type ${payload.type} (correlationId=${job.correlationId})`);
     return job;
   }
 

@@ -46,6 +46,50 @@ describe('JobQueueService', () => {
       expect(job.maxRetries).toBe(3);
       expect(redisService.set).toHaveBeenCalled();
     });
+
+    it('propagates correlationId from payload to top-level job field (#398)', async () => {
+      const correlationId = 'trace-abc-123';
+      const payload: JobPayload = {
+        type: JobType.COUPON_DISTRIBUTION,
+        data: { bondId: 'bond-99' },
+        correlationId,
+      };
+
+      const job = await service.enqueue(payload);
+
+      expect(job.correlationId).toBe(correlationId);
+    });
+
+    it('generates a correlationId when payload omits one (#398)', async () => {
+      const payload: JobPayload = {
+        type: JobType.ORACLE_SYNC,
+        data: {},
+      };
+
+      const job = await service.enqueue(payload);
+
+      expect(typeof job.correlationId).toBe('string');
+      expect(job.correlationId.length).toBeGreaterThan(0);
+      // Must be a UUID-shaped string (8-4-4-4-12)
+      expect(job.correlationId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+    });
+
+    it('stores correlationId in the persisted job record (#398)', async () => {
+      const correlationId = 'store-check-456';
+      const payload: JobPayload = {
+        type: JobType.RECONCILIATION,
+        data: {},
+        correlationId,
+      };
+
+      await service.enqueue(payload);
+
+      const [, serialised] = (redisService.set as jest.Mock).mock.calls[0];
+      const stored = JSON.parse(serialised);
+      expect(stored.correlationId).toBe(correlationId);
+    });
   });
 
   describe('markSuccess', () => {

@@ -28,6 +28,7 @@ export interface Job {
   payload: JobPayload;
   retries: number;
   maxRetries: number;
+  correlationId: string;
   lastError?: string;
   lastErrorAt?: Date;
   createdAt: Date;
