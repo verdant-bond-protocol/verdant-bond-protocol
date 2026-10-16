@@ -14,10 +14,11 @@ describe('JobQueueService', () => {
         {
           provide: RedisService,
           useValue: {
-            set: jest.fn(),
+            set: jest.fn().mockResolvedValue('OK'),
             get: jest.fn(),
             del: jest.fn(),
             sAdd: jest.fn(),
+            sRem: jest.fn(),
             sMembers: jest.fn().mockResolvedValue([]),
             expire: jest.fn(),
           },

@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { stableStringify } from './audit.canonical';
 import { AuditRecord } from './audit.interface';
+import { buildEvidenceBundle, EvidenceBundle, MIN_PEPPER_LENGTH } from './evidence-bundle';
 import {
   AuditChainStep,
   AuditWrite,
@@ -179,6 +180,40 @@ export class AuditService {
     report.finished = entries.length;
     report.ok = report.failures.length === 0;
     return report;
+  }
+
+  /**
+   * Redacted, verifiable evidence for a support case (#351). The export is
+   * itself audited so access to evidence leaves a trail.
+   */
+  async exportEvidenceBundle(
+    entityType: string,
+    entityId: string,
+    caseId: string,
+    generatedBy: string,
+  ): Promise<EvidenceBundle> {
+    const pepper = process.env.AUDIT_EVIDENCE_PEPPER ?? '';
+    if (pepper.length < MIN_PEPPER_LENGTH) {
+      throw new ServiceUnavailableException('Evidence export is not configured (AUDIT_EVIDENCE_PEPPER)');
+    }
+    if (!caseId || !caseId.trim()) throw new BadRequestException('caseId is required');
+
+    const bundle = buildEvidenceBundle(entityType, entityId, this.getEntityHistory(entityType, entityId), {
+      caseId,
+      generatedBy,
+      pepper,
+      pepperId: process.env.AUDIT_EVIDENCE_PEPPER_ID || 'v1',
+      sourceVerification: await this.verifyEntity(entityType, entityId),
+    });
+    await this.record({
+      entityType: 'evidence-bundle',
+      entityId: caseId,
+      action: 'export',
+      actor: generatedBy,
+      before: null,
+      after: { bundleId: bundle.bundleId, subjectType: entityType, chainHead: bundle.chainHead, digest: bundle.digest },
+    });
+    return bundle;
   }
 
   getEntityHistory(entityType: string, entityId: string): AuditRecord[] {

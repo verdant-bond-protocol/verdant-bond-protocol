@@ -168,6 +168,14 @@ export class RedisService {
     }
   }
 
+  async sRem(key: string, value: string): Promise<void> {
+    try {
+      await this.redis.sRem(key, value);
+    } catch (error) {
+      this.logDegraded('sRem', key, error);
+    }
+  }
+
   async sMembers(key: string): Promise<string[]> {
     try {
       return await this.redis.sMembers(key);

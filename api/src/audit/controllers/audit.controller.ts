@@ -1,7 +1,8 @@
-import { Controller, Post, Get, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Query, Req, UseGuards } from '@nestjs/common';
 import { AuditService, VerificationReport } from '../audit.service';
 import { AuditWrite, AuditWriteResult } from '../classes/audit.classes';
 import { AuditRecord } from '../audit.interface';
+import { EvidenceBundle } from '../evidence-bundle';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../../common/guards/admin.guard';
 
@@ -43,6 +44,19 @@ export class AuditController {
     @Param('entityId') entityId: string,
   ): Promise<AuditRecord[]> {
     return this.audit.getEntityHistory(entityType, entityId);
+  }
+
+  // Redacted support evidence (#351): admin-only and tied to a case id; the
+  // export is recorded in the audit chain under `evidence-bundle/<caseId>`.
+  @Get('evidence/:entityType/:entityId')
+  @UseGuards(AdminGuard)
+  async evidence(
+    @Param('entityType') entityType: string,
+    @Param('entityId') entityId: string,
+    @Query('caseId') caseId: string,
+    @Req() req: { user?: { walletAddress?: string } },
+  ): Promise<EvidenceBundle> {
+    return this.audit.exportEvidenceBundle(entityType, entityId, caseId, req.user?.walletAddress ?? 'unknown');
   }
 
   @Get('stats')

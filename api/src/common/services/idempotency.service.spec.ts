@@ -10,6 +10,7 @@ describe('IdempotencyService', () => {
       get: jest.fn().mockResolvedValue(null),
       setNxValue: jest.fn().mockResolvedValue(true),
       setEx: jest.fn().mockResolvedValue(undefined),
+      del: jest.fn().mockResolvedValue(undefined),
     };
     service = new IdempotencyService(redis as unknown as RedisService);
   });

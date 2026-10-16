@@ -72,13 +72,13 @@ describe('IdempotencyInterceptor', () => {
     const obs = await build().intercept(makeContext('POST', '/x', { a: 1 }, 'key1'), handler as any);
     expect(await lastValueFrom(obs)).toEqual({ transactionHash: '0x1' });
     expect(idempotency.markPending).toHaveBeenCalledWith('key1', fingerprint({ a: 1 }));
-    expect(idempotency.complete).toHaveBeenCalledWith('key1', 'success', { transactionHash: '0x1' }, 200);
+    expect(idempotency.complete).toHaveBeenCalledWith('key1', 'success', { transactionHash: '0x1' }, 200, fingerprint({ a: 1 }));
   });
 
   it('stores an error record when the handler fails', async () => {
     const handler = { handle: () => throwError(() => new Error('boom')) };
     const obs = await build().intercept(makeContext('POST', '/x', { a: 1 }, 'key1'), handler as any);
     await expect(lastValueFrom(obs)).rejects.toThrow('boom');
-    expect(idempotency.complete).toHaveBeenCalledWith('key1', 'error', { message: 'boom' }, 200);
+    expect(idempotency.complete).toHaveBeenCalledWith('key1', 'error', { message: 'boom' }, 200, fingerprint({ a: 1 }));
   });
 });

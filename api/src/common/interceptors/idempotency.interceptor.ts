@@ -21,6 +21,8 @@ import { IDEMPOTENT_KEY } from '../decorators/idempotent.decorator';
  *  - Same key + different payload => 409 Conflict.
  *  - Same key still pending => 409 Conflict (in progress; safe to poll).
  *  - No previous record => executes the handler and stores the result.
+ *  - Previous error => exactly one concurrent retry claims the key and runs.
+ *  - Key reserved but unreadable (stale read / Redis down) => 409, never runs.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -61,17 +63,21 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const acquired = await this.idempotency.markPending(key, fingerprint);
     if (!acquired) {
       const again = await this.idempotency.get(key);
-      if (again) {
-        if (again.fingerprint !== fingerprint) {
-          throw new ConflictException('Idempotency-Key reused with a different request payload');
-        }
-        if (again.status === 'success') {
-          if (typeof again.statusCode === 'number') response.statusCode = again.statusCode;
-          return of(again.result);
-        }
-        if (again.status === 'pending') {
-          throw new ConflictException('Request with this Idempotency-Key is already in progress');
-        }
+      // A key we could not reserve but cannot read is a stale read or a Redis
+      // outage. Executing would bypass deduplication, so fail closed (#348).
+      if (!again) {
+        throw new ConflictException('Idempotency state unavailable; retry with the same Idempotency-Key');
+      }
+      if (again.fingerprint !== fingerprint) {
+        throw new ConflictException('Idempotency-Key reused with a different request payload');
+      }
+      if (again.status === 'success') {
+        if (typeof again.statusCode === 'number') response.statusCode = again.statusCode;
+        return of(again.result);
+      }
+      // 'pending', or 'error' with another retry already holding the claim.
+      if (again.status === 'pending' || !(await this.idempotency.claimRetry(key, fingerprint))) {
+        throw new ConflictException('Request with this Idempotency-Key is already in progress');
       }
     }
 
@@ -80,14 +86,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
         next: (result) => {
           const txHash = (result as any)?.transactionHash;
           const statusCode = response.statusCode;
-          this.idempotency.complete(key, 'success', result, statusCode).catch(() => undefined);
+          this.idempotency.complete(key, 'success', result, statusCode, fingerprint).catch(() => undefined);
           if (txHash) {
             // best-effort: keep the transaction hash on a side key for queries
           }
         },
         error: (err) => {
           this.idempotency
-            .complete(key, 'error', { message: err?.message }, response.statusCode)
+            .complete(key, 'error', { message: err?.message }, response.statusCode, fingerprint)
             .catch(() => undefined);
         },
       }),
