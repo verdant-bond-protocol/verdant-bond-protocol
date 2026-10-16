@@ -5,14 +5,17 @@ import { RollbackVerificationService } from './rollback-verification.service';
 import { IncidentDrillService } from './incident-drill.service';
 import { BondStateMachine, CouponStateMachine, SettlementStateMachine } from '../bonds/bond.state-machine';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ReconciliationModule } from '../reconciliation/reconciliation.module';
+import { SnapshotRestoreVerificationService } from './snapshot-restore-verification.service';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [NotificationsModule, ReconciliationModule],
   controllers: [RecoveryController],
   providers: [
     RecoveryService,
     RollbackVerificationService,
     IncidentDrillService,
+    SnapshotRestoreVerificationService,
     BondStateMachine,
     CouponStateMachine,
     SettlementStateMachine,
@@ -21,6 +24,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     RecoveryService,
     RollbackVerificationService,
     IncidentDrillService,
+    SnapshotRestoreVerificationService,
   ],
 })
 export class RecoveryModule {}

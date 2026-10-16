@@ -6,6 +6,8 @@
  *  - maximum content size
  *  - allowed MIME types (allow-list) with extension match
  *  - content sniffing against magic bytes to catch extension/mime mismatch
+ *  - active-content rejection: bytes a browser would sniff as HTML, and SVG or
+ *    XML carrying script, event handlers, embedded documents or external links
  *  - an optional pluggable malware-scan hook
  *
  * Values can be tuned via environment variables:
@@ -67,6 +69,65 @@ const MAGIC_SNIFFERS: Array<{ mime: string; match: (b: Buffer) => boolean }> = [
       return head.startsWith('{') || head.startsWith('[');
     } },
 ];
+
+/**
+ * How many leading bytes a browser reads before sniffing a resource's type
+ * (the WHATWG MIME Sniffing "resource header" read threshold).
+ */
+const SNIFF_WINDOW_BYTES = 1445;
+
+/**
+ * The WHATWG MIME Sniffing signatures for `text/html`: optional leading
+ * whitespace, then one of these tags followed by a space or `>`. A gateway or
+ * browser that sniffs a payload matching this renders it as HTML, whatever
+ * type it was uploaded as.
+ */
+const HTML_SIGNATURE =
+  /^[\t\n\f\r ]*(?:<!DOCTYPE HTML|<HTML|<HEAD|<SCRIPT|<IFRAME|<H1|<DIV|<FONT|<TABLE|<A|<STYLE|<TITLE|<B|<BODY|<BR|<P|<!--)[ >]/i;
+
+/**
+ * The WHATWG MIME Sniffing signature for `text/xml` (`<?xml` after optional
+ * whitespace). A browser renders an XML document, and runs script in any SVG
+ * or XHTML it contains.
+ */
+const XML_SIGNATURE = /^[\t\n\f\r ]*<\?xml/;
+
+/**
+ * SVG/XML constructs that execute script or pull in other documents.
+ * References are allow-listed instead of block-listed: an `href` must point
+ * at a fragment inside the same document (`#id`), which also defeats
+ * entity-encoded `javascript:` URLs. Animation elements may not target
+ * `href`, since `<set attributeName="href" to="javascript:…">` rewrites a
+ * link after this check.
+ */
+const MARKUP_ACTIVE_CONTENT: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /<(?:[a-z][\w.-]*:)?script[\s>/]/i, reason: 'script element' },
+  { pattern: /[\s"'/]on[a-z]+\s*=/i, reason: 'event-handler attribute' },
+  { pattern: /<(?:[a-z][\w.-]*:)?(?:foreignObject|iframe|embed|object)[\s>/]/i, reason: 'embedded document' },
+  { pattern: /<!ENTITY/i, reason: 'entity declaration' },
+  { pattern: /\bhref\s*=\s*(?!["']\s*#)/i, reason: 'non-fragment href' },
+  { pattern: /\battributeName\s*=\s*["']?\s*(?:[a-z][\w.-]*:)?href\b/i, reason: 'animated href' },
+];
+
+const BINARY_TYPES = new Set(['image/png', 'image/jpeg', 'application/pdf']);
+
+function activeContentReason(buffer: Buffer, mime: string, sniffed: string | null): string | null {
+  if (BINARY_TYPES.has(mime) || (sniffed !== null && BINARY_TYPES.has(sniffed))) {
+    return null;
+  }
+  const text = buffer.toString('latin1');
+  const head = text.slice(0, SNIFF_WINDOW_BYTES);
+  if (HTML_SIGNATURE.test(head)) {
+    return 'content a browser would render as HTML';
+  }
+  // Markup is only rendered when declared/sniffed as SVG or sniffed as XML;
+  // text that merely mentions `<svg>` mid-payload is not.
+  const isMarkup = mime === 'image/svg+xml' || sniffed === 'image/svg+xml' || XML_SIGNATURE.test(head);
+  if (!isMarkup) {
+    return null;
+  }
+  return MARKUP_ACTIVE_CONTENT.find(({ pattern }) => pattern.test(text))?.reason ?? null;
+}
 
 function extensionOf(filename: string): string {
   const idx = filename.lastIndexOf('.');
@@ -148,6 +209,15 @@ export class IpfsUploadPolicy {
       throw new UploadRejectedError(
         'CONTENT_MISMATCH',
         `Declared MIME type "${allowed}" does not match detected content type "${sniffed}".`,
+      );
+    }
+
+    // Active content: anything that would execute when opened from a gateway.
+    const activeContent = activeContentReason(buffer, allowed, sniffed);
+    if (activeContent) {
+      throw new UploadRejectedError(
+        'ACTIVE_CONTENT',
+        `File contains active content (${activeContent}) and cannot be published.`,
       );
     }
 

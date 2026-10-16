@@ -16,6 +16,8 @@
     "reindex-holders": "ts-node scripts/reindex-holders.ts",
     "incident:drill": "ts-node scripts/incident-drill.ts",
     "validate:rollback": "ts-node scripts/validate-rollback.ts",
+    "verify:snapshot-restore": "ts-node scripts/verify-snapshot-restore.ts",
+    "monitor:journey": "ts-node scripts/synthetic-journey.ts",
     "config:contract": "ts-node scripts/config-contract.ts",
     "mutate": "stryker run",
     "test:mutate": "stryker run --reporter progress --thresholds.high 50"

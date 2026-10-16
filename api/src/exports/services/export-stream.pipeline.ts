@@ -79,6 +79,21 @@ const FORBIDDEN_FIELDS_BY_ROLE: Record<ExportRole, string[]> = {
   ],
 };
 
+/**
+ * Assigning an own `__proto__` key (as `JSON.parse` produces) onto a plain
+ * object rewrites that object's prototype instead of copying a field (#382),
+ * so it is never exported, for any role.
+ */
+const PROTOTYPE_KEY = '__proto__';
+
+/** Per-role forbidden keys, lower-cased once so lookups are O(1) and case-blind. */
+const FORBIDDEN_KEYS_BY_ROLE = new Map<ExportRole, ReadonlySet<string>>(
+  (Object.keys(FORBIDDEN_FIELDS_BY_ROLE) as ExportRole[]).map((role) => [
+    role,
+    new Set(FORBIDDEN_FIELDS_BY_ROLE[role].map((field) => field.toLowerCase())),
+  ]),
+);
+
 @Injectable()
 export class ExportStreamPipeline {
   private readonly logger = new Logger(ExportStreamPipeline.name);
@@ -89,27 +104,42 @@ export class ExportStreamPipeline {
   }
 
   sanitizeRecordForCaller(record: ExportableRecord, caller: ExportCaller): ExportableRecord {
-    // 1. Data ownership check: Investors can only export their own records
-    if (caller.role === ExportRole.INVESTOR && record.ownerUserId && record.ownerUserId !== caller.userId) {
+    // 1. Data ownership check: Investors can only export their own records.
+    // A record with no owner cannot be proven to be the caller's, so it is
+    // refused rather than exported (fail closed, #382).
+    if (caller.role === ExportRole.INVESTOR && record.ownerUserId !== caller.userId) {
       throw new ForbiddenException('Cannot access records outside your caller ownership scope');
     }
 
-    // 2. Forbidden field stripping based on caller role
-    const forbiddenFields = FORBIDDEN_FIELDS_BY_ROLE[caller.role] || [];
-    const cleanedData: Record<string, any> = {};
-
-    for (const [key, value] of Object.entries(record.data)) {
-      if (forbiddenFields.includes(key)) {
-        // Strip forbidden field
-        continue;
-      }
-      cleanedData[key] = value;
-    }
+    // 2. Forbidden field stripping based on caller role, at every nesting depth
+    const forbiddenKeys = FORBIDDEN_KEYS_BY_ROLE.get(caller.role) ?? new Set<string>();
 
     return {
       ...record,
-      data: cleanedData,
+      data: this.stripForbidden(record.data, forbiddenKeys) as Record<string, any>,
     };
+  }
+
+  /**
+   * Copy `value` without any forbidden key or `__proto__`, at any
+   * depth of nested objects and arrays (#382). Key matching is
+   * case-insensitive so `SSN` or `PrivateKey` cannot slip past the list.
+   * O(n) time and space in the number of nodes in `value`.
+   */
+  private stripForbidden(value: unknown, forbiddenKeys: ReadonlySet<string>): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.stripForbidden(item, forbiddenKeys));
+    }
+    if (value === null || typeof value !== 'object' || value instanceof Date) {
+      return value;
+    }
+
+    const cleaned: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === PROTOTYPE_KEY || forbiddenKeys.has(key.toLowerCase())) continue;
+      cleaned[key] = this.stripForbidden(child, forbiddenKeys);
+    }
+    return cleaned;
   }
 
   async streamExport<T = any>(

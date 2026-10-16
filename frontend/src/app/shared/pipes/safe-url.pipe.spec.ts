@@ -24,4 +24,30 @@ describe('SafeUrlPipe', () => {
     pipe.transform('javascript:alert(1)');
     expect(sanitizer.bypassSecurityTrustUrl).toHaveBeenCalledWith('about:blank');
   });
+
+  describe('sensitive-content boundary (#382)', () => {
+    it('falls back to about:blank for every scheme outside the allow-list', () => {
+      for (const url of [
+        'JAVASCRIPT:alert(1)',
+        ' javascript:alert(1)',
+        'java\tscript:alert(1)',
+        'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+        'vbscript:msgbox(1)',
+        'file:///etc/passwd',
+        'blob:https://example.com/uuid',
+      ]) {
+        sanitizer.bypassSecurityTrustUrl.calls.reset();
+        pipe.transform(url);
+        expect(sanitizer.bypassSecurityTrustUrl).toHaveBeenCalledWith('about:blank');
+      }
+    });
+
+    it('rejects relative and protocol-relative URLs that would resolve against the app origin', () => {
+      for (const url of ['//evil.example/x', '/api/admin', '../x']) {
+        sanitizer.bypassSecurityTrustUrl.calls.reset();
+        pipe.transform(url);
+        expect(sanitizer.bypassSecurityTrustUrl).toHaveBeenCalledWith('about:blank');
+      }
+    });
+  });
 });

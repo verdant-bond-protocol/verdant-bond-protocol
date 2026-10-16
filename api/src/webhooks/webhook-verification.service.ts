@@ -27,6 +27,11 @@ export interface WebhookEvent {
 @Injectable()
 export class WebhookVerificationService {
   private readonly logger = new Logger(WebhookVerificationService.name);
+  /**
+   * Event id -> the last instant (ms) at which that event's timestamp still
+   * passes the replay-window check. An id must be remembered at least that
+   * long, or a captured request could be replayed inside its own window (#382).
+   */
   private readonly processedEvents = new Map<string, number>();
   private readonly DEFAULT_REPLAY_WINDOW = 5 * 60 * 1000; // 5 minutes
 
@@ -71,8 +76,8 @@ export class WebhookVerificationService {
       return { valid: false, error: 'Invalid signature' };
     }
 
-    // Mark event as processed
-    this.markEventProcessed(event.id, event.timestamp);
+    // Mark event as processed for as long as its timestamp stays acceptable
+    this.markEventProcessed(event.id, event.timestamp + replayWindow);
 
     return { valid: true };
   }
@@ -112,14 +117,14 @@ export class WebhookVerificationService {
    * Checks if event has already been processed
    */
   private isReplayedEvent(eventId: string): boolean {
-    const processedTimestamp = this.processedEvents.get(eventId);
-    if (!processedTimestamp) {
+    const acceptableUntil = this.processedEvents.get(eventId);
+    if (acceptableUntil === undefined) {
       return false;
     }
 
-    // Clean up old processed events
-    const now = Date.now();
-    if (now - processedTimestamp > this.DEFAULT_REPLAY_WINDOW * 2) {
+    // Past this instant the timestamp check alone rejects the event, so the
+    // id no longer needs to be remembered.
+    if (Date.now() > acceptableUntil) {
       this.processedEvents.delete(eventId);
       return false;
     }
@@ -130,8 +135,8 @@ export class WebhookVerificationService {
   /**
    * Marks event as processed to prevent replay
    */
-  private markEventProcessed(eventId: string, timestamp: number): void {
-    this.processedEvents.set(eventId, timestamp);
+  private markEventProcessed(eventId: string, acceptableUntil: number): void {
+    this.processedEvents.set(eventId, acceptableUntil);
 
     // Cleanup old entries periodically
     if (this.processedEvents.size > 10000) {
@@ -140,14 +145,13 @@ export class WebhookVerificationService {
   }
 
   /**
-   * Removes processed events older than the replay window
+   * Removes processed events whose timestamps can no longer pass the replay window
    */
   private cleanupProcessedEvents(): void {
     const now = Date.now();
-    const cutoff = now - this.DEFAULT_REPLAY_WINDOW * 2;
 
-    for (const [eventId, timestamp] of this.processedEvents.entries()) {
-      if (timestamp < cutoff) {
+    for (const [eventId, acceptableUntil] of this.processedEvents.entries()) {
+      if (acceptableUntil < now) {
         this.processedEvents.delete(eventId);
       }
     }

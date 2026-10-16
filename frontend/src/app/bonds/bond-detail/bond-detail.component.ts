@@ -15,6 +15,9 @@ import { Bond, ClaimableCreditsResponse } from '../../shared/interfaces/bond.int
 import { formatCreditMinorUnits } from '../../shared/utils/credit-format';
 import { appErrorMessage } from '../../shared/errors/api-error';
 import { PendingTransactionsService } from '../../shared/services/pending-transactions.service';
+import {
+  OperationQueueService, QueuedOperationInput, isTransientFailure,
+} from '../../shared/services/operation-queue.service';
 
 @Component({
   selector: 'app-bond-detail',
@@ -290,6 +293,28 @@ import { PendingTransactionsService } from '../../shared/services/pending-transa
               }
             </div>
 
+            @if (queuedOps().length > 0) {
+              <div class="queue-section">
+                <h3 class="section-title">Waiting to send</h3>
+                <ul class="queue-list">
+                  @for (op of queuedOps(); track op.id) {
+                    <li class="queue-item">
+                      <span>{{ op.kind === 'subscribe' ? 'Subscribe' : 'Transfer' }} {{ op.amount }} tokens{{ op.toAddress ? ' to ' + op.toAddress : '' }}</span>
+                      @if (op.status === 'queued') {
+                        <span class="muted" role="status">Saved. It will be sent when the connection returns.</span>
+                      } @else {
+                        <span class="error-msg" role="alert">{{ op.reason }}</span>
+                        <div class="queue-actions">
+                          <button class="btn btn-sm btn-primary" (click)="opQueue.retry(op.id)">Retry</button>
+                          <button class="btn btn-sm btn-outline" (click)="opQueue.discard(op.id)">Discard</button>
+                        </div>
+                      }
+                    </li>
+                  }
+                </ul>
+              </div>
+            }
+
             @if (isAdmin()) {
               <div class="admin-section">
                 <h3 class="section-title">Admin: Undistributed Coupons</h3>
@@ -450,6 +475,10 @@ import { PendingTransactionsService } from '../../shared/services/pending-transa
     .claimable-amount { font-family: monospace; color: #16a34a; }
     .claimable-meta { color: #6b7280; font-size: 0.75rem; }
     .transfer-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
+    .queue-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
+    .queue-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+    .queue-item { display: flex; flex-direction: column; gap: 4px; font-size: 0.8125rem; padding: 8px 10px; background: #f9fafb; border-radius: 6px; }
+    .queue-actions { display: flex; gap: 8px; }
     .admin-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
     .admin-note { font-size: 0.8125rem; color: #6b7280; padding: 8px 0; }
     .lock-btn { margin-top: 8px; }
@@ -601,6 +630,13 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     return { value: optimistic ?? this.claimable()?.total ?? '0', pending: optimistic !== null };
   });
 
+  /** Offline/interrupted subscribe and transfer operations for this bond (#381). */
+  readonly opQueue = inject(OperationQueueService);
+  readonly queuedOps = computed(() => {
+    const b = this.bond();
+    return b ? this.opQueue.forBond(b.id) : [];
+  });
+
   readonly txNotices = computed(() => {
     const b = this.bond();
     return b ? this.pendingTx.notices(b.id) : [];
@@ -716,7 +752,14 @@ export class BondDetailComponent implements OnInit, OnDestroy {
         }
       : undefined;
 
-    this.apiService.subscribeToBond(b.id, this.subscribeAmount).subscribe({
+    const idempotencyKey = this.apiService.generateIdempotencyKey('subscribe');
+    const queued = address ? { kind: 'subscribe' as const, bondId: b.id, address, amount: this.subscribeAmount } : null;
+    if (this.queueIfInterrupted(queued, baseline, idempotencyKey)) {
+      this.subscribeSubmitting.set(false);
+      return;
+    }
+
+    this.apiService.subscribeToBond(b.id, this.subscribeAmount, idempotencyKey).subscribe({
       next: (res) => {
         this.subscribeSuccess.set(true);
         this.subscribeTx.set(res.transactionHash);
@@ -725,7 +768,9 @@ export class BondDetailComponent implements OnInit, OnDestroy {
         this.reload(b.id);
       },
       error: (err) => {
-        this.subscribeError.set(appErrorMessage(err, 'Subscription failed'));
+        if (!this.queueIfInterrupted(queued, baseline, idempotencyKey, err)) {
+          this.subscribeError.set(appErrorMessage(err, 'Subscription failed'));
+        }
         this.subscribeSubmitting.set(false);
       },
     });
@@ -766,7 +811,18 @@ export class BondDetailComponent implements OnInit, OnDestroy {
     this.transferSuccess.set(false);
     this.transferError.set('');
 
-    this.apiService.transferBond(b.id, this.transferTo, this.transferAmount).subscribe({
+    const address = this.walletService.address();
+    const baseline = this.holders().find((h) => h.address === address)?.balance ?? '0';
+    const idempotencyKey = this.apiService.generateIdempotencyKey('transfer');
+    const queued = address
+      ? { kind: 'transfer' as const, bondId: b.id, address, amount: this.transferAmount, toAddress: this.transferTo }
+      : null;
+    if (this.queueIfInterrupted(queued, baseline, idempotencyKey)) {
+      this.transferSubmitting.set(false);
+      return;
+    }
+
+    this.apiService.transferBond(b.id, this.transferTo, this.transferAmount, idempotencyKey).subscribe({
       next: (res) => {
         this.transferSuccess.set(true);
         this.transferTx.set(res.transactionHash);
@@ -777,10 +833,30 @@ export class BondDetailComponent implements OnInit, OnDestroy {
         this.reload(b.id);
       },
       error: (err) => {
-        this.transferError.set(appErrorMessage(err, 'Transfer failed'));
+        if (!this.queueIfInterrupted(queued, baseline, idempotencyKey, err)) {
+          this.transferError.set(appErrorMessage(err, 'Transfer failed'));
+        }
         this.transferSubmitting.set(false);
       },
     });
+  }
+
+  /**
+   * Hands an operation to the offline queue (#381) when the browser is offline
+   * or the attempt got no definitive answer. The queue reuses the attempt's
+   * Idempotency-Key, so an attempt that did reach the API is not executed twice.
+   * Returns true when the operation was queued.
+   */
+  private queueIfInterrupted(
+    input: QueuedOperationInput | null,
+    basisBalance: string,
+    idempotencyKey: string,
+    error?: unknown,
+  ): boolean {
+    const interrupted = error === undefined ? !navigator.onLine : isTransientFailure(error);
+    if (!input || !interrupted || !Number.isInteger(input.amount)) return false;
+    this.opQueue.enqueue(input, basisBalance, idempotencyKey);
+    return true;
   }
 
   onSweep(): void {
