@@ -1,4 +1,4 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, Optional, UnauthorizedException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import {
   ImpersonationAuditEvent,
@@ -7,6 +7,7 @@ import {
   ImpersonationScope,
   ImpersonationSession,
 } from './impersonation.interface';
+import { EventLedgerService } from '../ledger/event-ledger.service';
 
 /** Upper bound for a session, even if a caller asks for longer. */
 export const MAX_SESSION_TTL_SECONDS = 30 * 60; // 30 minutes
@@ -54,6 +55,8 @@ export class ImpersonationService {
   private readonly logger = new Logger(ImpersonationService.name);
   private readonly sessions = new Map<string, ImpersonationSession>();
   private readonly auditEvents: ImpersonationAuditEvent[] = [];
+
+  constructor(@Optional() private readonly ledger?: EventLedgerService) {}
 
   /**
    * Start an impersonation session.
@@ -245,6 +248,23 @@ export class ImpersonationService {
       targetAddress: session.targetAddress,
       operation: extra.operation,
       detail: extra.detail,
+    });
+
+    // The local list above is bounded and evicts; the ledger is the durable,
+    // tamper-evident record. appendSafe never rejects, so this cannot change
+    // an access decision.
+    void this.ledger?.appendSafe({
+      type: `impersonation.${event}` as const,
+      actor: session.maintainerAddress,
+      subjectType: 'impersonation-session',
+      subjectId: session.sessionId,
+      payload: {
+        targetAddress: session.targetAddress,
+        reason: session.reason,
+        expiresAt: session.expiresAt,
+        operation: extra.operation ?? null,
+        detail: extra.detail ?? null,
+      },
     });
   }
 }

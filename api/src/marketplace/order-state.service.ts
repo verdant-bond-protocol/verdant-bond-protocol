@@ -1,6 +1,7 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, ConflictException, Optional } from '@nestjs/common';
 import { RedisService } from '../common/services/redis.service';
 import { OrderStatus } from './interfaces/marketplace.interface';
+import { EventLedgerService } from '../ledger/event-ledger.service';
 
 /**
  * Versioned order state machine (#200) for serialized transitions that prevent
@@ -18,7 +19,10 @@ export interface VersionedOrderState {
 
 @Injectable()
 export class OrderStateService {
-  constructor(private readonly redis: RedisService) {}
+  constructor(
+    private readonly redis: RedisService,
+    @Optional() private readonly ledger?: EventLedgerService,
+  ) {}
 
   private keyOf(orderId: number): string {
     return `order:state:${orderId}`;
@@ -90,6 +94,18 @@ export class OrderStateService {
       OrderStatus.Open,
       '0',
     );
+    await this.ledger?.appendSafe({
+      type: 'settlement.rolled_back',
+      actor: 'system:order-state',
+      subjectType: 'marketplace-order',
+      subjectId: String(orderId),
+      payload: {
+        fromStatus: current.status,
+        fromVersion: current.version,
+        revertedFilledAmount: current.filledAmount,
+        toVersion: rolled.version,
+      },
+    });
     return rolled;
   }
 
@@ -99,7 +115,19 @@ export class OrderStateService {
    */
   async markSettled(orderId: number): Promise<VersionedOrderState> {
     const current = await this.getOrderState(orderId);
-    return this.transitionState(orderId, current.version, OrderStatus.Filled);
+    const settled = await this.transitionState(orderId, current.version, OrderStatus.Filled);
+    await this.ledger?.appendSafe({
+      type: 'settlement.completed',
+      actor: 'system:order-state',
+      subjectType: 'marketplace-order',
+      subjectId: String(orderId),
+      payload: {
+        fromStatus: current.status,
+        filledAmount: settled.filledAmount,
+        version: settled.version,
+      },
+    });
+    return settled;
   }
 
   /**

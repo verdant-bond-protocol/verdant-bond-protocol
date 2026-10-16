@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ImpersonationService } from './impersonation.service';
 import { ImpersonationScope } from './impersonation.interface';
+import { EventLedgerService } from '../ledger/event-ledger.service';
+import { InMemoryLedgerStore } from '../ledger/ledger.store';
 
 process.env.STELLAR_PUBLIC_KEY = 'GADMINKEY';
 
@@ -273,5 +275,48 @@ describe('ImpersonationService (#264)', () => {
     it('surfaces nothing for a target with no sessions', () => {
       expect(service.getSessionsForTarget('GNOSUCHUSER')).toHaveLength(0);
     });
+  });
+});
+
+describe('ImpersonationService ledger coverage', () => {
+  const ADMIN = 'GADMINKEY';
+
+  it('records every session event in the tamper-evident ledger', async () => {
+    const ledger = new EventLedgerService(new InMemoryLedgerStore());
+    const service = new ImpersonationService(ledger);
+
+    const session = await service.start({
+      maintainerAddress: ADMIN,
+      targetAddress: 'GAFFECTEDUSER',
+      scope: { allowedOperations: ['bond.read'] },
+      reason: 'support ticket #123',
+    });
+    await service.performOperation(session.sessionId, 'bond.read');
+    await service.performOperation(session.sessionId, 'bond.transfer');
+    await service.revoke(session.sessionId, ADMIN);
+
+    const events = await ledger.query({ subjectId: session.sessionId });
+    expect(events.map((e) => e.type)).toEqual([
+      'impersonation.started',
+      'impersonation.operation_allowed',
+      'impersonation.operation_denied',
+      'impersonation.revoked',
+    ]);
+    expect(events.every((e) => e.category === 'privileged' && e.actor === ADMIN)).toBe(true);
+    expect(events[0].payload).toMatchObject({ targetAddress: 'GAFFECTEDUSER', reason: 'support ticket #123' });
+    expect((await ledger.verify()).ok).toBe(true);
+  });
+
+  it('a sealed ledger does not change access decisions', async () => {
+    const ledger = new EventLedgerService(new InMemoryLedgerStore());
+    jest.spyOn(ledger, 'append').mockRejectedValue(new Error('sealed'));
+    const service = new ImpersonationService(ledger);
+    const session = await service.start({
+      maintainerAddress: ADMIN,
+      targetAddress: 'GAFFECTEDUSER',
+      scope: { allowedOperations: ['bond.read'] },
+      reason: 'support',
+    });
+    await expect(service.performOperation(session.sessionId, 'bond.read')).resolves.toEqual({ allowed: true });
   });
 });

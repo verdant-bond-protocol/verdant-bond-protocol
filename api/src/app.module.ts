@@ -17,6 +17,7 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { IdempotencyInterceptor } from './common/interceptors/idempotency.interceptor';
 import { OpsModule } from './ops/ops.module';
+import { LedgerModule } from './ledger/ledger.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { OpsModule } from './ops/ops.module';
     ExportsModule,
     ComplianceModule,
     AuditModule,
+    LedgerModule,
     RecoveryModule,
     MigrationSafetyModule,
     ImpersonationModule,
