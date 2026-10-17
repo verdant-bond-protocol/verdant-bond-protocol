@@ -2,7 +2,7 @@ import { KycCommitmentService, EligibilityTier } from './kyc-commitment.service'
 import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
 import { UnauthorizedException, NotFoundException } from '@nestjs/common';
 
-describe('KycCommitmentService (KYC Data Minimization & Selective Disclosure)', () => {
+describe('KycCommitmentService (KYC Data Minimization, Signed Receipts & Selective Disclosure #469)', () => {
   let service: KycCommitmentService;
   const TEST_INVESTOR = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
@@ -136,6 +136,90 @@ describe('KycCommitmentService (KYC Data Minimization & Selective Disclosure)', 
           commitmentHash: '0000000000000000000000000000000000000000000000000000000000000000',
         }),
       ).toThrow(NotFoundException);
+    });
+  });
+
+  describe('4. Signed audit receipts for compliance decisions (#469)', () => {
+    it('issues a signed receipt for a KYC commitment', () => {
+      const commitment = service.generateOnChainCommitment({
+        investorAddress: TEST_INVESTOR,
+        kycStatus: KycStatus.ACCREDITED,
+        jurisdiction: 'US',
+      });
+
+      const receipt = service.issueSignedReceipt(commitment.commitmentHash, 'KYC verification completed');
+
+      expect(receipt.commitmentHash).toBe(commitment.commitmentHash);
+      expect(receipt.eligibilityTier).toBe(commitment.eligibilityTier);
+      expect(receipt.signature).toBeDefined();
+      expect(receipt.signature.length).toBeGreaterThan(0);
+      expect(receipt.signerPublicKey).toBeDefined();
+      expect(receipt.decisionReason).toBe('KYC verification completed');
+    });
+
+    it('verifies a signed receipt is cryptographically valid', () => {
+      const commitment = service.generateOnChainCommitment({
+        investorAddress: TEST_INVESTOR,
+        kycStatus: KycStatus.VERIFIED,
+        jurisdiction: 'EU',
+      });
+
+      const receipt = service.issueSignedReceipt(commitment.commitmentHash, 'Retail investor verified');
+      const isValid = service.verifySignedReceipt(receipt);
+
+      expect(isValid).toBe(true);
+    });
+
+    it('rejects a tampered receipt', () => {
+      const commitment = service.generateOnChainCommitment({
+        investorAddress: TEST_INVESTOR,
+        kycStatus: KycStatus.VERIFIED,
+        jurisdiction: 'US',
+      });
+
+      const receipt = service.issueSignedReceipt(commitment.commitmentHash);
+
+      // Tamper with tier
+      const tamperedReceipt = {
+        ...receipt,
+        eligibilityTier: EligibilityTier.TIER_3_INSTITUTIONAL, // Changed
+      };
+
+      const isValid = service.verifySignedReceipt(tamperedReceipt);
+      expect(isValid).toBe(false);
+    });
+
+    it('throws error when issuing receipt for non-existent commitment', () => {
+      expect(() =>
+        service.issueSignedReceipt('0000000000000000000000000000000000000000000000000000000000000000'),
+      ).toThrow(NotFoundException);
+    });
+
+    it('includes issuedAt and expirationTimestamp in receipt', () => {
+      const commitment = service.generateOnChainCommitment({
+        investorAddress: TEST_INVESTOR,
+        kycStatus: KycStatus.ACCREDITED,
+        jurisdiction: 'JP',
+      });
+
+      const receipt = service.issueSignedReceipt(commitment.commitmentHash);
+
+      expect(receipt.issuedAt).toBe(commitment.issuedAt);
+      expect(receipt.expirationTimestamp).toBe(commitment.expirationTimestamp);
+    });
+
+    it('uses Ed25519 signatures for audit receipts', () => {
+      const commitment = service.generateOnChainCommitment({
+        investorAddress: TEST_INVESTOR,
+        kycStatus: KycStatus.VERIFIED,
+        jurisdiction: 'CA',
+      });
+
+      const receipt = service.issueSignedReceipt(commitment.commitmentHash);
+
+      // Signature is base64 encoded and 64 bytes (Ed25519 signature size)
+      const signatureBytes = Buffer.from(receipt.signature, 'base64');
+      expect(signatureBytes.length).toBe(64); // Ed25519 signature is 64 bytes
     });
   });
 });
