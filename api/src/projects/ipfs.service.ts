@@ -1,6 +1,8 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { IpfsUploadPolicy } from './ipfs-upload.policy';
+import { IpfsDocumentCacheService } from './ipfs-document-cache.service';
+import { IpfsUnavailableException } from './interfaces/ipfs-document.interface';
 
 interface IpfsUploadResult {
   hash: string;
@@ -54,10 +56,23 @@ export class IpfsService {
     gateway: process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/',
   };
 
+  readonly fallbackGateways: string[] = [
+    this.config.gateway,
+    'https://ipfs.io/ipfs/',
+    'https://cloudflare-ipfs.com/ipfs/',
+    'https://dweb.link/ipfs/',
+  ];
+
   constructor(
     private readonly uploadPolicy: IpfsUploadPolicy,
+    @Optional() private readonly cacheService?: IpfsDocumentCacheService,
     @Optional() @Inject(IPFS_FETCH) private readonly fetchFn: FetchFn = defaultFetch,
-  ) {}
+  ) {
+    if (typeof cacheService === 'function') {
+      this.fetchFn = cacheService as unknown as FetchFn;
+      this.cacheService = undefined;
+    }
+  }
 
   /** Primary + secondary pinning providers (issue #211). Secondary is
    * configured via `IPFS_SECONDARY_*`; when unset only the primary is used
@@ -85,8 +100,11 @@ export class IpfsService {
     return providers;
   }
 
-  async uploadJson(data: Record<string, unknown>): Promise<IpfsUploadResult> {
-    const response = await fetch(
+  async uploadJson(
+    data: Record<string, unknown>,
+    options?: { isAuditRelevant?: boolean; disputeId?: string; projectId?: number },
+  ): Promise<IpfsUploadResult> {
+    const response = await this.fetchFn(
       `${this.config.apiUrl}/pinning/pinJSONToIPFS`,
       {
         method: 'POST',
@@ -107,9 +125,21 @@ export class IpfsService {
     }
 
     const result = await response.json();
+    const hash = result.IpfsHash;
+
+    if (this.cacheService) {
+      await this.cacheService.cacheDocument(hash, data, {
+        filename: `doc-${hash}.json`,
+        mimetype: 'application/json',
+        isAuditRelevant: options?.isAuditRelevant,
+        disputeId: options?.disputeId,
+        projectId: options?.projectId,
+      });
+    }
+
     return {
-      hash: result.IpfsHash,
-      gatewayUrl: `${this.config.gateway}${result.IpfsHash}`,
+      hash,
+      gatewayUrl: `${this.config.gateway}${hash}`,
       pinSize: result.PinSize,
       timestamp: new Date().toISOString(),
     };
@@ -119,26 +149,147 @@ export class IpfsService {
     buffer: Buffer,
     filename: string,
     mimetype?: string,
+    options?: { isAuditRelevant?: boolean; disputeId?: string; projectId?: number },
   ): Promise<IpfsUploadResult> {
     await this.uploadPolicy.validate({
       buffer,
       filename,
       mimetype: mimetype ?? '',
     });
-    return this.uploadJson({
-      filename,
-      content: buffer.toString('base64'),
-      size: buffer.length,
-      mimetype: mimetype ?? 'application/octet-stream',
-    });
+
+    const result = await this.uploadJson(
+      {
+        filename,
+        content: buffer.toString('base64'),
+        size: buffer.length,
+        mimetype: mimetype ?? 'application/octet-stream',
+      },
+      options,
+    );
+
+    if (this.cacheService) {
+      await this.cacheService.cacheDocument(result.hash, buffer, {
+        filename,
+        mimetype: mimetype ?? 'application/octet-stream',
+        isAuditRelevant: options?.isAuditRelevant,
+        disputeId: options?.disputeId,
+        projectId: options?.projectId,
+      });
+    }
+
+    return result;
   }
 
+  /**
+   * Fetch JSON content from IPFS with multi-gateway failover and local cache fallback.
+   */
   async getContent(hash: string): Promise<Record<string, unknown>> {
-    const response = await fetch(`${this.config.gateway}${hash}`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch IPFS content: ${response.statusText}`);
+    const gateways = [this.config.gateway, ...this.fallbackGateways.filter((g) => g !== this.config.gateway)];
+
+    for (const gw of gateways) {
+      const url = `${gw.endsWith('/') ? gw : gw + '/'}${hash}`;
+      try {
+        const response = await this.fetchFn(url);
+        if (response.ok) {
+          const json = await response.json();
+          if (this.cacheService) {
+            const isAudit = await this.cacheService.isAuditRelevant(hash);
+            await this.cacheService.cacheDocument(hash, json, {
+              isAuditRelevant: isAudit,
+            });
+          }
+          return json;
+        }
+      } catch {}
     }
-    return response.json();
+
+    if (this.cacheService) {
+      const cached = await this.cacheService.getCachedDocument(hash);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached.content);
+          return {
+            ...parsed,
+            _servedFromCache: true,
+            _cacheTier: cached.record.tier,
+            _cachedAt: cached.record.cachedAt,
+          };
+        } catch {
+          return {
+            content: cached.content,
+            _servedFromCache: true,
+            _cacheTier: cached.record.tier,
+          };
+        }
+      }
+    }
+
+    throw new IpfsUnavailableException(
+      hash,
+      30,
+      `/projects/documents/${hash}/escalate`,
+    );
+  }
+
+  /**
+   * Retrieve any document (binary or JSON) with metadata and cache fallback.
+   */
+  async retrieveDocument(
+    hash: string,
+    options?: { isAuditRelevant?: boolean },
+  ): Promise<{
+    content: string;
+    mimetype: string;
+    filename: string;
+    servedFrom: 'ipfs' | 'cache';
+    tier?: string;
+  }> {
+    const gateways = [this.config.gateway, ...this.fallbackGateways.filter((g) => g !== this.config.gateway)];
+
+    for (const gw of gateways) {
+      const url = `${gw.endsWith('/') ? gw : gw + '/'}${hash}`;
+      try {
+        const response = await this.fetchFn(url);
+        if (response.ok) {
+          const buffer = Buffer.from(await response.arrayBuffer());
+          const isAudit =
+            options?.isAuditRelevant ?? (await this.cacheService?.isAuditRelevant(hash)) ?? false;
+
+          if (this.cacheService) {
+            await this.cacheService.cacheDocument(hash, buffer, {
+              mimetype: 'application/octet-stream',
+              isAuditRelevant: isAudit,
+            });
+          }
+
+          return {
+            content: buffer.toString('base64'),
+            mimetype: 'application/octet-stream',
+            filename: `${hash}.bin`,
+            servedFrom: 'ipfs',
+          };
+        }
+      } catch {}
+    }
+
+    if (this.cacheService) {
+      const cached = await this.cacheService.getCachedDocument(hash);
+      if (cached) {
+        return {
+          content: cached.content,
+          mimetype: cached.record.mimetype,
+          filename: cached.record.filename,
+          servedFrom: 'cache',
+          tier: cached.record.tier,
+        };
+      }
+    }
+
+    throw new IpfsUnavailableException(
+      hash,
+      30,
+      `/projects/documents/${hash}/escalate`,
+    );
   }
 
   async pin(hash: string): Promise<void> {

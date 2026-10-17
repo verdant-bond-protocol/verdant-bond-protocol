@@ -68,3 +68,46 @@ if (calculatedChecksum === checksum) {
   console.error(`Calculated: ${calculatedChecksum}`);
 }
 ```
+
+---
+
+## Historical Certification Document Resilience & IPFS Fallback Strategy
+
+Historical certification documents (such as Verra/Gold Standard carbon credits certification, project boundary shapefiles, baseline verification reports, and dispute evidence) are critical for regulatory compliance and audit trail integrity. To mitigate IPFS pin churn, provider downtime, and gateway rate-limiting, the protocol implements a multi-tiered resilience and caching architecture.
+
+### 1. Document Caching & Tiered Retention Policy
+
+The protocol segregates document storage into distinct retention tiers:
+
+| Tier | Target Scope | Retention Period | Storage & Encryption |
+|---|---|---|---|
+| **Routine Documents** | Temporary drafts, non-audited collateral, previews | 30 days (`2,592,000s`) | Redis / Local Cache, SHA-256 integrity checksum |
+| **Audit / Dispute-Relevant** | Historical certification documents, dispute evidence, oracle reports | 10 years / Indefinite (`315,360,000s`) | AES-256-GCM encrypted cache, SHA-256 integrity verification |
+
+* **Audit Promotion**: Any document referenced in an on-chain dispute or regulatory audit can be promoted to the long-term retention tier via `POST /projects/:id/documents/:hash/flag-audit`.
+* **Tamper-Evident Integrity**: All cached documents store a deterministic SHA-256 checksum that is validated upon every retrieval to guard against bitrot or tampering.
+
+### 2. Multi-Gateway Failover & Proactive Availability Audits
+
+Rather than waiting for an auditor to hit a broken IPFS link, the protocol executes automated resilience workflows:
+* **Gateway Fallover**: Document retrieval attempts the primary gateway (`gateway.pinata.cloud`) and automatically cycles through public decentralized fallbacks (`ipfs.io`, `cloudflare-ipfs.com`, `dweb.link`).
+* **Proactive Probing**: Scheduled jobs probe document availability every 6 hours across all gateways and classify health states (`available`, `degraded`, `cached_fallback`, `unavailable`).
+* **Automated Cache Warming**: When primary gateway degradation is detected for an audit-relevant document, the system automatically fetches the payload from working fallback gateways and warms the local long-retention cache ahead of time.
+
+### 3. Graceful Auditor Retrieval & Escalation Workflow
+
+When an auditor requests a document via `GET /projects/:id/documents/:hash`:
+1. **IPFS Available**: The document is served directly and cached opportunistically.
+2. **IPFS Outage (Cached)**: If IPFS is down but the document was cached under the retention policy, it is served seamlessly with header/metadata `servedFrom: "cache"`.
+3. **Temporarily Unavailable**: If all gateways fail and the document is not yet in cache, the API returns a structured `503 Service Unavailable` with retry and escalation guidance instead of a raw failure:
+   ```json
+   {
+     "status": "temporarily_unavailable",
+     "message": "Document is temporarily unavailable across IPFS gateways. A cached recovery or escalation has been initiated.",
+     "hash": "QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco",
+     "retryAfterSeconds": 30,
+     "escalationPath": "/projects/1/documents/QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco/escalate"
+   }
+   ```
+4. **Manual Escalation**: Calling `POST /projects/:id/documents/:hash/escalate` triggers priority retrieval across all peer nodes.
+
