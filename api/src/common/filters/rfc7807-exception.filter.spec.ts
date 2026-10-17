@@ -1,7 +1,8 @@
 import { BadRequestException, UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
 import { Rfc7807ExceptionFilter } from './rfc7807-exception.filter';
 import { ContractException, StableErrorCode } from '../../stellar/contract-errors';
-import { ErrorCode, ErrorTaxonomy, DomainException } from '../errors/error-codes';
+import { ErrorCode, ErrorTaxonomy, DomainException, remediationFor } from '../errors/error-codes';
+import { ApiProblemException } from '../errors/problem-exception';
 
 function makeHost(exceptionPath = '/api/test') {
   const json = jest.fn();
@@ -117,6 +118,43 @@ describe('Rfc7807ExceptionFilter', () => {
         code: ErrorCode.INSUFFICIENT_BALANCE,
         detail: ErrorTaxonomy[ErrorCode.INSUFFICIENT_BALANCE].safeMessage,
         retryable: false,
+        remediation: remediationFor(ErrorCode.INSUFFICIENT_BALANCE),
+      }),
+    );
+  });
+
+  it('always includes a remediation hint in the problem details', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new UnauthorizedException('Token expired or invalid'), host);
+
+    const problem = json.mock.calls[0][0];
+    expect(typeof problem.remediation).toBe('string');
+    expect(problem.remediation.length).toBeGreaterThan(0);
+  });
+
+  it('renders ApiProblemException with its stable code, status, remediation and context', () => {
+    const { host, status, json } = makeHost('/api/bonds');
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(
+      new ApiProblemException(ErrorCode.RISK_REVIEW_REQUIRED, {
+        status: 403,
+        context: { score: 90, band: 'high', reasons: ['velocity'] },
+      }),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: `https://errors.verdant-bond-protocol.org/${ErrorCode.RISK_REVIEW_REQUIRED}`,
+        code: ErrorCode.RISK_REVIEW_REQUIRED,
+        status: 403,
+        retryable: false,
+        remediation: remediationFor(ErrorCode.RISK_REVIEW_REQUIRED),
+        context: { score: 90, band: 'high', reasons: ['velocity'] },
       }),
     );
   });

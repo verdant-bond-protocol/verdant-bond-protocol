@@ -5,7 +5,8 @@ import { AdminGuard } from '../common/guards/admin.guard';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { ProviderGuard } from '../common/guards/provider.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
-import { fakeJwtAuthGuard, fakeAdminGuard, fakeKycGuard, fakeProviderGuard, fakeIntentGuard } from './guard-role-mocks';
+import { RiskGuard } from '../common/risk/risk.guard';
+import { fakeJwtAuthGuard, fakeAdminGuard, fakeKycGuard, fakeProviderGuard, fakeIntentGuard, fakeRiskGuard } from './guard-role-mocks';
 
 /**
  * Boots a single controller with all auth guards replaced by header-driven
@@ -34,6 +35,8 @@ export async function buildControllerApp(
     .useValue(fakeProviderGuard)
     .overrideGuard(IntentGuard)
     .useValue(fakeIntentGuard)
+    .overrideGuard(RiskGuard)
+    .useValue(fakeRiskGuard)
     .compile();
 
   const app = moduleRef.createNestApplication();

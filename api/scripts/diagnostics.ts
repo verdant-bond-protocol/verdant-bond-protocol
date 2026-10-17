@@ -1,107 +1,126 @@
 #!/usr/bin/env node
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
 import { Client } from 'pg';
 import { createClient } from '@redis/client';
+import {
+  buildSummary,
+  checkConnectivity,
+  checkDependencies,
+  checkEnvironment,
+  checkNodeVersion,
+  DiagnosticResult,
+  formatSummary,
+  parseEnvFile,
+} from '../src/ops/developer-diagnostics';
 
-console.log('Verdant Bond Protocol Diagnostics\n');
+/**
+ * Contributor diagnostics (#374).
+ *
+ * `npm run diagnostics` — one command that validates the local setup and the
+ * external-service assumptions the API depends on, then prints exactly what to
+ * fix. All decision/remediation logic lives in
+ * `src/ops/developer-diagnostics.ts` and is unit tested; this script only
+ * gathers the real environment facts.
+ */
 
-let allPassed = true;
+const apiRoot = path.join(__dirname, '..');
+const envPath = path.join(apiRoot, '.env');
+const envExamplePath = path.join(apiRoot, '.env.example');
 
-function logResult(check: string, passed: boolean, message: string) {
-  if (passed) {
-    console.log(`✅ [PASS] ${check}`);
-  } else {
-    console.log(`❌ [FAIL] ${check}`);
-    console.log(`   Remediation: ${message}`);
-    allPassed = false;
+function loadEnvFile(): boolean {
+  if (!fs.existsSync(envPath)) return false;
+  const values = parseEnvFile(fs.readFileSync(envPath, 'utf-8'));
+  for (const [key, value] of Object.entries(values)) {
+    if (process.env[key] === undefined) process.env[key] = value;
   }
+  return true;
 }
 
-async function checkNodeVersion() {
-  try {
-    const version = process.version;
-    const match = version.match(/^v(\d+)/);
-    if (match && parseInt(match[1], 10) >= 18) {
-      logResult('Node.js Version', true, '');
-    } else {
-      logResult('Node.js Version', false, `Current version is ${version}. Please upgrade to Node.js v18 or newer.`);
-    }
-  } catch (error) {
-    logResult('Node.js Version', false, 'Could not determine Node.js version.');
-  }
-}
-
-function checkDependencies() {
-  const nodeModulesPath = path.join(__dirname, '..', 'node_modules');
-  if (fs.existsSync(nodeModulesPath)) {
-    logResult('Dependencies', true, '');
-  } else {
-    logResult('Dependencies', false, 'Run `npm install` in the api directory.');
-  }
-}
-
-function checkEnvVars() {
-  const envPath = path.join(__dirname, '..', '.env');
-  const envExamplePath = path.join(__dirname, '..', '.env.example');
-  
-  if (fs.existsSync(envPath)) {
-    logResult('Environment File', true, '');
-  } else {
-    logResult('Environment File', false, 'Missing .env file. Copy .env.example to .env and configure it.');
-    return;
-  }
-
-  // Load basic env vars
-  const envContent = fs.readFileSync(envPath, 'utf-8');
-  if (!envContent.includes('REDIS_URL')) {
-    logResult('Environment Variable REDIS_URL', false, 'Add REDIS_URL to your .env file.');
-  }
-}
-
-async function checkRedis() {
-  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+async function checkRedis(url: string): Promise<DiagnosticResult> {
   const client = createClient({ url, socket: { connectTimeout: 2000 } });
+  let ok = false;
   try {
     await client.connect();
     await client.ping();
-    await client.disconnect();
-    logResult('Redis Connectivity', true, '');
-  } catch (error) {
-    logResult('Redis Connectivity', false, `Could not connect to Redis at ${url}. Ensure Redis is running.`);
+    ok = true;
+  } catch {
+    ok = false;
+  } finally {
+    try {
+      await client.disconnect();
+    } catch {
+      /* already closed */
+    }
   }
+  return checkConnectivity('Redis connectivity', ok, url, 'start Redis (docker compose up redis) or fix REDIS_URL.');
 }
 
-async function checkPostgres() {
-  const url = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/verdant';
+async function checkPostgres(url: string): Promise<DiagnosticResult> {
   const client = new Client({ connectionString: url, connectionTimeoutMillis: 2000 });
+  let ok = false;
   try {
     await client.connect();
     await client.query('SELECT 1');
-    await client.end();
-    logResult('PostgreSQL Connectivity', true, '');
-  } catch (error) {
-    logResult('PostgreSQL Connectivity', false, `Could not connect to PostgreSQL at ${url}. Ensure it is running and DATABASE_URL is set.`);
+    ok = true;
+  } catch {
+    ok = false;
+  } finally {
+    try {
+      await client.end();
+    } catch {
+      /* already closed */
+    }
   }
+  return checkConnectivity(
+    'PostgreSQL connectivity',
+    ok,
+    url,
+    'start PostgreSQL (docker compose up postgres) or fix DATABASE_URL.',
+  );
 }
 
-async function run() {
-  require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-  
-  await checkNodeVersion();
-  checkDependencies();
-  checkEnvVars();
-  await checkRedis();
-  await checkPostgres();
-
-  console.log('\n--------------------------------');
-  if (allPassed) {
-    console.log('🎉 All checks passed! You are ready to start working.');
-  } else {
-    console.log('⚠️ Some checks failed. Please address the remediation steps above.');
-    process.exit(1);
-  }
+function checkSeedData(): DiagnosticResult {
+  const seedScript = path.join(apiRoot, 'scripts', 'seed.ts');
+  const present = fs.existsSync(seedScript);
+  return {
+    name: 'Seed tooling available',
+    passed: present,
+    remediation: present ? undefined : 'Restore api/scripts/seed.ts so `npm run seed` works.',
+  };
 }
 
-run();
+async function run(): Promise<void> {
+  const envFilePresent = loadEnvFile();
+  const envContents = envFilePresent ? fs.readFileSync(envPath, 'utf-8') : '';
+
+  const results: DiagnosticResult[] = [
+    checkNodeVersion(process.version),
+    checkDependencies(fs.existsSync(path.join(apiRoot, 'node_modules'))),
+    ...checkEnvironment(envFilePresent, envContents),
+    checkSeedData(),
+  ];
+
+  if (!envFilePresent && fs.existsSync(envExamplePath)) {
+    results.push({
+      name: 'Environment template present',
+      passed: true,
+    });
+  }
+
+  results.push(
+    await checkRedis(process.env.REDIS_URL || 'redis://localhost:6379'),
+    await checkPostgres(process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/verdant'),
+  );
+
+  const summary = buildSummary(results);
+  console.log('Verdant Bond Protocol — contributor diagnostics\n');
+  console.log(formatSummary(summary));
+
+  if (!summary.passed) process.exit(1);
+}
+
+run().catch((error) => {
+  console.error('Diagnostics failed to run:', error);
+  process.exit(1);
+});

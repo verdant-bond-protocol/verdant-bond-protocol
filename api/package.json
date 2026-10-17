@@ -11,6 +11,7 @@
     "test:cov": "jest --coverage",
     "lint": "eslint \"{src,test}/**/*.ts\"",
     "typecheck": "tsc --noEmit",
+    "diagnostics": "ts-node scripts/diagnostics.ts",
     "seed": "ts-node scripts/seed.ts",
     "seed:reset": "ts-node scripts/seed.ts --reset",
     "reindex-holders": "ts-node scripts/reindex-holders.ts",

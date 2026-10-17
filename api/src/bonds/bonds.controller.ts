@@ -14,6 +14,8 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { IntentGuard } from '../common/guards/intent.guard';
+import { RiskGuard } from '../common/risk/risk.guard';
+import { RiskScored } from '../common/risk/risk.decorator';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
 import { Permission } from '../auth/rbac';
 import { RequireQuota } from '../common/decorators/quota.decorator';
@@ -52,10 +54,11 @@ export class BondsController {
   ) {}
 
   @Post()
-  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard, RiskGuard)
   @RequirePermissions(Permission.CREATE_BOND)
   @RequireQuota(QuotaResource.CREATE_BOND)
   @RequireIntent('create_bond')
+  @RiskScored({ operation: 'bond.issue', amountFields: ['faceValue'] })
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
     return this.bondsService.create(dto);

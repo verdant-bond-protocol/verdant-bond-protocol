@@ -7,7 +7,8 @@ import {
 } from '@nestjs/common';
 import { Response, Request } from 'express';
 import { ContractException } from '../../stellar/contract-errors';
-import { ErrorCode, ErrorTaxonomy, DomainException } from '../errors/error-codes';
+import { ErrorCode, ErrorTaxonomy, DomainException, problemTypeUri, remediationFor } from '../errors/error-codes';
+import { ApiProblemException } from '../errors/problem-exception';
 
 type ProblemDetail = {
   type: string;
@@ -19,7 +20,9 @@ type ProblemDetail = {
   correlationId?: string;
   timestamp: string;
   retryable: boolean;
+  remediation: string;
   errors?: Array<{ field: string; message: string }>;
+  context?: Record<string, unknown>;
   contract?: {
     address?: string;
     method?: string;
@@ -62,6 +65,8 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
     let contract: ProblemDetail['contract'];
     let retryable = false;
     let retryAfterSeconds: number | undefined;
+    let remediation = remediationFor(ErrorCode.INTERNAL_ERROR);
+    let context: Record<string, unknown> | undefined;
 
     if (exception instanceof DomainException) {
       status = 400;
@@ -69,6 +74,15 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       title = exception.code.replace(/_/g, ' ');
       detail = exception.message;
       retryable = ErrorTaxonomy[exception.code].retryable;
+      remediation = remediationFor(exception.code);
+    } else if (exception instanceof ApiProblemException) {
+      status = exception.getStatus();
+      code = exception.code;
+      title = exception.code.replace(/_/g, ' ');
+      detail = exception.detail;
+      retryable = ErrorTaxonomy[exception.code]?.retryable ?? false;
+      remediation = exception.remediation;
+      context = exception.context;
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exResponse = exception.getResponse();
@@ -93,12 +107,14 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       code = mappedCode;
       detail = ErrorTaxonomy[mappedCode]?.safeMessage || 'An unexpected error occurred.';
       retryable = ErrorTaxonomy[mappedCode]?.retryable || false;
+      remediation = remediationFor(mappedCode);
 
       if (exception instanceof ContractException) {
         title = 'Contract Error';
         code = ErrorCode.SETTLEMENT_FAILED;
         detail = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage;
         retryable = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].retryable;
+        remediation = remediationFor(ErrorCode.SETTLEMENT_FAILED);
         contract = {
           address: exception.contractAddress,
           method: exception.method,
@@ -109,10 +125,11 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       code = ErrorCode.INTERNAL_ERROR;
       detail = ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].safeMessage;
       retryable = ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].retryable;
+      remediation = remediationFor(ErrorCode.INTERNAL_ERROR);
     }
 
     const problem: ProblemDetail = {
-      type: `https://errors.verdant-bond-protocol.org/${code}`,
+      type: problemTypeUri(code as ErrorCode),
       title,
       status,
       detail,
@@ -121,8 +138,10 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       correlationId: (request as any).correlationId || (request as any).requestId,
       timestamp: new Date().toISOString(),
       retryable,
+      remediation,
     };
     if (errors) problem.errors = errors;
+    if (context) problem.context = context;
     if (contract) problem.contract = contract;
 
     if (retryAfterSeconds !== undefined) {

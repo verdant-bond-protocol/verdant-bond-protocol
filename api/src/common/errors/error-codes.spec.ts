@@ -7,9 +7,10 @@ describe('ErrorTaxonomy', () => {
     expect(defined.sort()).toEqual(all.sort());
   });
 
-  it('every entry has a non-empty remediationHint', () => {
+  it('every entry has a non-empty safe message, operator hint and client remediation', () => {
     for (const [code, meta] of Object.entries(ErrorTaxonomy)) {
       expect(meta.remediationHint.length).toBeGreaterThan(0);
+      expect(meta.remediation.length).toBeGreaterThan(0);
       expect(meta.safeMessage.length).toBeGreaterThan(0);
       void code;
     }
@@ -20,7 +21,12 @@ describe('ErrorTaxonomy', () => {
       (c) => ErrorTaxonomy[c].retryable,
     );
     expect(retryable.sort()).toEqual(
-      [ErrorCode.SETTLEMENT_FAILED, ErrorCode.RATE_LIMIT_EXCEEDED, ErrorCode.QUEUE_BACKPRESSURE].sort(),
+      [
+        ErrorCode.SETTLEMENT_FAILED,
+        ErrorCode.RATE_LIMIT_EXCEEDED,
+        ErrorCode.QUEUE_BACKPRESSURE,
+        ErrorCode.STEP_UP_REQUIRED,
+      ].sort(),
     );
   });
 });

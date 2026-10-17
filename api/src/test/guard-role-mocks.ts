@@ -79,6 +79,17 @@ export const fakeIntentGuard: CanActivate = {
 };
 
 /**
+ * RiskGuard allow-all stand-in. Risk scoring is covered by
+ * `risk.guard.spec.ts` / `risk.service.spec.ts`; the behavioural role specs only
+ * care that the route is reachable once auth passes.
+ */
+export const fakeRiskGuard: CanActivate = {
+  canActivate() {
+    return true;
+  },
+};
+
+/**
  * Produces a `jest.Mocked<T>` whose every prototype method is a `jest.fn()` so a
  * controller can be booted in isolation without a database. Only the methods a
  * test actually exercises need to be configured with return values.

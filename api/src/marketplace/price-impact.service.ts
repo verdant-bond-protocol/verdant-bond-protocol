@@ -190,7 +190,7 @@ export class PriceImpactService {
     }
 
     // Binary search/scan to find max amount within price impact limit
-    let scanAmount = suggestedMax < requestedAmount ? suggestedMax : requestedAmount;
+    const scanAmount = suggestedMax < requestedAmount ? suggestedMax : requestedAmount;
     if (priceImpactBps > maxAllowedImpactBps) {
       let low = BigInt(1);
       let high = scanAmount;
