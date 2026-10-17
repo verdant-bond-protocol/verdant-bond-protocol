@@ -110,6 +110,66 @@ describe('ExportStreamPipeline (#357 Bounded Memory & Cancellation)', () => {
       expect(sanitized.data.passwordHash).toBeUndefined();
     });
 
+    it('strips PII and signing keys for ISSUER while retaining bond-level fields', () => {
+      const issuer: ExportCaller = { userId: 'issuer-1', role: ExportRole.ISSUER };
+
+      const rawRecord: ExportableRecord = {
+        id: 'bond-rec-1',
+        type: 'bonds',
+        createdAt: new Date(),
+        data: {
+          bondId: 'BND-007',
+          couponRate: '5.5',
+          ssn: 'SHOULD_BE_GONE',
+          nationalId: 'SHOULD_BE_GONE',
+          passportNumber: 'SHOULD_BE_GONE',
+          taxId: 'SHOULD_BE_GONE',
+          signingSeed: 'SHOULD_BE_GONE',
+          privateKey: 'SHOULD_BE_GONE',
+          rawKycDocument: 'SHOULD_BE_GONE',
+        },
+      };
+
+      const sanitized = pipeline.sanitizeRecordForCaller(rawRecord, issuer);
+
+      expect(sanitized.data.bondId).toBe('BND-007');
+      expect(sanitized.data.couponRate).toBe('5.5');
+      expect(sanitized.data.ssn).toBeUndefined();
+      expect(sanitized.data.nationalId).toBeUndefined();
+      expect(sanitized.data.passportNumber).toBeUndefined();
+      expect(sanitized.data.taxId).toBeUndefined();
+      expect(sanitized.data.signingSeed).toBeUndefined();
+      expect(sanitized.data.privateKey).toBeUndefined();
+      expect(sanitized.data.rawKycDocument).toBeUndefined();
+    });
+
+    it('strips only signingSeed and privateKey for ADMIN, retaining all other fields', () => {
+      const admin: ExportCaller = { userId: 'admin-1', role: ExportRole.ADMIN };
+
+      const rawRecord: ExportableRecord = {
+        id: 'admin-rec-1',
+        type: 'compliance_audit',
+        createdAt: new Date(),
+        data: {
+          auditId: 'AUD-888',
+          internalRiskScore: 72,
+          complianceNotes: 'Visible to admin',
+          ssn: 'VISIBLE_TO_ADMIN',
+          signingSeed: 'MUST_BE_GONE',
+          privateKey: 'MUST_BE_GONE',
+        },
+      };
+
+      const sanitized = pipeline.sanitizeRecordForCaller(rawRecord, admin);
+
+      expect(sanitized.data.auditId).toBe('AUD-888');
+      expect(sanitized.data.internalRiskScore).toBe(72);
+      expect(sanitized.data.complianceNotes).toBe('Visible to admin');
+      expect(sanitized.data.ssn).toBe('VISIBLE_TO_ADMIN');
+      expect(sanitized.data.signingSeed).toBeUndefined();
+      expect(sanitized.data.privateKey).toBeUndefined();
+    });
+
     it('throws ForbiddenException if investor attempts to export records of another user', () => {
       const investor: ExportCaller = { userId: 'alice', role: ExportRole.INVESTOR };
 

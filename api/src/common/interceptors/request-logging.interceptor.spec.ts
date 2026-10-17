@@ -49,6 +49,39 @@ describe('request logging correlation and redaction', () => {
     });
   });
 
+  it('redacts sensitive keys nested three levels deep', () => {
+    const result = redactLogObject({
+      level1: {
+        level2: {
+          token: 'should-be-gone',
+          amount: '100',
+        },
+      },
+    });
+    expect((result.level1 as any).level2.token).toBe('[REDACTED]');
+    expect((result.level1 as any).level2.amount).toBe('100');
+  });
+
+  it('truncates Stellar addresses inside an array of log objects', () => {
+    const result = redactLogValue([
+      { from: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVWXYZ' },
+      { amount: '500' },
+    ]);
+    expect((result as any[])[0].from).toBe('GABCDE...WXYZ');
+    expect((result as any[])[1].amount).toBe('500');
+  });
+
+  it('passes non-string, non-sensitive values through unchanged', () => {
+    const result = redactLogObject({
+      statusCode: 200,
+      success: true,
+      count: null,
+    });
+    expect(result.statusCode).toBe(200);
+    expect(result.success).toBe(true);
+    expect(result.count).toBeNull();
+  });
+
   it('preserves thrown errors while helper redaction hides secret fields', (done) => {
     const context: any = {
       switchToHttp: () => ({
