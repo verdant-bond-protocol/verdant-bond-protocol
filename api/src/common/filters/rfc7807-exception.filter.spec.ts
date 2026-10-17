@@ -105,6 +105,32 @@ describe('Rfc7807ExceptionFilter', () => {
     expect(jsonCall.detail).not.toContain('Database');
   });
 
+  it('does not expose a stack trace or internal cause in the response body', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+    const internal = new InternalServerErrorException('Database connection pool exhausted at host db-primary:5432');
+
+    filter.catch(internal, host);
+
+    const body = json.mock.calls[0][0];
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('stack');
+    expect(serialized).not.toContain('db-primary');
+    expect(serialized).not.toContain('5432');
+    expect(body.detail).toBe(ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].safeMessage);
+  });
+
+  it('replaces raw unauthorized message with the taxonomy safe message', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new UnauthorizedException('jwt malformed: header.payload.signature'), host);
+
+    const body = json.mock.calls[0][0];
+    expect(body.detail).toBe(ErrorTaxonomy[ErrorCode.UNAUTHORIZED].safeMessage);
+    expect(JSON.stringify(body)).not.toContain('jwt malformed');
+  });
+
   it('handles custom domain exceptions cleanly', () => {
     const { host, status, json } = makeHost();
     const filter = new Rfc7807ExceptionFilter();
