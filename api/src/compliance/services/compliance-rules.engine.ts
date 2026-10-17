@@ -6,6 +6,7 @@ import {
   JurisdictionRule,
   TrancheType,
   VersionedRuleset,
+  PostRuleChangeComplianceStatus,
 } from '../interfaces/compliance.interface';
 import { CANONICAL_RULESET_V2026_1, computeRulesetAuditHash } from '../rules/default-ruleset';
 import { SanctionsService } from './sanctions.service';
@@ -355,7 +356,7 @@ export class ComplianceRulesEngine {
 
     if (currentEligibility.eligible) {
       return {
-        status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.COMPLIANT,
+        status: PostRuleChangeComplianceStatus.COMPLIANT,
         holderAddress: context.holderAddress,
         bondId: context.bondId,
         tranche: context.tranche,
@@ -374,7 +375,7 @@ export class ComplianceRulesEngine {
 
     if (now < gracePeriodExpiresAt) {
       return {
-        status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.NON_COMPLIANT_GRACE_PERIOD,
+        status: PostRuleChangeComplianceStatus.NON_COMPLIANT_GRACE_PERIOD,
         holderAddress: context.holderAddress,
         bondId: context.bondId,
         tranche: context.tranche,
@@ -388,7 +389,7 @@ export class ComplianceRulesEngine {
     }
 
     return {
-      status: import('../interfaces/compliance.interface').PostRuleChangeComplianceStatus.NON_COMPLIANT_EXPIRED,
+      status: PostRuleChangeComplianceStatus.NON_COMPLIANT_EXPIRED,
       holderAddress: context.holderAddress,
       bondId: context.bondId,
       tranche: context.tranche,

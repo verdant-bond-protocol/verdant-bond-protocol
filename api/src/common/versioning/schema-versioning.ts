@@ -10,12 +10,14 @@
 /**
  * Schema versions supported by the protocol.
  */
-export enum SchemaVersion {
-  V1_0_0 = '1.0.0',
-  V1_1_0 = '1.1.0',
-  V1_2_0 = '1.2.0',
-  V2_0_0 = '2.0.0',
-}
+export const SchemaVersion = {
+  V1_0_0: '1.0.0',
+  V1_1_0: '1.1.0',
+  V1_2_0: '1.2.0',
+  V2_0_0: '2.0.0',
+} as const;
+
+export type SchemaVersion = (typeof SchemaVersion)[keyof typeof SchemaVersion];
 
 /**
  * Metadata attached to every record to identify its schema version.

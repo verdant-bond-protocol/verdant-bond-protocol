@@ -109,7 +109,7 @@ describe('Sensitive-content boundaries (#382)', () => {
       // 11 minutes later the old fixed 10-minute retention had already
       // forgotten the id, while the 1h window still accepted the timestamp.
       jest.setSystemTime(timestamp + 11 * 60 * 1000);
-      expect(service.verifyWebhook(event, config)).toEqual({ valid: false, error: 'Event already processed' });
+      expect(service.verifyWebhook(event, config)).toEqual({ valid: false, error: 'Event already processed', duplicate: true });
 
       jest.setSystemTime(timestamp + config.replayWindowMs);
       expect(service.verifyWebhook(event, config).valid).toBe(false);

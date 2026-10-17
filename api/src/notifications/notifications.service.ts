@@ -22,6 +22,15 @@ const TYPE_CATEGORY: Record<string, NotificationCategory> = {
   SECURITY_ALERT: 'security',
 };
 
+/**
+ * How far back decisions are restored at startup for duplicate suppression
+ * (#410). Producer retries arrive within minutes or hours; 30 days covers a
+ * long outage without loading the whole decision history into memory.
+ */
+const DEDUPE_RESTORE_WINDOW_DAYS = 30;
+
+const decisionKey = (userId: string, eventId: string): string => `${userId}\u0000${eventId}`;
+
 export interface NotificationDecision {
   userId: string;
   eventId: string;
@@ -82,6 +91,12 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
   private notifications: Notification[] = [];
   private preferences = new Map<string, Record<OptionalNotificationCategory, boolean>>();
   private decisions: NotificationDecision[] = [];
+  /**
+   * Every (user, event) already decided — delivered or suppressed (#410).
+   * An O(1) lookup that makes a decision final: a redelivered event never
+   * produces a second decision or a second inbox entry.
+   */
+  private readonly decidedEvents = new Set<string>();
   /** In-memory fallback for preference history when no DB is configured. */
   private preferenceHistory: PreferenceHistoryEntry[] = [];
   private readonly pool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : null;
@@ -116,6 +131,14 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
 
     const rows = await this.pool.query('SELECT user_id, preferences FROM notification_preferences');
     for (const row of rows.rows) this.preferences.set(row.user_id, row.preferences);
+
+    // Duplicate suppression survives a restart for the restore window (#410).
+    const decided = await this.pool.query(
+      `SELECT user_id, event_id FROM notification_decisions
+        WHERE decided_at > now() - make_interval(days => $1)`,
+      [DEDUPE_RESTORE_WINDOW_DAYS],
+    );
+    for (const row of decided.rows) this.decidedEvents.add(decisionKey(row.user_id, row.event_id));
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -254,14 +277,18 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       .map((decision) => ({ ...decision }));
   }
 
+  /**
+   * Decide and, if allowed, deliver one notification. Returns null when the
+   * notification is suppressed by preference or is a duplicate of an event
+   * already decided for this user (#410).
+   */
   createNotification(data: Omit<Notification, 'id' | 'read' | 'createdAt'>): Notification | null {
-    // Deduplication check
-    const existing = this.notifications.find(
-      (n) => n.eventId === data.eventId && n.userId === data.userId,
-    );
-    if (existing) {
+    const key = decisionKey(data.userId, data.eventId);
+    if (this.decidedEvents.has(key)) {
+      this.logger.debug(`Duplicate notification suppressed: ${data.type} ${data.eventId}`);
       return null;
     }
+    this.decidedEvents.add(key);
 
     const category = TYPE_CATEGORY[data.type] ?? 'bond_updates';
     const mandatory = (MANDATORY_NOTIFICATION_CATEGORIES as readonly string[]).includes(category);

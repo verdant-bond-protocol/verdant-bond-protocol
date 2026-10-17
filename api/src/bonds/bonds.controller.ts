@@ -35,6 +35,8 @@ import {
 } from './interfaces/bond.interface';
 
 import { CouponBacktestService, PerformanceDataset, BacktestReport } from './coupon-backtest.service';
+import { MaturedBondArchivalService, ArchiveBondDto, RestoreBondDto, ArchivalResult, RestoreResult, BondRestoreVerificationReport } from './matured-bond-archival.service';
+import { Optional } from '@nestjs/common';
 
 @ApiTags('bonds')
 @ApiBearerAuth()
@@ -43,6 +45,7 @@ export class BondsController {
   constructor(
     private readonly bondsService: BondsService,
     private readonly backtestService: CouponBacktestService,
+    @Optional() private readonly archivalService?: MaturedBondArchivalService,
   ) {}
 
   @Post()
@@ -265,5 +268,57 @@ export class BondsController {
 
     return this.backtestService.runBacktest(dataset, body.formulaVersion || 'COMPARE');
   }
+
+  @Post(':id/archive')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async archiveMaturedRecord(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ArchiveBondDto,
+    @Req() req: any,
+  ): Promise<ArchivalResult> {
+    const caller = req.headers?.['x-wallet-address'] || req.user?.walletAddress || '';
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.archiveMaturedRecord(id, dto, caller);
+  }
+
+  @Post(':id/verify-restore')
+  @HttpCode(HttpStatus.OK)
+  async verifyRestore(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<BondRestoreVerificationReport> {
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.verifyRestore(id);
+  }
+
+  @Post(':id/restore')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async restoreMaturedRecord(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RestoreBondDto,
+    @Req() req: any,
+  ): Promise<RestoreResult> {
+    const caller = req.headers?.['x-wallet-address'] || req.user?.walletAddress || '';
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.restoreMaturedRecord(id, dto, caller);
+  }
+
+  @Get(':id/lifecycle')
+  async getArchivalLifecycle(
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.getArchivalLifecycle(id);
+  }
 }
+
 

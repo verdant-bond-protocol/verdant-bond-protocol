@@ -1,7 +1,3 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
-import { ContractService } from '../stellar/contract.service';
-import { ContractException } from '../stellar/contract-errors';
-import { StellarService } from '../stellar/stellar.service';
 import { Injectable, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { ContractException } from '../stellar/contract-errors';
@@ -36,22 +32,12 @@ import {
   BondStatusEnum,
   BondMaturityStatusEnum,
   CreditTypeEnum,
-  TransferResponse,
-  UndistributedTotalResponse,
-  SweepUndistributedResponse,
-  BondDetailResponse,
-  BondStatusEnum,
-  BondMaturityStatusEnum,
-  CreditTypeEnum,
   ClaimableCreditDetail,
-  ClaimableCreditsResponse,
 } from './interfaces/bond.interface';
 import { toBigIntString } from '../common/utils';
 import { ConfigService } from '../config/config.service';
 import { OracleService } from '../oracle/oracle.service';
 import { ReportStatus } from '../oracle/interfaces/oracle.interface';
-
-import { Optional } from '@nestjs/common';
 
 const BOND_ERROR_CODE = {
   NotInitialized: 1,
@@ -186,7 +172,6 @@ export class BondsService {
     const investorSecret = this.signingKeys.investorSecret();
     await this.verifySubscriptionEligibility(id, dto);
 
-    const investorSecret = this.signingKeys.investorSecret();
     const nonce = await this.nonceService.next(this.configService.getBondIssuerAddress(), dto.investorAddress);
     const { transactionHash } = await this.contractService.invokeContractMethod(
       this.configService.getBondIssuerAddress(), 'subscribe', investorSecret,
@@ -209,21 +194,6 @@ export class BondsService {
     return { bondId: id, investorAddress: dto.investorAddress, amount: toBigIntString(dto.amount), transactionHash: transactionHash || '' };
   }
 
-  async previewSubscribe(id: number, amount: number): Promise<{remaining_supply: number; requested_amount: number; expected_failure: string | null}> {
-    const bond = await this.findOne(id);
-    let expected_failure = null;
-    const remaining_supply = Number(bond.totalSupply) - Number(bond.totalSubscribed);
-    if (bond.status !== BondStatusEnum.Active) {
-      expected_failure = 'Bond is not active';
-    } else if (remaining_supply < amount) {
-      expected_failure = 'Insufficient supply';
-    }
-    return {
-      remaining_supply,
-      requested_amount: Number(amount),
-      expected_failure
-    };
-  }
   private async verifySubscriptionEligibility(bondId: number, dto: SubscribeDto): Promise<void> {
     const isRestrictedTranche = dto.tranche === TrancheType.RESTRICTED_ACCREDITED;
 
@@ -349,7 +319,7 @@ export class BondsService {
 
 
 
-    const { result } = await this.contractService.invokeContractMethod(
+    const { result, transactionHash } = await this.contractService.invokeContractMethod(
       this.configService.getCouponEngineAddress(), 'distribute_coupon', adminSecret,
       [
         Address.fromString(adminAddress).toScVal(),
@@ -483,8 +453,6 @@ export class BondsService {
       try {
         const scVal = await this.contractService.simulateCall({
           contractAddress: this.configService.getCouponEngineAddress(),
-          method: 'get_claimable_credits',
-          args: [Address.fromString(address).toScVal(), nativeToScVal(BigInt(bond.id), { type: 'u64' })],
           method: 'claimable_credits',
           args: [nativeToScVal(BigInt(bond.id), { type: 'u64' }), Address.fromString(address).toScVal()],
         });
@@ -517,32 +485,37 @@ export class BondsService {
     const scVal = await this.contractService.simulateCall({
       contractAddress: this.configService.getCouponEngineAddress(),
       method: 'claimable_credit_details',
-      args: [nativeToScVal(BigInt(id), { type: 'u64' }), Address.fromString(address).toScVal()],
+      args: [nativeToScVal(BigInt(bondId), { type: 'u64' }), Address.fromString(address).toScVal()],
     });
 
     const nativeResult = scValToNative(scVal) as any[];
     if (!nativeResult || !nativeResult.length) {
-      return { bondId: id, address, total: '0', details: [] };
+      return { bondId, address, total: '0', details: [] };
     }
 
     let total = 0n;
     const details = [];
 
     for (const item of nativeResult) {
-      const amount = BigInt(item[5]);
+      const periodIndex = Number(item.period_index ?? item[0] ?? 0);
+      const reportId = Number(item.report_id ?? item[1] ?? 0);
+      const startTime = Number(item.start_time ?? item[2] ?? 0);
+      const endTime = Number(item.end_time ?? item[3] ?? 0);
+      const creditType = String(item.credit_type ?? item[4] ?? '');
+      const amount = BigInt(item.amount ?? item[5] ?? 0);
       details.push({
-        periodIndex: Number(item[0]),
-        reportId: Number(item[1]),
-        startTime: Number(item[2]),
-        endTime: Number(item[3]),
-        creditType: String(item[4]),
+        periodIndex,
+        reportId,
+        startTime,
+        endTime,
+        creditType,
         amount: amount.toString(),
       });
       total += amount;
     }
 
     return {
-      bondId: id,
+      bondId,
       address,
       total: total.toString(),
       details,

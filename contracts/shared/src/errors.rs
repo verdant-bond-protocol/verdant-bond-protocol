@@ -45,6 +45,12 @@ pub enum BondError {
     InvalidCovenant = 31,
     InvalidEquivalence = 32,
     UnknownEquivalence = 33,
+    /// A pending ownership-transfer proposal already exists and has not expired (#416).
+    AdminTransferPending = 34,
+    /// The ownership-transfer acceptance window has elapsed (#416).
+    AdminTransferExpired = 35,
+    /// accept_admin called but no proposal is active (#416).
+    NoAdminTransferPending = 36,
 }
 
 #[derive(Clone, Debug, PartialEq)]

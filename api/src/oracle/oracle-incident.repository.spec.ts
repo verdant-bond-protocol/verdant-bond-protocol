@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { BadRequestException } from '@nestjs/common';
 import { spawn, ChildProcessByStdio } from 'child_process';
 import * as path from 'path';
 import { Readable } from 'stream';
@@ -274,6 +275,117 @@ describe('OracleIncidentRepository', () => {
       expect(page1.meta.limit).toBe(1);
       // With limit=1, totalPages == total exactly (ceil(total / 1) == total).
       expect(page1.meta.totalPages).toBe(page1.meta.total);
+    });
+  });
+
+  describe('pagination contract (#402)', () => {
+    /**
+     * Walks every cursor page. Rows from earlier tests share the table, so
+     * assertions compare against `total` rather than fixed counts.
+     */
+    async function walkCursor(limit: number, status?: OracleIncidentStatus) {
+      const first = await repository.findMany(1, limit, status);
+      const seen = [...first.data];
+      let cursor = first.meta.nextCursor as string | undefined;
+      let pages = 1;
+      while (cursor) {
+        const next = await repository.findMany(1, limit, status, cursor);
+        expect(next.data.length).toBeGreaterThan(0); // a cursor is only issued when another page exists
+        seen.push(...next.data);
+        cursor = next.meta.nextCursor as string | undefined;
+        pages++;
+      }
+      return { seen, total: first.meta.total, pages };
+    }
+
+    // One cron cycle stamps every subject it detects with the same time.
+    async function seedTiedCycle(count: number, detectedAt: string): Promise<string[]> {
+      const ids: string[] = [];
+      for (let i = 0; i < count; i++) {
+        ids.push((await repository.recordDetection(detection({ detectedAt }))).incident.id);
+      }
+      return ids;
+    }
+
+    it('cursor paging visits every row exactly once when detection times tie', async () => {
+      const tied = await seedTiedCycle(7, '2026-03-01T00:00:00.000Z');
+
+      const { seen, total } = await walkCursor(3);
+      const ids = seen.map((incident) => incident.id);
+
+      expect(ids).toHaveLength(total);
+      expect(new Set(ids).size).toBe(total);
+      expect(ids).toEqual(expect.arrayContaining(tied));
+    });
+
+    it('offset pages are disjoint and complete under ties (total order on time, id)', async () => {
+      await seedTiedCycle(5, '2026-03-02T00:00:00.000Z');
+      const { total } = (await repository.findMany(1, 1)).meta;
+
+      const ids: string[] = [];
+      for (let p = 1; p <= Math.ceil(total / 4); p++) {
+        ids.push(...(await repository.findMany(p, 4)).data.map((incident) => incident.id));
+      }
+      expect(ids).toHaveLength(total);
+      expect(new Set(ids).size).toBe(total);
+    });
+
+    it('orders newest detection first, then by id descending', async () => {
+      const { seen } = await walkCursor(50);
+      for (let i = 1; i < seen.length; i++) {
+        const [prev, cur] = [seen[i - 1], seen[i]];
+        const order = prev.lastDetectedAt.localeCompare(cur.lastDetectedAt) || prev.id.localeCompare(cur.id);
+        expect(order).toBeGreaterThan(0);
+      }
+    });
+
+    it('issues nextCursor only while another page exists', async () => {
+      const { total } = (await repository.findMany(1, 1)).meta;
+      expect((await repository.findMany(1, total)).meta.nextCursor).toBeUndefined();
+      expect((await repository.findMany(1, total - 1)).meta.nextCursor).toEqual(expect.stringContaining('|'));
+    });
+
+    it('combines the status filter with cursor paging', async () => {
+      const resolved = await repository.recordDetection(detection({ detectedAt: '2026-03-03T00:00:00.000Z' }));
+      await repository.resolve(resolved.incident.id, 'GADMIN...OPERATOR');
+
+      const { seen, total } = await walkCursor(2, OracleIncidentStatus.Resolved);
+
+      expect(seen).toHaveLength(total);
+      expect(seen.every((incident) => incident.status === OracleIncidentStatus.Resolved)).toBe(true);
+      expect(seen.map((incident) => incident.id)).toContain(resolved.incident.id);
+    });
+
+    it('keeps a cursor page stable when newer incidents arrive between requests (retry-safe)', async () => {
+      const first = await repository.findMany(1, 2);
+      const cursor = first.meta.nextCursor as string;
+      const before = await repository.findMany(1, 2, undefined, cursor);
+
+      await repository.recordDetection(detection({ detectedAt: '2027-01-01T00:00:00.000Z' }));
+
+      const retried = await repository.findMany(1, 2, undefined, cursor);
+      expect(retried.data.map((i) => i.id)).toEqual(before.data.map((i) => i.id));
+    });
+
+    it('still accepts a legacy timestamp-only cursor (strictly older rows)', async () => {
+      const page = await repository.findMany(1, 50, undefined, '2026-03-02T00:00:00.000Z');
+      expect(page.data.length).toBeGreaterThan(0);
+      expect(page.data.every((incident) => incident.lastDetectedAt < '2026-03-02T00:00:00.000Z')).toBe(true);
+    });
+
+    it.each([
+      ['garbage', 'not-a-cursor'],
+      ['a non-UUID id', '2026-03-01T00:00:00.000Z|42'],
+      ['extra segments', '2026-03-01T00:00:00.000Z|b6f7e0a4-1c1e-4b8a-9d55-3f0b5d0f2a11|x'],
+    ])('rejects a cursor with %s as a client error', async (_label, cursor) => {
+      await expect(repository.findMany(1, 10, undefined, cursor)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('returns an empty page, the real total, and no cursor past the last page', async () => {
+      const result = await repository.findMany(10_000, 100);
+      expect(result.data).toEqual([]);
+      expect(result.meta.total).toBeGreaterThan(0);
+      expect(result.meta.nextCursor).toBeUndefined();
     });
   });
 });

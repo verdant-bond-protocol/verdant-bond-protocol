@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, OnModuleDestroy, OnModuleInit, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Pool } from 'pg';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
@@ -104,6 +104,26 @@ interface IncidentRow {
   updated_at: Date;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Keyset cursor for `findMany`: the last returned row's position. */
+export function encodeIncidentCursor(incident: Pick<OracleIncident, 'lastDetectedAt' | 'id'>): string {
+  return `${incident.lastDetectedAt}|${incident.id}`;
+}
+
+/**
+ * Parses `<ISO time>|<uuid>`, or a legacy bare `<ISO time>` (id undefined).
+ * Anything else is a client error, not a server fault.
+ */
+export function decodeIncidentCursor(cursor: string): { lastDetectedAt: string; id?: string } {
+  const [time, id, ...rest] = cursor.split('|');
+  const at = new Date(time);
+  if (rest.length > 0 || Number.isNaN(at.getTime()) || (id !== undefined && !UUID_PATTERN.test(id))) {
+    throw new BadRequestException('Invalid pagination cursor');
+  }
+  return { lastDetectedAt: at.toISOString(), id };
+}
+
 @Injectable()
 export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(OracleIncidentRepository.name);
@@ -149,6 +169,9 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
         WHERE status <> 'resolved';
 
       CREATE INDEX IF NOT EXISTS oracle_incidents_status_idx ON oracle_incidents (status);
+
+      CREATE INDEX IF NOT EXISTS oracle_incidents_recency_idx
+        ON oracle_incidents (last_detected_at DESC, id DESC);
     `);
   }
 
@@ -209,36 +232,58 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
     return { incident: this.toIncident(finalRow), isNew, escalated };
   }
 
+  /**
+   * Page through incidents, newest detection first (#402).
+   *
+   * Rows are totally ordered by `(last_detected_at DESC, id DESC)`: the id
+   * breaks ties, which are the norm because one cron cycle stamps every
+   * subject it detects with the same time. Without it, offset pages could
+   * repeat or skip rows and a timestamp-only cursor skipped every row tied
+   * with the cursor.
+   *
+   * - Offset mode (no cursor): O(offset + limit) rows scanned.
+   * - Cursor (keyset) mode: O(log n + limit) via the
+   *   `(last_detected_at, id)` index. The cursor is `<ISO time>|<id>`; a
+   *   legacy timestamp-only cursor is still accepted.
+   *
+   * One extra row is fetched so `nextCursor` is set only when another page
+   * exists, in both modes.
+   */
   async findMany(
     page = 1,
     limit = 20,
     status?: OracleIncidentStatus,
     cursor?: string,
   ): Promise<PaginatedResponse<OracleIncident>> {
-    let offsetClause = '';
-    let offsetParams: any[] = [];
-    const queryParams: any[] = status ? [status] : [];
-    let queryParams: any[] = status ? [status] : [];
-    
-    if (cursor) {
-      const cursorDate = new Date(cursor).toISOString();
-      offsetClause = `AND last_detected_at < $${queryParams.length + 1}`;
-      queryParams.push(cursorDate);
-      offsetParams = [limit];
-    } else {
-      const offset = (page - 1) * limit;
-      offsetParams = [limit, offset];
+    const params: unknown[] = [];
+    const conditions: string[] = [];
+    if (status) {
+      params.push(status);
+      conditions.push(`status = $${params.length}`);
     }
-    
-    const whereClause = status ? `WHERE status = $1 ${offsetClause}` : (cursor ? `WHERE last_detected_at < $1` : '');
+    if (cursor) {
+      const position = decodeIncidentCursor(cursor);
+      params.push(position.lastDetectedAt);
+      if (position.id) {
+        params.push(position.id);
+        conditions.push(`(last_detected_at, id) < ($${params.length - 1}, $${params.length})`);
+      } else {
+        conditions.push(`last_detected_at < $${params.length}`);
+      }
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    params.push(limit + 1);
+    let pageQuery = `SELECT * FROM oracle_incidents ${whereClause}
+         ORDER BY last_detected_at DESC, id DESC
+         LIMIT $${params.length}`;
+    if (!cursor) {
+      params.push((page - 1) * limit);
+      pageQuery += ` OFFSET $${params.length}`;
+    }
 
     const [rowsResult, countResult] = await Promise.all([
-      this.pool.query<IncidentRow>(
-        `SELECT * FROM oracle_incidents ${whereClause}
-         ORDER BY last_detected_at DESC
-         LIMIT $${queryParams.length + 1} ${cursor ? '' : `OFFSET $${queryParams.length + 2}`};`,
-        [...queryParams, ...offsetParams],
-      ),
+      this.pool.query<IncidentRow>(`${pageQuery};`, params),
       this.pool.query<{ count: string }>(
         `SELECT COUNT(*) FROM oracle_incidents ${status ? 'WHERE status = $1' : ''};`,
         status ? [status] : [],
@@ -246,12 +291,14 @@ export class OracleIncidentRepository implements OnModuleInit, OnModuleDestroy {
     ]);
 
     const total = Number(countResult.rows[0].count);
-    const data = rowsResult.rows.map((row) => this.toIncident(row));
-    const nextCursor = data.length > 0 ? data[data.length - 1].lastDetectedAt : undefined;
+    const hasMore = rowsResult.rows.length > limit;
+    const data = rowsResult.rows.slice(0, limit).map((row) => this.toIncident(row));
+    const nextCursor = hasMore ? encodeIncidentCursor(data[data.length - 1]) : undefined;
+    const totalPages = Math.ceil(total / limit);
 
     return {
       data,
-      meta: cursor ? { limit, total, nextCursor, totalPages: Math.ceil(total / limit) } : { page, limit, total, totalPages: Math.ceil(total / limit) },
+      meta: cursor ? { limit, total, nextCursor, totalPages } : { page, limit, total, totalPages, nextCursor },
     };
   }
 

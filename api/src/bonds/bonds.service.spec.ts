@@ -1,13 +1,3 @@
-import { Test } from "@nestjs/testing";
-import { BadRequestException } from "@nestjs/common";
-import {
-  xdr,
-  scValToNative,
-  nativeToScVal,
-  Address,
-} from "@stellar/stellar-sdk";
-
-jest.mock("@redis/client", () => {
 import { Test } from '@nestjs/testing';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { xdr, scValToNative, nativeToScVal, Address } from '@stellar/stellar-sdk';
@@ -179,6 +169,7 @@ describe("BondsService", () => {
             "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
         }),
       };
+      const snapshots = { capture: jest.fn().mockResolvedValue(undefined) };
 
       const moduleRef = await Test.createTestingModule({
         providers: [
@@ -939,5 +930,4 @@ describe("BondsService", () => {
       expect(contractService.invokeContractMethod).not.toHaveBeenCalled();
     });
   });
-});
 });

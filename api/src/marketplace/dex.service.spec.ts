@@ -539,7 +539,6 @@ describe('DexService', () => {
 describe('DexService — mapDexError (unit)', () => {
   it('maps InsufficientFunds contract error to PAYMENT_REQUIRED HttpException', () => {
     const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
-    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('DEX_INSUFFICIENT_FUNDS', 'insufficient', undefined, undefined, 10);
     const mapped = (svc as any).mapDexError(err);
     expect(mapped).toBeInstanceOf(Object);
@@ -550,7 +549,6 @@ describe('DexService — mapDexError (unit)', () => {
 
   it('falls back to BadRequestException for unknown contract codes', () => {
     const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
-    const svc = new DexService({} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
     const err = new ContractException('SOME_CODE', 'some detail', undefined, undefined, 999);
     const mapped = (svc as any).mapDexError(err);
     expect(mapped).toBeInstanceOf(Object);

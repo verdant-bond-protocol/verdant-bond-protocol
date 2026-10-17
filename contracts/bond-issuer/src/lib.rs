@@ -38,6 +38,10 @@ pub enum DataKey {
     RedemptionId(u64, Address, BytesN<32>),
     RedemptionReserved(u64, Address),
     TransferBlocked(Address),
+    // Two-step ownership transfer (#416): proposed new admin address and the
+    // ledger sequence at which the proposal expires.
+    PendingAdmin,
+    PendingAdminExpiry,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +332,109 @@ impl BondIssuer {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(BondError::NotInitialized)
+    }
+
+    // ── Two-step ownership transfer (#416) ───────────────────────────────────
+    //
+    // Replaces the immediate `set_admin` path for production ownership changes.
+    // The current admin proposes a new address; the candidate must explicitly
+    // accept within `ttl_ledgers`; either party can cancel before acceptance.
+    // If the window expires the proposal is treated as absent and a new one
+    // must be raised.
+
+    /// Propose a new admin.  Fails if a non-expired proposal already exists.
+    /// `ttl_ledgers` controls the acceptance window (e.g. 17_280 ≈ 24 h).
+    pub fn propose_admin(
+        env: Env,
+        current_admin: Address,
+        proposed: Address,
+        nonce: u64,
+        ttl_ledgers: u32,
+    ) -> Result<(), BondError> {
+        current_admin.require_auth();
+        consume_nonce(&env, &current_admin, nonce)?;
+        require_admin(&env, &current_admin)?;
+
+        // Block a new proposal while a live one exists.
+        let expiry: Option<u32> = env.storage().instance().get(&DataKey::PendingAdminExpiry);
+        if let Some(exp) = expiry {
+            if env.ledger().sequence() <= exp {
+                return Err(BondError::AdminTransferPending);
+            }
+        }
+
+        let expires_at = env.ledger().sequence().saturating_add(ttl_ledgers);
+        env.storage().instance().set(&DataKey::PendingAdmin, &proposed);
+        env.storage().instance().set(&DataKey::PendingAdminExpiry, &expires_at);
+        env.events().publish(
+            (Symbol::new(&env, "admin_proposed"),),
+            (current_admin, proposed, expires_at),
+        );
+        Ok(())
+    }
+
+    /// Accept a pending proposal.  Must be called by the proposed address
+    /// before the expiry ledger.
+    pub fn accept_admin(
+        env: Env,
+        proposed: Address,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        proposed.require_auth();
+        consume_nonce(&env, &proposed, nonce)?;
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(BondError::NoAdminTransferPending)?;
+        let expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminExpiry)
+            .ok_or(BondError::NoAdminTransferPending)?;
+
+        if proposed != pending {
+            return Err(BondError::Unauthorized);
+        }
+        if env.ledger().sequence() > expiry {
+            return Err(BondError::AdminTransferExpired);
+        }
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(BondError::NotInitialized)?;
+
+        env.storage().instance().set(&DataKey::Admin, &proposed);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdminExpiry);
+        env.events().publish(
+            (Symbol::new(&env, "admin_changed"),),
+            (old_admin, proposed),
+        );
+        Ok(())
+    }
+
+    /// Cancel a pending proposal.  Can be called by the current admin at
+    /// any time — including after expiry to clear stale state.
+    pub fn cancel_admin_proposal(
+        env: Env,
+        current_admin: Address,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        current_admin.require_auth();
+        consume_nonce(&env, &current_admin, nonce)?;
+        require_admin(&env, &current_admin)?;
+
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdminExpiry);
+        env.events().publish(
+            (Symbol::new(&env, "admin_proposal_cancelled"),),
+            (current_admin,),
+        );
+        Ok(())
     }
 
     /// Issue #188: versioned-interface convention — bump when the contract's

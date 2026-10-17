@@ -5,6 +5,9 @@ import {
   NotFoundException,
   HttpException,
   HttpStatus,
+  Inject,
+  forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { ContractException } from '../stellar/contract-errors';
@@ -30,6 +33,7 @@ import { ConfigService } from '../config/config.service';
 import { FeatureFlagsService, FeatureFlag } from '../config/feature-flags.service';
 import { normalizeQuoteAssetSymbol } from './quote-assets';
 import { HolderIndexService } from '../bonds/holder-index.service';
+import { PriceImpactService } from './price-impact.service';
 
 const DEX_ERROR_CODE = {
   NotInitialized: 1,
@@ -56,6 +60,7 @@ export class DexService {
     private readonly configService: ConfigService,
     private readonly holderIndexService: HolderIndexService,
     private readonly featureFlagsService: FeatureFlagsService,
+    @Optional() @Inject(forwardRef(() => PriceImpactService)) private readonly priceImpactService?: PriceImpactService,
   ) {}
 
   async listOrders(
@@ -177,6 +182,15 @@ export class DexService {
         `Insufficient escrowed ${order.quoteAsset}: required ${proceeds}, escrowed ${escrowed.balance}. ` +
         'Call POST /marketplace/escrow/deposit before purchasing.',
       );
+    }
+
+    if (this.priceImpactService) {
+      const evaluation = await this.priceImpactService.evaluatePriceImpact(
+        order.bondId,
+        dto.amount.toString(),
+        order.quoteAsset,
+      );
+      this.priceImpactService.assertPriceImpactPermitted(evaluation);
     }
 
     const adminSecret = this.getAdminSecret();

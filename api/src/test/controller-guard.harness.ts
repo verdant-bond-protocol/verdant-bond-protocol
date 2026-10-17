@@ -11,10 +11,14 @@ import { fakeJwtAuthGuard, fakeAdminGuard, fakeKycGuard, fakeProviderGuard, fake
  * Boots a single controller with all auth guards replaced by header-driven
  * fakes so behavioural role tests can run without a database or passport. The
  * real guard wiring is still asserted by `route-authorization.matrix.spec.ts`.
+ *
+ * `configure` runs before `init()`, which is the only point where app-wide
+ * pipes and filters (e.g. the `ValidationPipe` from `main.ts`) take effect.
  */
 export async function buildControllerApp(
   controller: any,
   providers: any[],
+  configure?: (app: INestApplication) => void,
 ): Promise<INestApplication> {
   const moduleRef: TestingModule = await Test.createTestingModule({
     controllers: [controller],
@@ -33,6 +37,7 @@ export async function buildControllerApp(
     .compile();
 
   const app = moduleRef.createNestApplication();
+  configure?.(app);
   await app.init();
   return app;
 }

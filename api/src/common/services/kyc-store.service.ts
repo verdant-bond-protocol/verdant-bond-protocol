@@ -15,7 +15,8 @@ interface KycStoreSnapshot {
   version: number;
 }
 
-const RECORDS_FILE = 'kyc-records.json';
+/** Live KYC state; the retention job must never expire it (#411). */
+export const RECORDS_FILE = 'kyc-records.json';
 const AUDIT_FILE = 'kyc-audit.log.jsonl';
 
 const SNAPSHOT_EMPTY: KycStoreSnapshot = {
