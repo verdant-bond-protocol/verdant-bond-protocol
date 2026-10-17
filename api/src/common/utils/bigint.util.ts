@@ -33,3 +33,37 @@ export function toFlexibleNumber(value: bigint | number): number | string {
   }
   return bigintValue.toString();
 }
+
+/**
+ * Largest amount a Soroban `i128` token balance can hold (2^127 - 1). Any
+ * minor-unit amount above this can never be settled on-chain, so the API
+ * rejects it at the boundary instead of quoting a number nobody can pay.
+ */
+export const I128_MAX = (1n << 127n) - 1n;
+
+/**
+ * Longest minor-unit string accepted on the wire. `I128_MAX` is 39 digits;
+ * the extra headroom tolerates zero-padded clients while still bounding the
+ * cost of parsing an attacker-supplied string.
+ */
+export const MAX_MINOR_UNITS_STRING_LENGTH = 64;
+
+const MINOR_UNITS_PATTERN = /^\d+$/;
+
+/**
+ * Parse a wire-format minor-unit amount. Returns `null` (never throws, never
+ * rounds) unless `value` is a base-10 digit string of bounded length whose
+ * value fits in a non-negative `i128`. JSON numbers are rejected outright:
+ * by the time a number reaches us `JSON.parse` may already have rounded it.
+ */
+export function parseMinorUnits(value: unknown): bigint | null {
+  if (
+    typeof value !== 'string' ||
+    value.length > MAX_MINOR_UNITS_STRING_LENGTH ||
+    !MINOR_UNITS_PATTERN.test(value)
+  ) {
+    return null;
+  }
+  const parsed = BigInt(value);
+  return parsed <= I128_MAX ? parsed : null;
+}
