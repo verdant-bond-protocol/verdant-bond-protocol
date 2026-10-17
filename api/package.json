@@ -20,6 +20,7 @@
     "monitor:journey": "ts-node scripts/synthetic-journey.ts",
     "config:contract": "ts-node scripts/config-contract.ts",
     "ledger:verify-export": "ts-node scripts/verify-ledger-export.ts",
+    "load:cardinality": "ts-node scripts/load/cardinality-burst.ts",
     "mutate": "stryker run",
     "test:mutate": "stryker run --reporter progress --thresholds.high 50"
   },

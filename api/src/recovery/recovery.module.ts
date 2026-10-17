@@ -7,6 +7,7 @@ import { BondStateMachine, CouponStateMachine, SettlementStateMachine } from '..
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ReconciliationModule } from '../reconciliation/reconciliation.module';
 import { SnapshotRestoreVerificationService } from './snapshot-restore-verification.service';
+import { SideEffectCheckpointService } from './side-effect-checkpoint.service';
 
 @Module({
   imports: [NotificationsModule, ReconciliationModule],
@@ -16,6 +17,7 @@ import { SnapshotRestoreVerificationService } from './snapshot-restore-verificat
     RollbackVerificationService,
     IncidentDrillService,
     SnapshotRestoreVerificationService,
+    SideEffectCheckpointService,
     BondStateMachine,
     CouponStateMachine,
     SettlementStateMachine,
@@ -25,6 +27,7 @@ import { SnapshotRestoreVerificationService } from './snapshot-restore-verificat
     RollbackVerificationService,
     IncidentDrillService,
     SnapshotRestoreVerificationService,
+    SideEffectCheckpointService,
   ],
 })
 export class RecoveryModule {}
