@@ -69,3 +69,12 @@ export interface CouponCertification {
   certificationVersion: number | null;
   recordedAt: string;
 }
+
+export interface UpdateCertificationsResponse {
+  projectId: number;
+  certifications: CertificationVersion[];
+  addedCount: number;
+  existingCount: number;
+  totalVersions: number;
+}
+

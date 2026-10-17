@@ -33,6 +33,13 @@ import {
 import { OracleIncident } from './interfaces/oracle-incident.interface';
 import { OracleIncidentRepository } from './oracle-incident.repository';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
+import { DisputeEvidenceBundle } from './interfaces/dispute-bundle.interface';
+import { HistoricalOracleCorrectionDto } from './dto/historical-correction.dto';
+import {
+  HistoricalCorrectionRecord,
+  HistoricalCorrectionResponse,
+} from './interfaces/oracle-correction.interface';
+
 
 import { CircuitBreakerService, CircuitBreakerState } from './circuit-breaker.service';
 
@@ -108,6 +115,44 @@ export class OracleController {
     const challengerAddress = req.headers['x-wallet-address'] as string;
     return this.oracleService.challengeReport(reportId, dto, challengerAddress);
   }
+
+  /**
+   * Deterministic dispute evidence bundle for contested performance reports (#458).
+   */
+  @Get('reports/:reportId/dispute-bundle')
+  async getDisputeEvidenceBundle(
+    @Param('reportId', ParseIntPipe) reportId: number,
+  ): Promise<DisputeEvidenceBundle> {
+    return this.oracleService.getDisputeEvidenceBundle(reportId);
+  }
+
+  /**
+   * Historical oracle correction workflow with compensating audit events (#461).
+   */
+  @Post('reports/correction')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @RequireIntent('oracle_correction')
+  @HttpCode(HttpStatus.OK)
+  async submitHistoricalCorrection(
+    @Body() dto: HistoricalOracleCorrectionDto,
+    @Req() req: any,
+  ): Promise<HistoricalCorrectionResponse> {
+    const actorAddress =
+      req.user?.walletAddress || req.headers['x-wallet-address'] || 'system:admin';
+    return this.oracleService.submitHistoricalCorrection(dto, actorAddress);
+  }
+
+  /**
+   * Query historical correction log for a performance report (#461).
+   */
+  @Get('reports/:reportId/corrections')
+  async getHistoricalCorrections(
+    @Param('reportId', ParseIntPipe) reportId: number,
+  ): Promise<HistoricalCorrectionRecord[]> {
+    return this.oracleService.getHistoricalCorrections(reportId);
+  }
+
 
   @Post('providers')
   @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)

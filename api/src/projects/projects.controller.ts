@@ -1,11 +1,19 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req, UseGuards,
+  Controller, Get, Post, Put, Body, Param, Query, Req, UseGuards,
   HttpCode, HttpStatus, ParseIntPipe,
 } from '@nestjs/common';
 import { ProjectsService } from './projects.service';
 import { CreateProjectDto } from './dto/create-project.dto';
+import { UpdateProjectCertificationsDto } from './dto/update-certifications.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
-import { ProjectResponse, ProjectProvenanceResponse, CertificationVersion, CouponCertification } from './interfaces/project.interface';
+import {
+  ProjectResponse,
+  ProjectProvenanceResponse,
+  CertificationVersion,
+  CouponCertification,
+  UpdateCertificationsResponse,
+} from './interfaces/project.interface';
+
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { PermissionsGuard } from '../common/guards/permissions.guard';
 import { RequirePermissions } from '../common/decorators/permissions.decorator';
@@ -93,6 +101,22 @@ export class ProjectsController {
   ): Promise<CertificationVersion> {
     return this.projectsService.addCertification(id, body.cid, body.kind ?? 'document');
   }
+
+  /**
+   * Idempotent project certification document updates (#459).
+   */
+  @Put(':id/certifications')
+  @HttpCode(HttpStatus.OK)
+  async updateCertifications(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateProjectCertificationsDto,
+    @Req() req: any,
+  ): Promise<UpdateCertificationsResponse> {
+    const callerAddress =
+      req.user?.walletAddress || req.headers['x-wallet-address'] || '';
+    return this.projectsService.updateProjectCertifications(id, dto, callerAddress);
+  }
+
 
   @Get(':id/certifications')
   async certificationHistory(
