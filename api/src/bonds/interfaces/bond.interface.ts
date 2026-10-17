@@ -114,6 +114,30 @@ export interface SweepUndistributedResponse {
   transactionHash: string;
 }
 
+export interface CouponBatchStatusResponse {
+  bondId: number;
+  periodIndex: number;
+  cursor: number;
+  totalHolders: number;
+  distributed: boolean;
+  totalCreditsEarned: string;
+  undistributed: string;
+  remainingHolders: number;
+}
+
+export interface CouponBatchDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  offset: number;
+  limit: number;
+  processedCount: number;
+  cursor: number;
+  batchComplete: boolean;
+  totalCredits: string;
+  transactionHash: string;
+}
+
+
 /**
  * Consolidated, atomically-fetched bond detail (issue #4). A single call returns
  * the bond summary, holders, coupon undistributed total, and maturity status so

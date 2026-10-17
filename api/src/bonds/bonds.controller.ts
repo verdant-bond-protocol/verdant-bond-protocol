@@ -5,6 +5,7 @@ import { BondsService } from './bonds.service';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { DistributeCouponDto } from './dto/distribute-coupon.dto';
+import { DistributeCouponBatchDto } from './dto/distribute-coupon-batch.dto';
 import { ClaimCreditsDto } from './dto/claim-credits.dto';
 import { TransferBondDto } from './dto/transfer-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -26,6 +27,8 @@ import {
   HolderListResponse,
   HeldBondResponse,
   CouponDistributionResponse,
+  CouponBatchStatusResponse,
+  CouponBatchDistributionResponse,
   ClaimCreditsResponse,
   TransferResponse,
   UndistributedTotalResponse,
@@ -33,6 +36,7 @@ import {
   BondDetailResponse,
   ClaimableCreditsResponse,
 } from './interfaces/bond.interface';
+
 
 import { CouponBacktestService, PerformanceDataset, BacktestReport } from './coupon-backtest.service';
 import { MaturedBondArchivalService, ArchiveBondDto, RestoreBondDto, ArchivalResult, RestoreResult, BondRestoreVerificationReport } from './matured-bond-archival.service';
@@ -136,6 +140,33 @@ export class BondsController {
   ): Promise<CouponDistributionResponse> {
     return this.bondsService.distributeCoupon(id, dto);
   }
+
+  /**
+   * Bounded batch distribution for large holder sets (#456).
+   */
+  @Post(':id/coupon-batch')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.DISTRIBUTE_COUPON)
+  @RequireIntent('distribute_coupon')
+  @HttpCode(HttpStatus.OK)
+  async distributeCouponBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: DistributeCouponBatchDto,
+  ): Promise<CouponBatchDistributionResponse> {
+    return this.bondsService.distributeCouponBatch(id, dto);
+  }
+
+  /**
+   * Query coupon batch progress and cursor for large distributions (#456).
+   */
+  @Get(':id/coupon-batch-status')
+  async getCouponBatchStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('periodIndex', ParseIntPipe) periodIndex: number,
+  ): Promise<CouponBatchStatusResponse> {
+    return this.bondsService.getCouponBatchStatus(id, periodIndex);
+  }
+
 
   @Post(':id/claim')
   @UseGuards(JwtAuthGuard, KycGuard)

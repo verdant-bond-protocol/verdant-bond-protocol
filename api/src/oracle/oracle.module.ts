@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ProjectsModule } from '../projects/projects.module';
+import { AuditModule } from '../audit/audit.module';
 import { OracleController } from './oracle.controller';
 import { OracleService } from './oracle.service';
 import { OracleScheduler } from './oracle.scheduler';
@@ -15,7 +16,8 @@ import { IotProvider } from './providers/iot.provider';
 import { CircuitBreakerService } from './circuit-breaker.service';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), ProjectsModule],
+  imports: [ScheduleModule.forRoot(), ProjectsModule, AuditModule],
+
   controllers: [OracleController],
   providers: [
     OracleService,
