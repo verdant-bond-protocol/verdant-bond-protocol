@@ -1774,6 +1774,72 @@ mod test {
     }
 
     #[test]
+    fn test_stale_oracle_blocks_fill_without_consuming_funds_or_nonce_and_allows_retry() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id.clone(), Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+        let quote_asset = Symbol::new(&env, "USDC");
+
+        configure_market_with_limits(
+            &env,
+            &client,
+            &admin,
+            bond_id,
+            &quote_asset,
+            100,
+            10,
+            1_000,
+            1_000,
+            1_000,
+            i128::MAX,
+            60,
+            30,
+        );
+        let order_id =
+            client.list_bond_tokens(&seller, &bond_id, &10, &100, &quote_asset, &3_600, &0);
+        client.deposit_quote(&buyer, &quote_asset, &1_000, &0);
+
+        // Oracle updates are admin-only even when the caller supplies the
+        // expected nonce and can authorize the invocation.
+        assert_eq!(
+            client.try_update_oracle_reference(&stranger, &bond_id, &quote_asset, &100, &1, &10, &0),
+            Err(Ok(DEXError::Unauthorized))
+        );
+        assert_eq!(client.get_nonce(&stranger), 0);
+
+        env.ledger().set_timestamp(61);
+        assert_eq!(
+            client.try_execute_purchase(&buyer, &order_id, &100, &1, &0),
+            Err(Ok(DEXError::OracleStale))
+        );
+
+        // The stale-feed failure happens before settlement effects. The
+        // buyer can retry the same order and nonce after a fresh admin update.
+        assert_eq!(client.get_nonce(&buyer), 0);
+        assert_eq!(client.get_quote_balance(&buyer, &quote_asset), 1_000);
+        assert_eq!(client.get_quote_balance(&seller, &quote_asset), 0);
+        assert_eq!(client.get_order(&order_id).amount, 10);
+        assert_eq!(client.get_seller_bond_escrow(&seller, &bond_id), 10);
+
+        client.update_oracle_reference(&admin, &bond_id, &quote_asset, &100, &61, &10, &2);
+        client.execute_purchase(&buyer, &order_id, &100, &1, &0);
+        assert_eq!(client.get_nonce(&buyer), 1);
+        assert_eq!(client.get_quote_balance(&buyer, &quote_asset), 900);
+        assert_eq!(client.get_quote_balance(&seller, &quote_asset), 100);
+        assert_eq!(client.get_order(&order_id).amount, 9);
+        assert_eq!(client.get_seller_bond_escrow(&seller, &bond_id), 9);
+    }
+
+    #[test]
     fn test_market_caps_ledger_volume_and_intra_ledger_price_movement() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
