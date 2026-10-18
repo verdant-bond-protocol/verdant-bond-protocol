@@ -185,6 +185,19 @@ export class RedisService {
     }
   }
 
+  /**
+   * Like {@link sMembers} but surfaces a Redis failure instead of returning
+   * an empty set, for callers (queue admission, #391) where "empty" would be
+   * read as "plenty of room" and fail open.
+   */
+  async sMembersOrThrow(key: string): Promise<string[]> {
+    try {
+      return await this.redis.sMembers(key);
+    } catch (error) {
+      this.throwUnavailable('sMembers', key, error);
+    }
+  }
+
   async lpush(key: string, value: string): Promise<void> {
     try {
       await this.redis.lPush(key, value);

@@ -36,7 +36,15 @@ export class ExportsController {
       correlationId: exportRecord.id,
     };
 
-    await this.jobQueue.enqueue(jobPayload, 3);
+    try {
+      await this.jobQueue.enqueue(jobPayload, 3);
+    } catch (error) {
+      // Not admitted (#391 backpressure, or queue unavailable): cancel the
+      // record so it does not sit in `pending` with no job behind it. The
+      // client retries with a fresh request after Retry-After.
+      await this.exportService.cancelExport(exportRecord.id, userId, userRole).catch(() => undefined);
+      throw error;
+    }
 
     return exportRecord;
   }

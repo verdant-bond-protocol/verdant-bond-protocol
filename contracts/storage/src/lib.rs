@@ -18,6 +18,12 @@
 
 extern crate alloc;
 
+pub mod bond_position;
+pub use bond_position::{
+    find_bond_position_fixture, generate_bond_position_fixtures, BondPositionFixture,
+    HolderPositionFixture, BOND_POSITION_SCHEMA_VERSION,
+};
+
 use alloc::{
     collections::BTreeMap,
     format,

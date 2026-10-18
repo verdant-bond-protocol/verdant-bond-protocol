@@ -14,6 +14,7 @@ import { ValuationController } from '../valuation/valuation.controller';
 import { PolicyConfigController } from '../policy/policy-config.controller';
 import { IntentReceiptController } from '../intent-receipts/intent-receipt.controller';
 
+import { FeesController } from '../fees/fees.controller';
 
 /**
  * Single source of truth for the API route authorization matrix (issue #X part 1).
@@ -150,6 +151,8 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: PolicyConfigController, method: 'getConfiguration', httpMethod: 'GET', path: 'admin/config/policy', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: PolicyConfigController, method: 'updateConfiguration', httpMethod: 'PUT', path: 'admin/config/policy', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   { controller: PolicyConfigController, method: 'rollback', httpMethod: 'POST', path: 'admin/config/policy/rollback', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
+  // ---- Fees (#301); large-integer amount contract in fees.large-integer.contract.spec.ts ----
+  { controller: FeesController, method: 'preview', httpMethod: 'POST', path: 'fees/preview', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
   // ---- Valuations (#204) ----
   { controller: ValuationController, method: 'getValuations', httpMethod: 'GET', path: 'valuations', guards: [], role: 'public', mutation: false },
   // ---- Maintainer intent receipts (review surface; read-only + reviews) ----

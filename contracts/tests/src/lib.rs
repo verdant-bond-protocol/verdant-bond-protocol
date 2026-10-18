@@ -1950,6 +1950,103 @@ mod integration {
         }
     }
 
+    mod bond_positions {
+        use super::*;
+        use nbbs_storage::{
+            generate_bond_position_fixtures, BondPositionFixture, BOND_POSITION_SCHEMA_VERSION,
+        };
+
+        fn fixture_path() -> std::path::PathBuf {
+            let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            p.push("fixtures");
+            p.push("bond_positions.json");
+            p
+        }
+
+        fn current() -> Vec<BondPositionFixture> {
+            generate_bond_position_fixtures(&Env::default())
+        }
+
+        /// The fixtures must always satisfy the protocol's core financial
+        /// invariant: the sum of outstanding holder balances plus whatever sits
+        /// in the redemption pool equals the recorded total subscribed supply.
+        /// A migration that drops or double-counts a position would break this.
+        #[test]
+        fn outstanding_positions_are_conserved() {
+            let fixtures = current();
+            assert!(!fixtures.is_empty());
+
+            for fixture in fixtures.iter() {
+                let summed: i128 = fixture.holders.iter().map(|h| h.balance).sum();
+                assert_eq!(
+                    summed, fixture.outstanding_balance,
+                    "scenario {} outstanding balance mismatch",
+                    fixture.scenario
+                );
+                assert_eq!(
+                    fixture.outstanding_balance + fixture.redemption_pool,
+                    fixture.total_subscribed,
+                    "scenario {} violates conservation-of-supply",
+                    fixture.scenario
+                );
+                assert!(
+                    fixture.invariant_holds,
+                    "scenario {} is flagged as breaking the invariant",
+                    fixture.scenario
+                );
+                assert_eq!(fixture.schema_version, BOND_POSITION_SCHEMA_VERSION);
+                // Every position must carry a non-empty key and value encoding.
+                for holder in fixture.holders.iter() {
+                    assert!(!holder.key_xdr_hex.is_empty());
+                    assert!(!holder.balance_xdr_hex.is_empty());
+                }
+            }
+        }
+
+        /// A fully-redeemed bond has no outstanding positions: every unit of
+        /// supply has moved into the redemption pool.
+        #[test]
+        fn fully_redeemed_bond_has_no_outstanding_positions() {
+            let fixtures = current();
+            let fixture = nbbs_storage::find_bond_position_fixture(&fixtures, "fully-redeemed")
+                .expect("fully-redeemed scenario is present");
+            assert!(fixture.holders.is_empty());
+            assert_eq!(fixture.outstanding_balance, 0);
+            assert_eq!(fixture.redemption_pool, fixture.total_subscribed);
+        }
+
+        #[test]
+        fn bond_position_fixture_file_matches_current_schema() {
+            let path = fixture_path();
+            assert!(
+                path.exists(),
+                "missing bond_positions.json fixture; regenerate with: cargo test -p nbbs-tests --features storage-fixture-update regenerate_bond_position_fixture_file"
+            );
+            let raw =
+                std::fs::read_to_string(&path).expect("failed to read bond_positions.json fixture");
+            let on_disk: Vec<BondPositionFixture> = serde_json::from_str(&raw)
+                .expect("bond_positions.json is not valid JSON (regenerate fixtures)");
+            assert_eq!(
+                on_disk,
+                current(),
+                "bond_positions.json is stale or drifted from the position schema — regenerate fixtures"
+            );
+        }
+
+        #[cfg(feature = "storage-fixture-update")]
+        #[test]
+        fn regenerate_bond_position_fixture_file() {
+            let fixtures = current();
+            let pretty =
+                serde_json::to_string_pretty(&fixtures).expect("serialize position fixtures");
+            std::fs::create_dir_all(fixture_path().parent().unwrap()).expect("mkdir fixtures");
+            let mut content = pretty;
+            content.push('\n');
+            std::fs::write(&fixture_path(), content).expect("write bond_positions.json");
+            eprintln!("wrote {}", fixture_path().display());
+        }
+    }
+
     // Issue #188: versioned-interface convention — every contract in the
     // suite publishes its schema version so callers can gate interoperation.
     mod schema_versions {

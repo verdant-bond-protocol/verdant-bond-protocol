@@ -60,7 +60,7 @@ describe('BondsController guards & authorization', () => {
         findHeldByAddress: jest.fn().mockResolvedValue([{ bondId: 1, balance: '100' }]),
         getHolders: jest.fn().mockResolvedValue({ totalHolders: 1, holders: [] }),
       };
-      controller = new BondsController(mockBondsService, {} as any);
+      controller = new BondsController(mockBondsService, {} as any, {} as any);
     });
 
     it('allows authenticated user to view their own holdings', async () => {

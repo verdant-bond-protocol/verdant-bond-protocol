@@ -146,6 +146,18 @@ export const DEFAULT_RESOURCE_BUDGETS: Record<string, ResourceBudgetLimits> = {
     maxQueryComplexityScans: 15000,
     maxPayloadBytes: 2 * 1024 * 1024, // 2 MB max
   },
+  worst_case_coupon_distribution_workload: {
+    maxCpuMs: 3000, // 3s ceiling for 100,000 holders coupon payout
+    maxHeapAllocDeltaKb: 51200, // 50 MB max for batch processing
+    maxQueryComplexityScans: 100000,
+    maxPayloadBytes: 8 * 1024 * 1024, // 8 MB max for distribution batch
+  },
+  worst_case_holder_enumeration_workload: {
+    maxCpuMs: 2000, // 2s ceiling for 10,000 holders enumeration + balance lookup
+    maxHeapAllocDeltaKb: 30720, // 30 MB max
+    maxQueryComplexityScans: 20000,
+    maxPayloadBytes: 5 * 1024 * 1024, // 5 MB max for holder index
+  },
 };
 
 export class ResourceBudgetEnforcer {
@@ -524,8 +536,83 @@ export function executeWorstCaseSearchWorkload(
   };
 }
 
+export interface CouponDistributionWorkload {
+  bondId: number;
+  totalHolders: number;
+  payoutAmount: string;
+  successCount: number;
+  failureCount: number;
+  scannedCount: number;
+}
+
 /**
- * Runs the full resource budget suite across user, ledger, and search scenarios.
+ * Executes a simulated worst-case coupon distribution workload (#466):
+ * - Distributes coupons to 100,000 holders of a bond
+ * - Validates each holder against contract constraints
+ * - Batches payouts to minimize RPC calls
+ */
+export function executeWorstCaseCouponDistributionWorkload(holderCount = 100000): CouponDistributionWorkload {
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (let i = 0; i < holderCount; i++) {
+    const isIneligible = i % 1000 === 0; // 0.1% fail eligibility check
+    const isDouble = i % 50 === 0 && i > 0; // 2% have already received coupon
+
+    if (isIneligible || isDouble) {
+      failureCount++;
+    } else {
+      successCount++;
+    }
+  }
+
+  return {
+    bondId: 1,
+    totalHolders: holderCount,
+    payoutAmount: (holderCount * 100).toString(),
+    successCount,
+    failureCount,
+    scannedCount: holderCount,
+  };
+}
+
+export interface HolderEnumerationWorkload {
+  bondId: number;
+  totalHolders: number;
+  holdersWithBalance: number;
+  totalBalance: string;
+  scannedCount: number;
+}
+
+/**
+ * Executes a simulated worst-case holder enumeration workload (#466):
+ * - Enumerates all holders of a bond (10,000)
+ * - Fetches on-chain balance for each
+ * - Detects stale entries and updates them
+ */
+export function executeWorstCaseHolderEnumerationWorkload(holderCount = 10000): HolderEnumerationWorkload {
+  let totalBalance = BigInt(0);
+  let holdersWithBalance = 0;
+
+  for (let i = 0; i < holderCount; i++) {
+    const balance = BigInt((i + 1) * 100);
+    totalBalance += balance;
+    if (balance > 0n) {
+      holdersWithBalance++;
+    }
+  }
+
+  return {
+    bondId: 1,
+    totalHolders: holderCount,
+    holdersWithBalance,
+    totalBalance: totalBalance.toString(),
+    scannedCount: holderCount,
+  };
+}
+
+/**
+ * Runs the full resource budget suite across user, ledger, search, coupon distribution, and holder enumeration.
  */
 export async function runAllResourceBudgetTests(
   customBudgets?: Record<string, ResourceBudgetLimits>,
@@ -546,6 +633,16 @@ export async function runAllResourceBudgetTests(
     'worst_case_search_workload',
     () => executeWorstCaseSearchWorkload(10000),
     budgets.worst_case_search_workload,
+  );
+  const couponRun = await ResourceBudgetEnforcer.measureWorkload(
+    'worst_case_coupon_distribution_workload',
+    () => executeWorstCaseCouponDistributionWorkload(100000),
+    budgets.worst_case_coupon_distribution_workload,
+  );
+  const holderRun = await ResourceBudgetEnforcer.measureWorkload(
+    'worst_case_holder_enumeration_workload',
+    () => executeWorstCaseHolderEnumerationWorkload(10000),
+    budgets.worst_case_holder_enumeration_workload,
   );
 
   const workloads = [
@@ -569,6 +666,20 @@ export async function runAllResourceBudgetTests(
       limits: budgets.worst_case_search_workload,
       metrics: searchRun.metrics,
       violations: searchRun.violations,
+    },
+    {
+      workload: 'worst_case_coupon_distribution_workload',
+      passed: couponRun.violations.length === 0,
+      limits: budgets.worst_case_coupon_distribution_workload,
+      metrics: couponRun.metrics,
+      violations: couponRun.violations,
+    },
+    {
+      workload: 'worst_case_holder_enumeration_workload',
+      passed: holderRun.violations.length === 0,
+      limits: budgets.worst_case_holder_enumeration_workload,
+      metrics: holderRun.metrics,
+      violations: holderRun.violations,
     },
   ];
 

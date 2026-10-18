@@ -128,6 +128,10 @@ Per contract:
    `contracts/tests/fixtures/storage_keys.json` via the storage fixture
    regeneration flow (`cargo test -p nbbs-storage --features
    storage-fixture-update regenerate_storage_fixture_file`).
+   Then add the migration steps to
+   `contracts/tests/fixtures/schema_migrations/v<N+1>.json` and run
+   `cd api && npm run migration:storage-compat` until it reports `COMPATIBLE`
+   (see [storage-schema-migration-checks.md](storage-schema-migration-checks.md), #392).
 2. Write the migration window calls into the governance allow-list.
 3. Propose `begin_migration` → execute after timelock.
 4. Propose the upgrade → execute after timelock.

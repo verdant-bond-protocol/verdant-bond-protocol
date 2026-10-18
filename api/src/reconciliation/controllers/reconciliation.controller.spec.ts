@@ -73,6 +73,7 @@ describe('ReconciliationController', () => {
     expect(jobQueueService.enqueue).toHaveBeenCalledWith(
       { type: JobType.RECONCILIATION, data: { dryRun: true } },
       2,
+      { privileged: true }, // admin route uses reserved admission headroom (#391)
     );
   });
 

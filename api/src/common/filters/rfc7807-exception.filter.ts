@@ -61,6 +61,7 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
     let errors: ProblemDetail['errors'];
     let contract: ProblemDetail['contract'];
     let retryable = false;
+    let retryAfterSeconds: number | undefined;
 
     if (exception instanceof DomainException) {
       status = 400;
@@ -71,12 +72,20 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exResponse = exception.getResponse();
-      const mappedCode = defaultCode(status);
+      let mappedCode = defaultCode(status);
 
       if (typeof exResponse === 'object' && exResponse !== null) {
         const resp = exResponse as Record<string, any>;
         errors = validationErrors(resp.message);
         title = resp.error || (exception instanceof BadRequestException ? 'Bad Request' : exception.message);
+        // An exception may name its own stable code (e.g. QUEUE_BACKPRESSURE,
+        // #391); unknown codes fall back to the status-derived default.
+        if (typeof resp.code === 'string' && resp.code in ErrorTaxonomy) {
+          mappedCode = resp.code as ErrorCode;
+        }
+        if (Number.isInteger(resp.retryAfterSeconds) && resp.retryAfterSeconds > 0) {
+          retryAfterSeconds = resp.retryAfterSeconds;
+        }
       } else {
         title = exception.message;
       }
@@ -116,6 +125,9 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
     if (errors) problem.errors = errors;
     if (contract) problem.contract = contract;
 
+    if (retryAfterSeconds !== undefined) {
+      response.setHeader('Retry-After', String(retryAfterSeconds));
+    }
     if (problem.correlationId) {
       response.setHeader('x-correlation-id', problem.correlationId);
     }

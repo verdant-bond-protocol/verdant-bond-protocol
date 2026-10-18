@@ -21,6 +21,11 @@ describe('JobQueueService', () => {
             sRem: jest.fn(),
             sMembers: jest.fn().mockResolvedValue([]),
             expire: jest.fn(),
+            // Admission control (#391)
+            acquireLockOrThrow: jest.fn().mockResolvedValue(true),
+            releaseLockOrThrow: jest.fn().mockResolvedValue(undefined),
+            sMembersOrThrow: jest.fn().mockResolvedValue([]),
+            getOrThrow: jest.fn().mockResolvedValue(null),
           },
         },
       ],

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BondsController } from './bonds.controller';
 import { BondsService } from './bonds.service';
+import { RegulatorExportService } from './regulator-export.service';
 import { BondReconciliationService } from './bond-reconciliation.service';
 import { OracleModule } from '../oracle/oracle.module';
 import { ComplianceModule } from '../compliance/compliance.module';
@@ -13,6 +14,7 @@ import { MaturedBondArchivalService } from './matured-bond-archival.service';
   controllers: [BondsController],
   providers: [
     BondsService,
+    RegulatorExportService,
     HolderIndexService,
     BondReconciliationService,
     StaleIndexDetectionService,
@@ -20,6 +22,7 @@ import { MaturedBondArchivalService } from './matured-bond-archival.service';
   ],
   exports: [
     BondsService,
+    RegulatorExportService,
     HolderIndexService,
     BondReconciliationService,
     StaleIndexDetectionService,

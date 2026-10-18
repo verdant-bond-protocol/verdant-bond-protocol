@@ -39,6 +39,13 @@ import { StellarService } from '../stellar/stellar.service';
 import { toBigIntString, encodeCid } from '../common/utils';
 import { ConfigService } from '../config/config.service';
 import { verifyManifest, verifyManifestMatchesReport } from './manifest-verification';
+import {
+  EvidenceVerificationResult,
+  fetchAndVerifyEvidence,
+  parseDelegatedSigners,
+  resolveSignatureMode,
+  verifyEd25519Manifest,
+} from './evidence-verification';
 
 @Injectable()
 export class OracleService {
@@ -68,13 +75,17 @@ export class OracleService {
 
 
 async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<ReportResponse> {
+    const signatureMode = resolveSignatureMode();
+    if (!dto.manifest && signatureMode === 'required') {
+      this.rejectEvidence({
+        valid: false,
+        code: 'MANIFEST_REQUIRED',
+        error: 'an ed25519-signed evidence manifest is required for every report',
+      });
+    }
+
     if (dto.manifest) {
-      const verification = verifyManifest(dto.manifest);
-      if (!verification.valid) {
-        throw new UnprocessableEntityException(
-          `Manifest verification failed: ${verification.error}`,
-        );
-      }
+      this.rejectEvidence(this.verifyManifestSignature(dto, providerAddress, signatureMode));
       const matchVerification = verifyManifestMatchesReport(dto.manifest as any, {
         project_id: dto.projectId,
         methodology: dto.methodology,
@@ -87,6 +98,13 @@ async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<Repor
           `Manifest values do not match report submission: ${matchVerification.error}`,
         );
       }
+    }
+
+    // Evidence checks run before anything is pinned or sent on-chain (#393).
+    if (dto.evidenceHash && this.shouldVerifyEvidenceContent()) {
+      await this.assertEvidenceContentMatches(dto.evidenceHash);
+    } else if (dto.evidenceHash && this.shouldVerifyEvidenceRetrievability()) {
+      await this.assertEvidenceRetrievable(dto.evidenceHash);
     }
 
     const ipfsResult = await this.ipfsService.uploadJson({
@@ -107,10 +125,6 @@ async submitReport(dto: SubmitReportDto, providerAddress: string): Promise<Repor
     // on-chain evidence anchor. Otherwise, fall back to the hash of the
     // report metadata this call just pinned, exactly as before.
     const evidenceReference = dto.evidenceHash ?? ipfsResult.hash;
-
-    if (dto.evidenceHash && this.shouldVerifyEvidenceRetrievability()) {
-      await this.assertEvidenceRetrievable(dto.evidenceHash);
-    }
 
     const adminSecret = this.getAdminSecret();
 
@@ -573,6 +587,70 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
    */
   private evidenceHashToScVal(evidenceReference: string): xdr.ScVal {
     return xdr.ScVal.scvBytes(encodeCid(evidenceReference));
+  }
+
+  /**
+   * Signature check for an attached manifest (#393). `ed25519` manifests are
+   * always verified against the provider's key (or a delegated signer);
+   * legacy HMAC manifests are accepted only in `legacy` mode.
+   */
+  private verifyManifestSignature(
+    dto: SubmitReportDto,
+    providerAddress: string,
+    mode: ReturnType<typeof resolveSignatureMode>,
+  ): EvidenceVerificationResult {
+    if (dto.manifest?.signature_scheme === 'ed25519') {
+      return verifyEd25519Manifest(dto.manifest, providerAddress, {
+        delegatedSigners: parseDelegatedSigners(),
+        evidenceHash: dto.evidenceHash,
+        maxAgeSeconds: Number(process.env.ORACLE_EVIDENCE_MAX_AGE_SECONDS) || undefined,
+      });
+    }
+    if (mode !== 'legacy') {
+      return {
+        valid: false,
+        code: 'LEGACY_SCHEME_REJECTED',
+        error: `signature scheme ${dto.manifest?.signature_scheme ?? 'hmac-sha256'} is not accepted in ${mode} mode`,
+      };
+    }
+    return verifyManifest(dto.manifest);
+  }
+
+  /** 422 with a stable machine-readable reason; no-op for a valid result. */
+  private rejectEvidence(result: EvidenceVerificationResult): void {
+    if (result.valid) return;
+    throw new UnprocessableEntityException({
+      error: 'Evidence Verification Failed',
+      message: `Manifest verification failed: ${result.error}`,
+      evidenceCode: result.code,
+    });
+  }
+
+  private shouldVerifyEvidenceContent(): boolean {
+    return process.env.ORACLE_EVIDENCE_VERIFY_CONTENT === 'true';
+  }
+
+  /**
+   * Fetch caller-supplied evidence and require its bytes to hash to the
+   * referenced digest (#393). Supersedes the bare retrievability check: a
+   * gateway that answers 200 with different content is rejected. Hex-digest
+   * references name no gateway object and are skipped, as before.
+   */
+  private async assertEvidenceContentMatches(evidenceHash: string): Promise<void> {
+    if (!evidenceHash.startsWith('Qm')) return;
+    const result = await fetchAndVerifyEvidence(evidenceHash, {
+      gateway: process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/',
+      timeoutMs: Number(process.env.ORACLE_EVIDENCE_RETRIEVABILITY_TIMEOUT_MS) || 5000,
+      maxAttempts: Number(process.env.ORACLE_EVIDENCE_FETCH_ATTEMPTS) || 3,
+      maxBytes: Number(process.env.ORACLE_EVIDENCE_MAX_BYTES) || 10 * 1024 * 1024,
+    });
+    if (!result.valid) {
+      throw new UnprocessableEntityException({
+        error: 'Evidence Verification Failed',
+        message: result.error,
+        evidenceCode: result.code,
+      });
+    }
   }
 
   private shouldVerifyEvidenceRetrievability(): boolean {

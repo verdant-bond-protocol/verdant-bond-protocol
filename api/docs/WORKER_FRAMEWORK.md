@@ -129,6 +129,12 @@ Response:
 }
 ```
 
+Non-admin callers may enqueue only `data_export` and `portfolio_rebalance`;
+other types return `403`. The job's `userId` is always taken from the bearer
+token, not the body. A saturated queue answers `429` with code
+`QUEUE_BACKPRESSURE` and a `Retry-After` header. See
+[queue-backpressure.md](../../docs/queue-backpressure.md) (#391).
+
 ### Get Job Status
 ```
 GET /api/v1/jobs/{jobId}
@@ -148,6 +154,9 @@ Response:
 ```
 GET /api/v1/jobs/queue/status
 ```
+
+Returns `{ size, backpressure }`. `backpressure` holds per-type and global
+depth, bounds, reserved admin headroom and a `saturated` flag (#391).
 
 ### Get Dead-Letter Jobs (Admin)
 ```

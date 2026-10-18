@@ -31,6 +31,13 @@ export const EvidenceManifestSchema = z.object({
   transformation_parameters: z.record(z.string(), z.unknown()),
   generated_at: z.string().min(1),
   signature: z.string().min(1),
+  /**
+   * #393: `ed25519` manifests are signed with `signer_public_key` (see
+   * evidence-verification.ts). Absent means the legacy shared-secret HMAC.
+   */
+  signature_scheme: z.enum(['hmac-sha256', 'ed25519']).optional(),
+  /** #393: optional binding of the signature to the report's evidence reference. */
+  evidence_hash: z.string().min(1).optional(),
 });
 
 export type EvidenceManifest = z.infer<typeof EvidenceManifestSchema>;

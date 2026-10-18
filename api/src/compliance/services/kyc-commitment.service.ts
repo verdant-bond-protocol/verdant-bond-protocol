@@ -16,6 +16,16 @@ export interface OnChainKycCommitment {
   issuedAt: number;
 }
 
+export interface SignedKycReceipt {
+  commitmentHash: string;
+  eligibilityTier: EligibilityTier;
+  issuedAt: number;
+  expirationTimestamp: number;
+  signature: string; // Ed25519 signature over the commitment
+  signerPublicKey: string;
+  decisionReason?: string;
+}
+
 export interface RegulatorDisclosureRequest {
   regulatorId: string;
   authorizationToken: string;
@@ -39,15 +49,38 @@ export interface RegulatorDisclosurePackage {
   };
 }
 
+/**
+ * KYC data minimization service: non-PII on-chain commitments and selective disclosure (#469).
+ *
+ * Generates and verifies KYC eligibility commitments without exposing PII on-chain.
+ * Supports signed audit receipts for compliance audits and regulator disclosure.
+ */
 @Injectable()
 export class KycCommitmentService {
   private readonly logger = new Logger(KycCommitmentService.name);
   private readonly secretSalt: string;
-  private readonly commitmentsStore = new Map<string, { commitment: OnChainKycCommitment; offChainAudit: any }>();
+  private readonly commitmentsStore = new Map<string, { commitment: OnChainKycCommitment; offChainAudit: any; receipt?: SignedKycReceipt }>();
   private readonly authorizedRegulators = new Set<string>(['REGULATOR_SEC', 'REGULATOR_FINMA', 'REGULATOR_MAS']);
+  private readonly complianceSigningKey: crypto.KeyObject;
 
   constructor() {
     this.secretSalt = process.env.KYC_COMMITMENT_SALT || 'verdant_bond_protocol_kyc_salt_2026';
+
+    // Load or generate compliance signing key for audit receipts
+    const keySecret = process.env.KYC_RECEIPT_SIGNING_KEY;
+    if (keySecret) {
+      try {
+        this.complianceSigningKey = crypto.createPrivateKey({
+          key: Buffer.from(keySecret, 'base64'),
+          format: 'der',
+          type: 'pkcs8',
+        });
+      } catch {
+        this.complianceSigningKey = crypto.generateKeyPairSync('ed25519').privateKey;
+      }
+    } else {
+      this.complianceSigningKey = crypto.generateKeyPairSync('ed25519').privateKey;
+    }
   }
 
   /**
@@ -114,6 +147,70 @@ export class KycCommitmentService {
 
     this.logger.debug(`Generated on-chain KYC commitment hash ${commitmentHash.slice(0, 16)}... for tier ${tier}`);
     return commitment;
+  }
+
+  /**
+   * Issue a signed audit receipt for a KYC commitment (for compliance records).
+   * Receipt includes commitment hash, tier, timestamps, and Ed25519 signature.
+   */
+  issueSignedReceipt(commitmentHash: string, decisionReason?: string): SignedKycReceipt {
+    const record = this.commitmentsStore.get(commitmentHash);
+    if (!record) {
+      throw new NotFoundException(`No KYC commitment found for hash ${commitmentHash}`);
+    }
+
+    const { commitment } = record;
+    const receiptData = JSON.stringify({
+      commitmentHash: commitment.commitmentHash,
+      eligibilityTier: commitment.eligibilityTier,
+      issuedAt: commitment.issuedAt,
+      expirationTimestamp: commitment.expirationTimestamp,
+      decisionReason: decisionReason || 'Standard KYC verification',
+    });
+
+    const signature = crypto.sign('sha256', Buffer.from(receiptData), {
+      key: this.complianceSigningKey,
+      format: 'der',
+      type: 'pkcs8',
+    });
+
+    const publicKey = crypto.createPublicKey({ key: this.complianceSigningKey }).export({ format: 'pem', type: 'spki' });
+
+    const receipt: SignedKycReceipt = {
+      commitmentHash: commitment.commitmentHash,
+      eligibilityTier: commitment.eligibilityTier,
+      issuedAt: commitment.issuedAt,
+      expirationTimestamp: commitment.expirationTimestamp,
+      signature: signature.toString('base64'),
+      signerPublicKey: publicKey,
+      decisionReason,
+    };
+
+    // Store receipt with commitment for audit trail
+    const recordWithReceipt = this.commitmentsStore.get(commitmentHash)!;
+    recordWithReceipt.receipt = receipt;
+
+    this.logger.log(`Issued signed KYC receipt for commitment ${commitmentHash.slice(0, 16)}...`);
+    return receipt;
+  }
+
+  /**
+   * Verify a signed KYC receipt (for audits and compliance checks).
+   */
+  verifySignedReceipt(receipt: SignedKycReceipt): boolean {
+    const receiptData = JSON.stringify({
+      commitmentHash: receipt.commitmentHash,
+      eligibilityTier: receipt.eligibilityTier,
+      issuedAt: receipt.issuedAt,
+      expirationTimestamp: receipt.expirationTimestamp,
+      decisionReason: receipt.decisionReason || 'Standard KYC verification',
+    });
+
+    try {
+      return crypto.verify('sha256', Buffer.from(receiptData), receipt.signerPublicKey, Buffer.from(receipt.signature, 'base64'));
+    } catch {
+      return false;
+    }
   }
 
   /**

@@ -43,7 +43,7 @@ interface Entry {
   expiresAt?: number;
 }
 
-const WRITE_OPS = new Set(['set', 'setEx', 'del', 'sAdd', 'sRem', 'expire']);
+const WRITE_OPS = new Set(['set', 'setEx', 'del', 'sAdd', 'sRem', 'expire', 'incr', 'eval']);
 
 export class ChaosRedisClient {
   nowMs = 0;
@@ -67,6 +67,17 @@ export class ChaosRedisClient {
     return e && e.value instanceof Set ? [...e.value] : [];
   }
 
+  /** Every live key, sorted, for byte-for-byte comparison of two runs (#390). */
+  snapshot(): Record<string, string | string[]> {
+    const out: Record<string, string | string[]> = {};
+    for (const key of [...this.store.keys()].sort()) {
+      const e = this.live(key);
+      if (!e) continue;
+      out[key] = e.value instanceof Set ? [...e.value].sort() : e.value;
+    }
+    return out;
+  }
+
   forceDelete(key: string): void {
     this.store.delete(key);
   }
@@ -83,12 +94,35 @@ export class ChaosRedisClient {
   async set(
     key: string,
     value: string,
-    opts?: { NX?: boolean; EX?: number },
+    opts?: { NX?: boolean; EX?: number; PX?: number },
   ): Promise<'OK' | null> {
     return this.write('set', key, () => {
       if (opts?.NX && this.live(key)) return null;
-      this.put(key, { value, expiresAt: opts?.EX ? this.nowMs + opts.EX * 1000 : undefined });
+      const ttlMs = opts?.PX ?? (opts?.EX ? opts.EX * 1000 : undefined);
+      this.put(key, { value, expiresAt: ttlMs !== undefined ? this.nowMs + ttlMs : undefined });
       return 'OK';
+    });
+  }
+
+  async incr(key: string): Promise<number> {
+    return this.write('incr', key, () => {
+      const next = Number(this.peek(key) ?? '0') + 1;
+      this.put(key, { value: String(next), expiresAt: this.live(key)?.expiresAt });
+      return next;
+    });
+  }
+
+  /**
+   * Only the compare-and-delete script RedisService.releaseLockOrThrow sends
+   * is modelled; anything else is a harness bug and fails loudly.
+   */
+  async eval(script: string, opts: { keys: string[]; arguments: string[] }): Promise<number> {
+    if (!script.includes("redis.call('del'")) throw new Error('chaos: unsupported eval script');
+    const [key] = opts.keys;
+    return this.write('eval', key, () => {
+      if (this.peek(key) !== opts.arguments[0]) return 0;
+      this.put(key, undefined);
+      return 1;
     });
   }
 

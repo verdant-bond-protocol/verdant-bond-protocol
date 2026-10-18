@@ -1,8 +1,13 @@
-import { Controller, Get, Post, Param, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Body, UseGuards, ServiceUnavailableException } from '@nestjs/common';
 import { MigrationSafetyService } from './migration-safety.service';
 import { MigrationRunReport } from './migration.interface';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
+import {
+  StorageCompatReport,
+  checkStorageMigrationCompatibility,
+  loadStorageCompatInputs,
+} from './storage-schema-compat';
 
 /**
  * Migration safety API (issue #263).
@@ -42,5 +47,23 @@ export class MigrationSafetyController {
   @Get('registered')
   async registered(): Promise<{ ids: string[] }> {
     return { ids: this.migrations.getRegisteredIds() };
+  }
+
+  /**
+   * Compatibility of the candidate storage layout with the next schema
+   * version (#392). Read-only. Fails closed: if the fixtures or plan cannot be
+   * read, the answer is 503, never "compatible".
+   */
+  @Get('storage-schema/compatibility')
+  async storageSchemaCompatibility(): Promise<StorageCompatReport> {
+    let inputs;
+    try {
+      inputs = loadStorageCompatInputs();
+    } catch (error) {
+      throw new ServiceUnavailableException(
+        `storage schema compatibility inputs unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return checkStorageMigrationCompatibility(inputs);
   }
 }

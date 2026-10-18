@@ -35,6 +35,8 @@ export interface Job {
   startedAt?: Date;
   completedAt?: Date;
   result?: Record<string, any>;
+  /** Caller whose per-user admission budget this job counts against (#391). */
+  admittedFor?: string;
 }
 
 export const DEFAULT_MAX_RETRIES = 3;

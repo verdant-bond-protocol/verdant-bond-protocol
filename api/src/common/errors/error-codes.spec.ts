@@ -20,7 +20,7 @@ describe('ErrorTaxonomy', () => {
       (c) => ErrorTaxonomy[c].retryable,
     );
     expect(retryable.sort()).toEqual(
-      [ErrorCode.SETTLEMENT_FAILED, ErrorCode.RATE_LIMIT_EXCEEDED].sort(),
+      [ErrorCode.SETTLEMENT_FAILED, ErrorCode.RATE_LIMIT_EXCEEDED, ErrorCode.QUEUE_BACKPRESSURE].sort(),
     );
   });
 });

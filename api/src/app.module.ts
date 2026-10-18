@@ -19,6 +19,7 @@ import { IdempotencyInterceptor } from './common/interceptors/idempotency.interc
 import { OpsModule } from './ops/ops.module';
 import { PolicyModule } from './policy/policy.module';
 import { LedgerModule } from './ledger/ledger.module';
+import { ImportsModule } from './imports/imports.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { LedgerModule } from './ledger/ledger.module';
     AuthorizationsModule,
     StatusModule,
     PolicyModule,
+    ImportsModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },

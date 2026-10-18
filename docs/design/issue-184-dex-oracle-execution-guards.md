@@ -30,6 +30,16 @@ that the price and volume match the documented market and TWAP window. Admin
 rotation should follow the deployment's normal key-management process. A
 missing or stale reference fails closed for trading.
 
+Freshness is checked again on every settlement, not only when a listing or
+oracle update is created. A listing can remain open after its reference ages
+past `maximum_oracle_age_seconds`; fills then return `OracleStale` until an
+authorized updater submits a newer valid sample. This failure is retryable:
+settlement checks freshness before changing the buyer nonce, balances, order,
+or seller escrow. The buyer retries the same order and nonce after the feed is
+refreshed. If the market config or reference has expired from persistent
+storage, execution also fails closed with `MarketNotConfigured`; reconfigure
+the market and publish a fresh sample before resuming fills.
+
 ## Limits and circuit breaker
 
 The per-market configuration and rolling oracle/volume/breaker state each use
@@ -80,3 +90,7 @@ Router tests cover low/zero-volume oracle samples, a wide-spread ask, per-ledger
 quote-volume exhaustion and next-ledger reset, a divergent-reference pause and
 recovery, and both immediate and commit/reveal paths while paused. Existing
 purchase tests exercise successful fills using an explicitly installed TWAP.
+The stale-at-execution regression verifies that a fill does not consume buyer
+funds, nonce, seller escrow, or order amount, that a non-admin updater is
+rejected, and that refreshing the reference permits retry with the original
+nonce. No storage or callable-interface migration is needed.

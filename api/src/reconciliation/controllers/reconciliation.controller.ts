@@ -33,7 +33,8 @@ export class ReconciliationController {
       type: JobType.RECONCILIATION,
       data: { dryRun: body.dryRun !== false },
     };
-    return this.jobQueue.enqueue(payload, 2);
+    // Admin-only route: uses the reserved admission headroom (#391).
+    return this.jobQueue.enqueue(payload, 2, { privileged: true });
   }
 
   @Get('status')

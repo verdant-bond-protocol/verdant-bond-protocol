@@ -8,6 +8,7 @@ export enum ErrorCode {
   SETTLEMENT_FAILED = 'SETTLEMENT_FAILED',
   RATE_LIMIT_EXCEEDED = 'RATE_LIMIT_EXCEEDED',
   QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
+  QUEUE_BACKPRESSURE = 'QUEUE_BACKPRESSURE',
   INTERNAL_ERROR = 'INTERNAL_ERROR',
 
   // ── Bond lifecycle ────────────────────────────────────────────────────────
@@ -74,6 +75,11 @@ export const ErrorTaxonomy: Record<ErrorCode, Omit<ErrorMetadata, 'code'>> = {
     retryable: false,
     safeMessage: 'You have exceeded your usage quota for this operation.',
     remediationHint: 'Quota is per-billing-period. Upgrade plan or wait for quota reset. No state mutation occurred.',
+  },
+  [ErrorCode.QUEUE_BACKPRESSURE]: {
+    retryable: true,
+    safeMessage: 'The system is busy processing earlier requests of this kind. Please try again shortly.',
+    remediationHint: 'Background queue admission bound hit (#391). Check GET /api/v1/jobs/queue/status for the saturated scope; see docs/queue-backpressure.md.',
   },
   [ErrorCode.INTERNAL_ERROR]: {
     retryable: false,
