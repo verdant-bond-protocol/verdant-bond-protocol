@@ -22,6 +22,7 @@
     "ledger:verify-export": "ts-node scripts/verify-ledger-export.ts",
     "release:gate": "ts-node --transpile-only scripts/verify-release-gate.ts",
     "migration:storage-compat": "ts-node --transpile-only scripts/verify-storage-migration.ts",
+    "backfill": "ts-node --transpile-only scripts/backfill.ts",
     "mutate": "stryker run",
     "test:mutate": "stryker run --reporter progress --thresholds.high 50"
   },

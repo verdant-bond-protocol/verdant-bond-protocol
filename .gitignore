@@ -32,3 +32,6 @@ build/
 
 # Angular cache
 **/.angular/cache/
+
+# Backfill checkpoints, locks and rollback journals (operator state)
+api/data/backfill/
