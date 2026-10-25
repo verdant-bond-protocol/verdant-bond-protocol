@@ -48,6 +48,26 @@ registered:
 
 ## Extension Strategy
 
+### Renewal priority and monitoring
+
+The keeper must treat TTL renewal as a risk queue rather than a blind sweep.
+Every daily scan records the contract, storage key, current TTL, bond maturity,
+and current notional value. Entries are ordered by:
+
+1. active bonds and holder balances whose TTL is below the shorter of six
+   months or the bond's remaining lifetime;
+2. active coupon cursors, schedules, and escrow balances for the same bonds;
+3. registered oracle providers and unresolved reports;
+4. inactive or historical entries that are within their documented retention
+   window.
+
+The keeper renews the highest-priority entries first and stops when the
+transaction's resource budget is reached. A later run resumes from the last
+key, so a large holder set cannot starve active bond state. A renewal is
+idempotent: re-extending a key is safe and does not alter its value. The
+monitor pages when a Tier 1 entry is below the threshold, when a renewal
+transaction fails, or when a known key cannot be read.
+
 ### Automatic extension on mutation
 
 Any write to a Tier 1 entry should also call `extend_contract_data` (or
@@ -70,6 +90,10 @@ A scheduled off-chain job (daily or weekly) should:
 1. Scan Tier 1 keys that have not been touched recently.
 2. Extend any entry whose TTL is below a safety threshold (e.g., 6 months).
 3. Log extensions for operational visibility.
+
+The log is an auditable manifest (`key`, `ttl_before`, `ttl_after`,
+`transaction_hash`, and `renewed_at`). The manifest is retained for the bond's
+audit period and is also the input to the restoration runbook below.
 
 This job can be implemented as a script in `scripts/` or as a cron-triggered
 API endpoint restricted to admin callers.
@@ -104,6 +128,9 @@ Soroban network with archival enabled.
 - The keeper job should have its own test suite covering edge cases:
   already-extended entries, missing entries, and network errors during
   extension.
+- A priority test must prove that an active, high-value bond is renewed before
+  inactive historical records and that a budget-limited run resumes at its
+  checkpoint on the next invocation.
 
 ## Operational Runbook
 

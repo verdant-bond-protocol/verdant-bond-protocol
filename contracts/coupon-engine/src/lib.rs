@@ -23,6 +23,13 @@ pub const HABITAT_CREDIT_RATE: i128 = 1_000_000;
 pub const SPECIES_CREDIT_RATE: i128 = 100_000;
 pub const UNIT_CREDIT_RATE: i128 = 1_000_000;
 pub const MAX_COUPON_BATCH_SIZE: u32 = 100;
+/// Resource budget for one resumable distribution call.  The unit cost is
+/// deliberately conservative: it covers the holder balance read, escrow
+/// writes, and event emission for one holder.  Keeping this explicit prevents
+/// a caller from selecting a batch that can exceed Soroban's per-transaction
+/// resource limit while preserving the cursor for the next call.
+pub const COUPON_BATCH_RESOURCE_BUDGET: u32 = 10_000;
+pub const COUPON_HOLDER_RESOURCE_UNITS: u32 = 100;
 pub const MAX_WATERFALL_TRANCHES: u32 = 100;
 /// Largest supported coupon pool per bond and period, in minor credit units.
 pub const MAX_COUPON_POOL: i128 = 1_000_000_000_000_000_000;
@@ -936,6 +943,12 @@ impl CouponEngine {
         if limit > MAX_COUPON_BATCH_SIZE || offset > holder_len {
             return Err(BondError::Overflow);
         }
+        let resource_units = limit
+            .checked_mul(COUPON_HOLDER_RESOURCE_UNITS)
+            .ok_or(BondError::Overflow)?;
+        if resource_units > COUPON_BATCH_RESOURCE_BUDGET {
+            return Err(BondError::InvalidRedemptionBudget);
+        }
         let end = offset.checked_add(limit).ok_or(BondError::Overflow)?;
         if end > holder_len {
             return Err(BondError::Overflow);
@@ -1075,6 +1088,10 @@ impl CouponEngine {
         env.storage()
             .persistent()
             .set(&DataKey::PeriodBatchCursor(bond_id, period_index), &end);
+        env.events().publish(
+            (Symbol::new(&env, "coupon_batch_checkpoint"),),
+            (bond_id, period_index, end, batch_complete),
+        );
 
         if batch_complete && period_info.undistributed > 0 {
             let undistributed_total: i128 = env

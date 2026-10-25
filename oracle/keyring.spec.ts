@@ -157,4 +157,21 @@ describe('Oracle key rotation with overlapping validity windows (#447)', () => {
       ),
     ).toThrow(/overlapMs must be non-negative/);
   });
+
+  it('requires two approvers for emergency revocation and closes the key', () => {
+    const keyring = new OracleKeyring([v1]);
+    expect(() => keyring.revokeKey(v1.keyId, ['operator-a'], T0 + DAY)).toThrow(
+      /two approvers/,
+    );
+
+    const revoked = keyring.revokeKey(v1.keyId, ['operator-a', 'operator-b'], T0 + DAY);
+    const before = keyring.sign(payload, T0 + DAY - 1);
+    expect(revoked.verify(payload, before).valid).toBe(true);
+    const after = keyring.verify(payload, {
+      ...before,
+      timestampMs: T0 + DAY,
+    });
+    expect(after.valid).toBe(false);
+    expect(after.error).toMatch(/was not valid/);
+  });
 });

@@ -347,6 +347,14 @@ fn settle_purchase(
             proceeds,
         ),
     );
+    // Consumers must reconcile against this on-chain remainder rather than
+    // subtracting the requested fill from a cached order.  The event is
+    // emitted after the order write, so a fill and a concurrent cancellation
+    // cannot be observed as two different remaining balances.
+    env.events().publish(
+        (Symbol::new(&env, "order_remaining"),),
+        (order_id, order.amount, order.status),
+    );
 
     Ok(())
 }
@@ -1130,6 +1138,10 @@ impl DEXRouter {
 
         env.events()
             .publish((Symbol::new(&env, "order_cancelled"),), (order_id, caller));
+        env.events().publish(
+            (Symbol::new(&env, "order_cancelled_remaining"),),
+            (order_id, order.amount),
+        );
 
         Ok(())
     }
