@@ -163,6 +163,40 @@ depth, bounds, reserved admin headroom and a `saturated` flag (#391).
 GET /api/v1/jobs/dead-letter/list
 ```
 
+### Recover a Dead-Letter Job (Admin)
+```
+POST /api/v1/jobs/dead-letter/{jobId}/recover
+Content-Type: application/json
+
+{ "resetRetries": true }   // or false to grant exactly one more attempt
+```
+Re-queues an exhausted job with a fresh retry budget. Fails closed with `503`
+if the job write fails; `409` if another operator recovered it concurrently;
+`400` if the job is not a dead letter. See
+[RESUMABLE_JOBS_RECOVERY.md](../../docs/RESUMABLE_JOBS_RECOVERY.md).
+
+### Recover Stuck Jobs (Admin)
+```
+POST /api/v1/jobs/recover/stuck
+Content-Type: application/json
+
+{ "olderThanMs": 300000, "limit": 100 }   // all fields optional
+```
+Re-queues `PROCESSING` jobs whose claim lock has expired. A live lock is never
+broken. Conservative by default (5 minutes).
+
+### Recovery Audit / Dependency Matrix (Admin)
+```
+GET /api/v1/jobs/recovery/audit
+GET /api/v1/jobs/recovery/dependency-matrix
+```
+
+### Idempotent Enqueue (replay suppression)
+Include an `idempotencyKey` in the enqueue body. A replayed request returns the
+original job unchanged instead of creating a second one. Keys expire after
+`JOB_IDEMPOTENCY_TTL_SECONDS` (default 24 h). Malformed payloads are rejected
+with `400` and `code: VALIDATION_FAILED` plus field-level errors.
+
 ## Retry Policy
 
 - **Max Retries**: 3 (configurable per job)
@@ -281,6 +315,7 @@ A job may be stuck if the worker crashed during processing:
 1. Check dead-letter jobs: `GET /api/v1/jobs/dead-letter/list`
 2. Manually inspect job: `GET /api/v1/jobs/{jobId}`
 3. If stuck > 10 minutes, the processing lock will auto-expire (configurable via `JOB_PROCESSING_TIMEOUT_MS`)
+4. Re-queue deterministically with `POST /api/v1/jobs/recover/stuck` (admin), or recover a single exhausted job with `POST /api/v1/jobs/dead-letter/{jobId}/recover`
 
 ### Handler Not Registered
 
