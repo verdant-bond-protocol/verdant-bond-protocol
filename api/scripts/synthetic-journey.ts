@@ -9,10 +9,13 @@
  *   npm run monitor:journey -- --base-url=http://localhost:3000 --bond=3 --amount=1 --json
  *   npm run monitor:journey -- --interval=300            # run every 5 minutes, one JSON line per run
  *   npm run monitor:journey -- --write                   # also subscribe + confirm (never on mainnet)
+ *   npm run monitor:journey -- --max-attempts=3 --retry-delay-ms=250
  *
  * Environment:
  *   SYNTHETIC_BASE_URL            default API origin (http://localhost:3000)
  *   SYNTHETIC_STEP_TIMEOUT_MS     per-request timeout (10000)
+ *   SYNTHETIC_MAX_ATTEMPTS        attempts per step for transient faults (1)
+ *   SYNTHETIC_RETRY_DELAY_MS      delay before a transient retry (0)
  *   SYNTHETIC_INVESTOR_TOKEN      bearer token of a KYC-verified synthetic investor (--write)
  *   SYNTHETIC_INVESTOR_ADDRESS    that investor's Stellar address (--write)
  *   STELLAR_NETWORK               --write is refused when this is "mainnet"
@@ -47,6 +50,14 @@ function buildConfig(): SyntheticJourneyConfig {
     stepTimeoutMs: positiveInt(process.env.SYNTHETIC_STEP_TIMEOUT_MS, 10_000, 'SYNTHETIC_STEP_TIMEOUT_MS'),
     confirmTimeoutMs: CONFIRM_TIMEOUT_MS,
     confirmPollMs: CONFIRM_POLL_MS,
+    maxAttempts: positiveInt(arg('max-attempts') ?? process.env.SYNTHETIC_MAX_ATTEMPTS, 1, 'max-attempts'),
+    retryDelayMs: (() => {
+      const raw = arg('retry-delay-ms') ?? process.env.SYNTHETIC_RETRY_DELAY_MS;
+      if (raw === undefined) return 0;
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value < 0) throw new Error('--retry-delay-ms must be a non-negative integer');
+      return value;
+    })(),
   };
   if (!write) return config;
 
@@ -66,7 +77,8 @@ function render(report: JourneyReport): void {
   console.log(`Result: ${report.ok ? 'PASS' : 'FAIL'} in ${report.totalLatencyMs}ms${report.bondId ? ` (bond ${report.bondId})` : ''}`);
   for (const step of report.steps) {
     const outcome = step.ok ? 'ok  ' : 'FAIL';
-    console.log(`  [${outcome}] ${step.name.padEnd(20)} ${String(step.latencyMs).padStart(6)}ms${step.ok ? '' : `  blame=${step.dependency}  ${step.error}`}`);
+    const retried = step.attempts > 1 ? `  attempts=${step.attempts}` : '';
+    console.log(`  [${outcome}] ${step.name.padEnd(20)} ${String(step.latencyMs).padStart(6)}ms${retried}${step.ok ? '' : `  blame=${step.dependency}  ${step.error}`}`);
   }
   if (report.blame) console.log(`Blame: ${report.blame}`);
   if (report.degradedDependencies.length) console.log(`Readiness reports degraded: ${report.degradedDependencies.join(', ')}`);
