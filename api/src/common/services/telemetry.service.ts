@@ -21,6 +21,33 @@ export interface TelemetryConfig {
   highVolumeThresholdPerMin?: number;
   criticalOperations?: string[];
   sensitiveKeys?: string[];
+  /**
+   * Injectable source of sampling randomness. Defaults to `Math.random`.
+   * Supplying a deterministic function makes adaptive-sampling decisions
+   * reproducible in tests and replayable incident investigations.
+   */
+  samplingRandom?: () => number;
+}
+
+/**
+ * Reduces a request path to a bounded, dashboard-safe label value. Numeric
+ * ids, UUIDs, Stellar addresses and opaque hashes/tokens are replaced with
+ * placeholders; static route segments are preserved. Without this, every
+ * request would create a new label series and defeat cardinality protection.
+ */
+export function normalizeTelemetryRoute(rawPath: string): string {
+  const path = (rawPath ?? '').split('?')[0] || '/';
+  return path
+    .split('/')
+    .map((segment) => {
+      if (!segment) return segment;
+      if (/^\d+$/.test(segment)) return ':id';
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return ':uuid';
+      if (/^G[A-Z2-7]{20,60}$/.test(segment)) return ':address';
+      if (/^[A-Za-z0-9_-]{20,}$/.test(segment)) return ':token';
+      return segment;
+    })
+    .join('/');
 }
 
 export interface TelemetryStats {
@@ -64,6 +91,7 @@ export class TelemetryService {
   private readonly highVolumeThresholdPerMin: number;
   private readonly criticalOperations: Set<string>;
   private readonly sensitiveKeySet: Set<string>;
+  private readonly samplingRandom: () => number;
 
   // High cardinality label tracking: Map<metricKey, Set<labelValue>>
   private readonly labelCardinalityTracker = new Map<string, Set<string>>();
@@ -98,6 +126,7 @@ export class TelemetryService {
     this.sensitiveKeySet = new Set(
       (config.sensitiveKeys ?? DEFAULT_SENSITIVE_KEYS).map((k) => k.toLowerCase()),
     );
+    this.samplingRandom = config.samplingRandom ?? Math.random;
   }
 
   emit(fields: TelemetryFields): boolean {
@@ -140,7 +169,7 @@ export class TelemetryService {
     if (effectiveRate >= 1.0) {
       return true;
     }
-    return Math.random() < effectiveRate;
+    return this.samplingRandom() < effectiveRate;
   }
 
   private calculateCurrentSampleRate(fields: TelemetryFields): number {

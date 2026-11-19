@@ -7,6 +7,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { KycService } from './kyc.service';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { ConfigService } from '../config/config.service';
+import { InvestorEligibilityCacheService } from './investor-eligibility-cache.service';
 
 import { RbacService } from './rbac.service';
 import { SessionService } from './session.service';

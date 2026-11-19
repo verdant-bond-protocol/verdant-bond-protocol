@@ -5,7 +5,6 @@ import { Client } from 'pg';
 import { createClient } from '@redis/client';
 import {
   buildSummary,
-  checkConnectivity,
   checkDependencies,
   checkEnvironment,
   checkNodeVersion,
@@ -13,6 +12,11 @@ import {
   formatSummary,
   parseEnvFile,
 } from '../src/ops/developer-diagnostics';
+import {
+  connectivityResultFromProbe,
+  probeWithRetry,
+  RetryOptions,
+} from '../src/ops/setup-failure-diagnostics';
 
 /**
  * Contributor diagnostics (#374).
@@ -22,11 +26,23 @@ import {
  * fix. All decision/remediation logic lives in
  * `src/ops/developer-diagnostics.ts` and is unit tested; this script only
  * gathers the real environment facts.
+ *
+ * Connectivity failures are classified and retried by
+ * `src/ops/setup-failure-diagnostics.ts` (#513).
+ *
+ * Flags: `--json` prints the machine-readable summary; `--no-retry` probes
+ * each service once.
  */
 
 const apiRoot = path.join(__dirname, '..');
 const envPath = path.join(apiRoot, '.env');
 const envExamplePath = path.join(apiRoot, '.env.example');
+
+const args = process.argv.slice(2);
+const jsonOutput = args.includes('--json');
+// `--no-retry` gives a single fast probe, e.g. for CI where services are
+// either up or not configured at all.
+const retryOptions: RetryOptions = args.includes('--no-retry') ? { attempts: 1 } : {};
 
 function loadEnvFile(): boolean {
   if (!fs.existsSync(envPath)) return false;
@@ -37,15 +53,16 @@ function loadEnvFile(): boolean {
   return true;
 }
 
-async function checkRedis(url: string): Promise<DiagnosticResult> {
-  const client = createClient({ url, socket: { connectTimeout: 2000 } });
-  let ok = false;
+// Probes throw on failure so `probeWithRetry` can classify the raw error
+// (refused vs. bad credentials vs. missing database, ...) and decide whether
+// a retry is worthwhile (#513).
+async function pingRedis(url: string): Promise<void> {
+  const client = createClient({ url, socket: { connectTimeout: 2000, reconnectStrategy: false } });
+  // Without a listener, node-redis re-emits socket errors as unhandled.
+  client.on('error', () => undefined);
   try {
     await client.connect();
     await client.ping();
-    ok = true;
-  } catch {
-    ok = false;
   } finally {
     try {
       await client.disconnect();
@@ -53,18 +70,13 @@ async function checkRedis(url: string): Promise<DiagnosticResult> {
       /* already closed */
     }
   }
-  return checkConnectivity('Redis connectivity', ok, url, 'start Redis (docker compose up redis) or fix REDIS_URL.');
 }
 
-async function checkPostgres(url: string): Promise<DiagnosticResult> {
+async function selectPostgres(url: string): Promise<void> {
   const client = new Client({ connectionString: url, connectionTimeoutMillis: 2000 });
-  let ok = false;
   try {
     await client.connect();
     await client.query('SELECT 1');
-    ok = true;
-  } catch {
-    ok = false;
   } finally {
     try {
       await client.end();
@@ -72,12 +84,16 @@ async function checkPostgres(url: string): Promise<DiagnosticResult> {
       /* already closed */
     }
   }
-  return checkConnectivity(
-    'PostgreSQL connectivity',
-    ok,
-    url,
-    'start PostgreSQL (docker compose up postgres) or fix DATABASE_URL.',
-  );
+}
+
+async function checkRedis(url: string): Promise<DiagnosticResult> {
+  const outcome = await probeWithRetry('redis', () => pingRedis(url), retryOptions);
+  return connectivityResultFromProbe('Redis connectivity', url, outcome);
+}
+
+async function checkPostgres(url: string): Promise<DiagnosticResult> {
+  const outcome = await probeWithRetry('postgres', () => selectPostgres(url), retryOptions);
+  return connectivityResultFromProbe('PostgreSQL connectivity', url, outcome);
 }
 
 function checkSeedData(): DiagnosticResult {
@@ -114,8 +130,12 @@ async function run(): Promise<void> {
   );
 
   const summary = buildSummary(results);
-  console.log('Verdant Bond Protocol — contributor diagnostics\n');
-  console.log(formatSummary(summary));
+  if (jsonOutput) {
+    console.log(JSON.stringify(summary, null, 2));
+  } else {
+    console.log('Verdant Bond Protocol — contributor diagnostics\n');
+    console.log(formatSummary(summary));
+  }
 
   if (!summary.passed) process.exit(1);
 }

@@ -27,6 +27,8 @@ export class OpsController {
    *   amount: token amount to test (default: 1)
    *   bondId: specific bond to test (default: first subscribable)
    *   stepTimeoutMs: per-request timeout (default: 10000)
+   *   maxAttempts: attempts for transient step faults (default: 1)
+   *   retryDelayMs: delay before a transient retry (default: 0)
    *   write: if present, submit real subscription (never on mainnet)
    *
    * Returns latency, failures, and dependency blame for each step.
@@ -39,6 +41,8 @@ export class OpsController {
     @Query('amount') amountStr?: string,
     @Query('bondId') bondIdStr?: string,
     @Query('stepTimeoutMs') stepTimeoutMsStr?: string,
+    @Query('maxAttempts') maxAttemptsStr?: string,
+    @Query('retryDelayMs') retryDelayMsStr?: string,
     @Query('write') write?: string,
     @Body() writeConfig?: { token: string; investorAddress: string },
   ): Promise<JourneyReport> {
@@ -54,12 +58,16 @@ export class OpsController {
       stepTimeoutMs,
       confirmTimeoutMs: 60_000,
       confirmPollMs: 5_000,
+      maxAttempts: maxAttemptsStr ? parseInt(maxAttemptsStr, 10) : 1,
+      retryDelayMs: retryDelayMsStr ? parseInt(retryDelayMsStr, 10) : 0,
       write: write && writeConfig ? writeConfig : undefined,
     };
 
     const runtime: JourneyRuntime = {
       fetch: fetch as unknown as typeof fetch,
-      now: () => performance.now(),
+      // `startedAt` is rendered with `new Date(...)`, so this must be epoch ms,
+      // not the monotonic `performance.now()` clock.
+      now: () => Date.now(),
       sleep: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
       idempotencyKey: () => {
         const now = Date.now();
