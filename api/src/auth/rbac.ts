@@ -21,6 +21,7 @@ export enum Permission {
   MANAGE_INCIDENTS = 'manage_incidents',
   APPROVE_PROJECT = 'approve_project',
   REJECT_PROJECT = 'reject_project',
+  RECONCILE_CACHE = 'reconcile_cache',
 }
 
 export const RolePermissions: Record<Role, Permission[]> = {
@@ -41,6 +42,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
   [Role.SETTLEMENT_MANAGER]: [
     Permission.RECONCILE_HOLDERS,
     Permission.REINDEX_HOLDERS,
+    Permission.RECONCILE_CACHE,
     Permission.SWEEP_UNDISTRIBUTED,
     Permission.REGISTER_PROVIDER,
     Permission.MANAGE_INCIDENTS,

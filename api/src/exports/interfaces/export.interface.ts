@@ -1,3 +1,5 @@
+import type { ExportRedactionMode, RedactionManifest } from '../services/export-field-redaction';
+
 export type ExportStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
 export enum ExportRole {
@@ -42,6 +44,8 @@ export interface DataExport {
   completedAt?: Date;
   cancelledAt?: Date;
   error?: string;
+  /** What was withheld from this run, for audit (#506). */
+  redaction?: RedactionManifest;
 }
 
 export enum ExportType {
@@ -59,6 +63,8 @@ export interface ExportStreamOptions {
   batchSize?: number;
   abortSignal?: AbortSignal;
   caller: ExportCaller;
+  /** How forbidden fields are hidden (#506). Default `strip` (removed). */
+  redaction?: ExportRedactionMode;
 }
 
 export interface ExportStreamResult {
@@ -69,4 +75,6 @@ export interface ExportStreamResult {
   completedAt?: Date;
   cancelledAt?: Date;
   error?: string;
+  /** What was withheld from this run, for audit (#506). */
+  redaction?: RedactionManifest;
 }

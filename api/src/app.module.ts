@@ -35,22 +35,10 @@ import { IdempotencyInterceptor } from './common/interceptors/idempotency.interc
 import { OpsModule } from './ops/ops.module';
 import { PolicyModule } from './policy/policy.module';
 import { LedgerModule } from './ledger/ledger.module';
-import { WorkersModule } from './workers/workers.module';
-import { ReconciliationModule } from './reconciliation/reconciliation.module';
-import { ExportsModule } from './exports/exports.module';
-import { ComplianceModule } from './compliance/compliance.module';
-import { AuditModule } from './audit/audit.module';
-import { RecoveryModule } from './recovery/recovery.module';
-import { MigrationSafetyModule } from './migrations/migration-safety.module';
-import { ImpersonationModule } from './impersonation/impersonation.module';
-import { InvitationsModule } from './invitations/invitations.module';
-import { FailuresModule } from './failures/failures.module';
-import { NotificationsModule } from './notifications/notifications.module';
-import { FeesModule } from './fees/fees.module';
-import { AuthorizationsModule } from './authorizations/authorizations.module';
-import { StatusModule } from './status/status.module';
+import { RiskModule } from './common/risk/risk.module';
 import { HealthModule } from './health/health.module';
 import { ImportsModule } from './imports/imports.module';
+import { ResilienceModule } from './resilience/resilience.module';
 
 @Module({
   imports: [
@@ -85,6 +73,7 @@ import { ImportsModule } from './imports/imports.module';
     PolicyModule,
     RiskModule,
     ImportsModule,
+    ResilienceModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: Rfc7807ExceptionFilter },
