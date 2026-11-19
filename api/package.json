@@ -25,6 +25,7 @@
     "release:gate": "ts-node --transpile-only scripts/verify-release-gate.ts",
     "migration:storage-compat": "ts-node --transpile-only scripts/verify-storage-migration.ts",
     "backfill": "ts-node --transpile-only scripts/backfill.ts",
+    "repair": "ts-node --transpile-only scripts/repair.ts",
     "mutate": "stryker run",
     "test:mutate": "stryker run --reporter progress --thresholds.high 50"
   },

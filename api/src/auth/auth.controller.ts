@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Body, Req,
-  HttpCode, HttpStatus, UseGuards, Param, NotFoundException,
+  HttpCode, HttpStatus, UseGuards, Param, NotFoundException, ForbiddenException,
 } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { KycService } from './kyc.service';
@@ -16,6 +16,8 @@ import {
   UserProfileResponse,
 } from './interfaces/auth.interface';
 import { RateLimit } from '../common/decorators/rate-limit.decorator';
+import { SessionService } from './session.service';
+import { canRevokeSessions } from './session-revocation.interface';
 
 interface UpdateKycBody {
   status: KycStatus;
@@ -36,6 +38,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly kycService: KycService,
+    private readonly sessions: SessionService,
   ) {}
 
   @Post('challenge')
@@ -57,6 +60,34 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async refresh(@Body() dto: RefreshTokenDto): Promise<AuthTokenResponse> {
     return this.authService.refreshToken(dto.refreshToken);
+  }
+
+  /** Sign out everywhere: bump the wallet epoch so every older token is stale. */
+  @Post('logout')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async logout(@Req() req: AuthenticatedRequest): Promise<{ revoked: true }> {
+    await this.sessions.revokeAll(req.user.walletAddress, req.user, 'logout');
+    return { revoked: true };
+  }
+
+  /**
+   * Revokes all sessions of another wallet. Restricted to the owner or a
+   * bearer of `auth:sessions:revoke`; enforced again in the service so a new
+   * route cannot accidentally bypass the rule.
+   */
+  @Post('sessions/revoke/:address')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async revokeSessions(
+    @Param('address') address: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<{ address: string; sessionVersion: number }> {
+    if (!canRevokeSessions(req.user, address)) {
+      throw new ForbiddenException('You may only revoke your own sessions');
+    }
+    const sessionVersion = await this.sessions.revokeAll(address, req.user, 'admin revocation');
+    return { address, sessionVersion };
   }
 
   @Get('profile')
