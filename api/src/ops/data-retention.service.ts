@@ -24,6 +24,9 @@ const DAY_MS = 1000 * 60 * 60 * 24;
 /** Incidents read per page while building the evidence hold set. */
 const HOLD_PAGE_SIZE = 100;
 
+const compareNames = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const roundAge = (age: number): number => Math.round(age * 100) / 100;
+
 /**
  * Files that are live state rather than expiring records (#411). The KYC
  * store keeps its current records in `data/kyc`; that file is rewritten on
@@ -42,6 +45,27 @@ export interface RetentionTypeReport {
 }
 
 export type RetentionRunReport = Record<DataType, RetentionTypeReport>;
+
+/** Why a past-retention file was kept rather than deleted. */
+export type RetentionHoldReason = 'never-expire' | 'evidence-hold';
+export type RetentionAction = 'delete' | RetentionHoldReason;
+
+/** One deterministic decision from `previewCleanup`. */
+export interface RetentionPlanEntry {
+  type: DataType;
+  file: string;
+  action: RetentionAction;
+  ageDays: number;
+}
+
+/**
+ * Read-only preview of what an enforcement run would do. Entries are sorted by
+ * type then filename and contain no wall-clock timestamp, so two previews of an
+ * unchanged directory are byte-identical.
+ */
+export interface RetentionPlan {
+  entries: RetentionPlanEntry[];
+}
 
 /**
  * Evidence holds for one run: ids/subjects of unresolved incidents, or
@@ -84,6 +108,63 @@ export class DataRetentionService {
 
     this.logger.log('Data retention cleanup job finished.');
     return report;
+  }
+
+  /**
+   * Read-only counterpart to `runCleanupJob` (#411). Uses the same retention
+   * limits, the same never-expire allow-list and the same evidence-hold loader,
+   * so the `delete` entries here are exactly the files enforcement removes.
+   * It never unlinks anything.
+   */
+  async previewCleanup(): Promise<RetentionPlan> {
+    const now = Date.now();
+    const entries: RetentionPlanEntry[] = [];
+    let holds: EvidenceHolds | undefined;
+
+    for (const type of Object.values(DataType)) {
+      const dirPath = path.join(this.dataDir, type);
+      const files = await this.listFiles(dirPath);
+
+      for (const file of [...files].sort(compareNames)) {
+        const age = await this.fileAgeDays(path.join(dirPath, file), now);
+        if (age === null || age <= RETENTION_DAYS[type]) continue;
+
+        if (NEVER_EXPIRE[type]?.has(file)) {
+          entries.push({ type, file, action: 'never-expire', ageDays: roundAge(age) });
+          continue;
+        }
+        if (type === DataType.EVIDENCE && this.isHeld(file, await (holds ??= await this.loadEvidenceHolds()))) {
+          entries.push({ type, file, action: 'evidence-hold', ageDays: roundAge(age) });
+          continue;
+        }
+        entries.push({ type, file, action: 'delete', ageDays: roundAge(age) });
+      }
+    }
+
+    entries.sort((a, b) => compareNames(a.type, b.type) || compareNames(a.file, b.file));
+    return { entries };
+  }
+
+  /** Missing/unreadable directories contribute no files, as in enforcement. */
+  private async listFiles(dirPath: string): Promise<string[]> {
+    try {
+      const stats = await this.fileFs.stat(dirPath);
+      if (!stats.isDirectory()) return [];
+    } catch {
+      return [];
+    }
+    return this.fileFs.readdir(dirPath);
+  }
+
+  /** Returns null for non-files and stat failures; those are silently skipped. */
+  private async fileAgeDays(filePath: string, now: number): Promise<number | null> {
+    try {
+      const stats = await this.fileFs.stat(filePath);
+      if (!stats.isFile()) return null;
+      return (now - stats.mtimeMs) / DAY_MS;
+    } catch {
+      return null;
+    }
   }
 
   private async cleanupDirectory(
