@@ -22,6 +22,18 @@ export interface WebhookVerificationConfig {
    * schedule, not just the replay window. Default: 72 hours.
    */
   dedupeWindowMs?: number;
+  /**
+   * How far a timestamp may sit in the future (sender clock skew) before it
+   * is rejected (#530). Defaults to `replayWindowMs`, the previous behaviour.
+   * A tighter value stops a sender with a fast clock from minting deliveries
+   * that stay replayable long after they were sent.
+   */
+  maxFutureSkewMs?: number;
+  /**
+   * Secrets still accepted during a rotation (#530). The current `secret` is
+   * tried first; drop old entries once senders have switched.
+   */
+  previousSecrets?: string[];
 }
 
 export interface WebhookVerificationResult {
@@ -66,8 +78,14 @@ export class WebhookVerificationService {
     // Check timestamp to prevent stale events
     const now = Date.now();
     const replayWindow = config.replayWindowMs || this.DEFAULT_REPLAY_WINDOW;
-    
-    if (Math.abs(now - event.timestamp) > replayWindow) {
+    const maxFutureSkew = config.maxFutureSkewMs ?? replayWindow;
+
+    // A NaN timestamp would pass every window comparison below (#530).
+    if (!Number.isSafeInteger(event.timestamp) || event.timestamp <= 0) {
+      return { valid: false, error: 'Invalid timestamp' };
+    }
+
+    if (now - event.timestamp > replayWindow || event.timestamp - now > maxFutureSkew) {
       this.logger.warn(
         `Stale event detected: ${event.id}, age: ${now - event.timestamp}ms`,
       );
@@ -75,18 +93,20 @@ export class WebhookVerificationService {
     }
 
     // Verify signature
-    if (!event.signature) {
+    if (!event.signature || typeof event.signature !== 'string') {
       return { valid: false, error: 'Missing signature' };
     }
 
-    const expectedSignature = this.computeSignature(
-      event.id,
-      event.timestamp,
-      event.payload,
-      config.secret,
+    const secrets = [config.secret, ...(config.previousSecrets ?? [])].filter(Boolean);
+    const signature = event.signature;
+    const signedWithKnownSecret = secrets.some((secret) =>
+      this.secureCompare(
+        signature,
+        this.computeSignature(event.id, event.timestamp, event.payload, secret),
+      ),
     );
 
-    if (!this.secureCompare(event.signature, expectedSignature)) {
+    if (!signedWithKnownSecret) {
       this.logger.warn(`Invalid signature for event ${event.id}`);
       return { valid: false, error: 'Invalid signature' };
     }
@@ -203,15 +223,28 @@ export class WebhookVerificationService {
   }
 
   /**
+   * Strict ms-epoch header parsing (#530): `parseInt` would accept
+   * "1700000000000abc", and a repeated header arrives as an array.
+   */
+  private parseTimestampHeader(header: unknown): number {
+    if (typeof header !== 'string' || !/^\d{1,16}$/.test(header)) {
+      return NaN;
+    }
+    return Number(header);
+  }
+
+  /**
    * Express middleware for webhook verification
    */
   createVerificationMiddleware(config: WebhookVerificationConfig) {
     return (req: any, res: any, next: any) => {
       const signature = req.headers[config.signatureHeader];
-      const timestamp = parseInt(req.headers[config.timestampHeader], 10);
+      const timestamp = this.parseTimestampHeader(req.headers[config.timestampHeader]);
 
+      // No invented id for an id-less body: a random id could never be
+      // deduplicated, so the event would be rejected as unstructured (#530).
       const event: WebhookEvent = {
-        id: req.body.id || `${timestamp}-${Math.random()}`,
+        id: req.body?.id,
         timestamp,
         payload: req.body,
         signature,

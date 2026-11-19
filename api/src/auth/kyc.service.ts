@@ -1,6 +1,7 @@
-import { Injectable, BadRequestException, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import { RedisService } from '../common/services/redis.service';
 import { KycStoreService } from '../common/services/kyc-store.service';
+import { InvestorEligibilityCacheService } from './investor-eligibility-cache.service';
 import {
   KycAuditEntry,
   KycRecord,
@@ -30,6 +31,7 @@ export class KycService {
   constructor(
     private readonly redis: RedisService,
     private readonly store: KycStoreService,
+    @Optional() private readonly eligibilityCache?: InvestorEligibilityCacheService,
   ) {}
 
   private async writeThroughCache(record: KycRecord): Promise<void> {
@@ -142,6 +144,11 @@ export class KycService {
     if (result.isNew || (result.entry as KycAuditEntry).id) {
       await this.invalidateCache(address);
       await this.writeThroughCache(result.record);
+      this.eligibilityCache?.onKycStatusChanged(
+        address,
+        (result.entry as KycAuditEntry).fromStatus ?? null,
+        result.record.status,
+      );
     }
     return result;
   }
