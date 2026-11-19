@@ -17,7 +17,7 @@ export interface RoleDiffReport {
   };
 }
 
-export const DEFAULT_ROLES = {
+export const DEFAULT_ROLES: Record<string, string[]> = {
   MAINTAINER: ['*:*'],
   ISSUER: [
     'bond:create',
