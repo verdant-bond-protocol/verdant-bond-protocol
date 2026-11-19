@@ -21,6 +21,7 @@ import {
   PartialFailureLinks,
   RejectedOperationExplanation,
 } from './partial-failure.interface';
+import { buildOperatorDashboard, OperatorDashboard, OperatorDashboardOptions } from './operator-dashboard';
 
 /** Remediation docs per operation kind — the "manual remediation" links. */
 const REMEDIATION_DOCS: Record<string, string> = {
@@ -313,6 +314,14 @@ export class PartialFailureService {
       archived,
       groups,
     };
+  }
+
+  /**
+   * Prioritised queue of live, unresolved failures for on-call operators
+   * (#535). Read-only; see `operator-dashboard.ts` for ordering rules.
+   */
+  operatorDashboard(opts: OperatorDashboardOptions = {}): OperatorDashboard {
+    return buildOperatorDashboard([...this.failures.values()], opts);
   }
 
   linksFor(failure: PartialFailure): PartialFailureLinks {

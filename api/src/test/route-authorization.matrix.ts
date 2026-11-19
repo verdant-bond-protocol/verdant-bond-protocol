@@ -14,6 +14,7 @@ import { MarketplaceController } from '../marketplace/marketplace.controller';
 import { ValuationController } from '../valuation/valuation.controller';
 import { PolicyConfigController } from '../policy/policy-config.controller';
 import { IntentReceiptController } from '../intent-receipts/intent-receipt.controller';
+import { JobsController } from '../workers/controllers/jobs.controller';
 
 import { FeesController } from '../fees/fees.controller';
 
@@ -67,6 +68,16 @@ export interface RouteAuthEntry {
 }
 
 export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
+  // ---- Background jobs / recovery ----
+  { controller: JobsController, method: 'enqueueJob', httpMethod: 'POST', path: 'api/v1/jobs/enqueue', guards: [JwtAuthGuard], role: 'authenticated', mutation: true },
+  { controller: JobsController, method: 'getJob', httpMethod: 'GET', path: 'api/v1/jobs/:jobId', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: JobsController, method: 'getQueueStatus', httpMethod: 'GET', path: 'api/v1/jobs/queue/status', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
+  { controller: JobsController, method: 'getDeadLetterJobs', httpMethod: 'GET', path: 'api/v1/jobs/dead-letter/list', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
+  { controller: JobsController, method: 'recoverDeadLetter', httpMethod: 'POST', path: 'api/v1/jobs/dead-letter/:jobId/recover', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: true },
+  { controller: JobsController, method: 'recoverStuck', httpMethod: 'POST', path: 'api/v1/jobs/recover/stuck', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: true },
+  { controller: JobsController, method: 'getRecoveryAudit', httpMethod: 'GET', path: 'api/v1/jobs/recovery/audit', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
+  { controller: JobsController, method: 'getDependencyMatrix', httpMethod: 'GET', path: 'api/v1/jobs/recovery/dependency-matrix', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
+
   // ---- Auth ----
   { controller: AuthController, method: 'challenge', httpMethod: 'POST', path: 'auth/challenge', guards: [], role: 'public', mutation: true },
   { controller: AuthController, method: 'verify', httpMethod: 'POST', path: 'auth/verify', guards: [], role: 'public', mutation: true },
@@ -78,7 +89,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   // ---- Bonds ----
   { controller: BondsController, method: 'create', httpMethod: 'POST', path: 'bonds', guards: [JwtAuthGuard, PermissionsGuard, IntentGuard, RiskGuard], role: 'permissioned', permissions: [Permission.CREATE_BOND], mutation: true },
   { controller: BondsController, method: 'findAll', httpMethod: 'GET', path: 'bonds', guards: [], role: 'public', mutation: false },
-  { controller: BondsController, method: 'findHeldByAddress', httpMethod: 'GET', path: 'bonds/held/:address', guards: [], role: 'public', mutation: false },
+  { controller: BondsController, method: 'findHeldByAddress', httpMethod: 'GET', path: 'bonds/held/:address', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
   { controller: BondsController, method: 'findOne', httpMethod: 'GET', path: 'bonds/:id', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'getBondDetail', httpMethod: 'GET', path: 'bonds/:id/detail', guards: [], role: 'public', mutation: false },
   { controller: BondsController, method: 'subscribe', httpMethod: 'POST', path: 'bonds/:id/subscribe', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
@@ -96,6 +107,12 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: BondsController, method: 'reconcileHolders', httpMethod: 'POST', path: 'bonds/:id/reconcile-holders', guards: [JwtAuthGuard, PermissionsGuard, IntentGuard], role: 'permissioned', permissions: [Permission.RECONCILE_HOLDERS], mutation: true },
   { controller: BondsController, method: 'reindexHolders', httpMethod: 'POST', path: 'bonds/admin/reindex-holders', guards: [JwtAuthGuard, PermissionsGuard, IntentGuard], role: 'permissioned', permissions: [Permission.REINDEX_HOLDERS], mutation: true },
   { controller: BondsController, method: 'exportBond', httpMethod: 'GET', path: 'bonds/:id/export', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.EXPORT_BOND], mutation: false },
+  { controller: BondsController, method: 'redeem', httpMethod: 'POST', path: 'bonds/:id/redeem', guards: [JwtAuthGuard, KycGuard], role: 'authenticated', mutation: true },
+  { controller: BondsController, method: 'runCouponBacktest', httpMethod: 'POST', path: 'bonds/backtest', guards: [JwtAuthGuard], role: 'authenticated', mutation: true },
+  { controller: BondsController, method: 'archiveMaturedRecord', httpMethod: 'POST', path: 'bonds/:id/archive', guards: [], role: 'public', mutation: true },
+  { controller: BondsController, method: 'verifyRestore', httpMethod: 'POST', path: 'bonds/:id/verify-restore', guards: [], role: 'public', mutation: true },
+  { controller: BondsController, method: 'restoreMaturedRecord', httpMethod: 'POST', path: 'bonds/:id/restore', guards: [], role: 'public', mutation: true },
+  { controller: BondsController, method: 'getArchivalLifecycle', httpMethod: 'GET', path: 'bonds/:id/lifecycle', guards: [], role: 'public', mutation: false },
 
   // Oracle
   { controller: OracleController, method: 'submitReport', httpMethod: 'POST', path: 'oracle/reports', guards: [], role: 'wallet-header', mutation: true },
@@ -116,6 +133,8 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: OracleController, method: 'listIncidents', httpMethod: 'GET', path: 'oracle/incidents', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_INCIDENTS], mutation: false },
   { controller: OracleController, method: 'acknowledgeIncident', httpMethod: 'POST', path: 'oracle/incidents/:id/acknowledge', guards: [JwtAuthGuard, PermissionsGuard, IntentGuard], role: 'permissioned', permissions: [Permission.MANAGE_INCIDENTS], mutation: true },
   { controller: OracleController, method: 'resolveIncident', httpMethod: 'POST', path: 'oracle/incidents/:id/resolve', guards: [JwtAuthGuard, PermissionsGuard, IntentGuard], role: 'permissioned', permissions: [Permission.MANAGE_INCIDENTS], mutation: true },
+  { controller: OracleController, method: 'getCircuitBreakerStatus', httpMethod: 'GET', path: 'oracle/circuit-breaker/:projectId', guards: [], role: 'public', mutation: false },
+  { controller: OracleController, method: 'resumeProject', httpMethod: 'POST', path: 'oracle/circuit-breaker/resume', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_INCIDENTS], mutation: true },
 
   // Projects
   { controller: ProjectsController, method: 'register', httpMethod: 'POST', path: 'projects', guards: [], role: 'public', mutation: true },
@@ -130,6 +149,10 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: ProjectsController, method: 'updateCertifications', httpMethod: 'PUT', path: 'projects/:id/certifications', guards: [], role: 'public', mutation: true },
   { controller: ProjectsController, method: 'certificationHistory', httpMethod: 'GET', path: 'projects/:id/certifications', guards: [], role: 'public', mutation: false },
   { controller: ProjectsController, method: 'couponCertification', httpMethod: 'GET', path: 'projects/:id/coupon-certification', guards: [], role: 'public', mutation: false },
+  { controller: ProjectsController, method: 'getDocument', httpMethod: 'GET', path: 'projects/:id/documents/:hash', guards: [], role: 'public', mutation: false },
+  { controller: ProjectsController, method: 'flagDocumentAsAudit', httpMethod: 'POST', path: 'projects/:id/documents/:hash/flag-audit', guards: [JwtAuthGuard], role: 'authenticated', mutation: true },
+  { controller: ProjectsController, method: 'escalateDocument', httpMethod: 'POST', path: 'projects/:id/documents/:hash/escalate', guards: [], role: 'public', mutation: true },
+  { controller: ProjectsController, method: 'getDocumentHealth', httpMethod: 'GET', path: 'projects/:id/documents/:hash/health', guards: [], role: 'public', mutation: false },
 
 
   // ---- Marketplace ----
@@ -146,6 +169,9 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: MarketplaceController, method: 'getPriceFeed', httpMethod: 'GET', path: 'marketplace/prices', guards: [], role: 'public', mutation: false },
   { controller: MarketplaceController, method: 'getBestPrice', httpMethod: 'GET', path: 'marketplace/prices/:bondId/best', guards: [], role: 'public', mutation: false },
   { controller: MarketplaceController, method: 'calculateSlippage', httpMethod: 'GET', path: 'marketplace/prices/:bondId/slippage', guards: [], role: 'public', mutation: false },
+  { controller: MarketplaceController, method: 'evaluatePriceImpact', httpMethod: 'GET', path: 'marketplace/prices/:bondId/impact', guards: [], role: 'public', mutation: false },
+  { controller: MarketplaceController, method: 'getPriceImpactConfig', httpMethod: 'GET', path: 'marketplace/config/:bondId/impact-limits', guards: [], role: 'public', mutation: false },
+  { controller: MarketplaceController, method: 'updatePriceImpactConfig', httpMethod: 'PUT', path: 'marketplace/config/:bondId/impact-limits', guards: [], role: 'wallet-header', mutation: true },
   { controller: MarketplaceController, method: 'runReconciliation', httpMethod: 'POST', path: 'marketplace/reconciliation/run', guards: [], role: 'wallet-header', mutation: true },
   { controller: MarketplaceController, method: 'listReconciliationMismatches', httpMethod: 'GET', path: 'marketplace/reconciliation/mismatches', guards: [], role: 'wallet-header', mutation: false },
   { controller: MarketplaceController, method: 'repairReconciliation', httpMethod: 'POST', path: 'marketplace/reconciliation/repair', guards: [], role: 'wallet-header', mutation: true },
