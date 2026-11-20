@@ -73,6 +73,16 @@ describe('RiskScoringService', () => {
       expect(amountFactor?.value).toBeGreaterThan(0);
     });
 
+    it('keeps malformed and oversized amount baselines explainable', () => {
+      const score = service.scoreAction('transfer_large', 'user_1', {
+        amount: BigInt(Number.MAX_SAFE_INTEGER) * 1000n,
+        historicalAverage: 0n,
+      });
+
+      expect(score.factors.find((f) => f.name === 'amount_anomaly')).toBeUndefined();
+      expect(score.factors.every((factor) => Number.isFinite(factor.value))).toBe(true);
+    });
+
     it('should include temporal anomaly factor', () => {
       const score = service.scoreAction('transfer_large', 'user_1', {
         isOffHours: true,

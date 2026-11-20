@@ -56,8 +56,16 @@ export class RiskScoringService {
     let weightedScore = 0;
 
     // Factor 1: Amount anomaly
-    if (context.amount && context.historicalAverage) {
-      const ratio = Number(context.amount) / Number(context.historicalAverage);
+    if (
+      context.amount !== undefined &&
+      context.historicalAverage !== undefined &&
+      context.amount >= 0n &&
+      context.historicalAverage > 0n
+    ) {
+      // Cap before converting so large financial integers never lose precision.
+      const ratio = context.amount >= context.historicalAverage * 4n
+        ? 4
+        : Number(context.amount) / Number(context.historicalAverage);
       const amountScore = Math.min(100, ratio * 25); // Max 25 points
       const weight = 0.25;
       factors.push({
