@@ -160,7 +160,7 @@ export class InvestorRejectionExplanationService {
     let detailedExplanation = 'The protocol enforces regulatory eligibility rules for all bond subscriptions.';
     let remediationType: InvestorRemediationType = 'SELF_SERVICE';
     let isRetryable = true;
-    let retryAfterSeconds: number | undefined = undefined;
+    const retryAfterSeconds: number | undefined = undefined;
     let actionSteps: string[] = ['Review eligibility requirements and ensure account credentials are up to date.'];
     let remediationUrl: string | undefined = '/compliance/kyc';
 

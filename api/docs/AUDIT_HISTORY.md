@@ -75,10 +75,11 @@ a history", and steady-state history dumps are large.
 
 ## What is *not* covered
 
-- **Determining *who* tampered.** The chain detects *that* an entry was
-  altered, not which principal did it — `actor` is recorded as stated and is
-  not itself a signature. Attributing edits requires a signing identity bound
-  into the hash (future work, out of scope here).
+- **Determining *who* tampered from the chain alone.** The chain detects *that*
+  an entry was altered, not which principal did it — `actor` is recorded as
+  stated and is not itself a signature. For privileged actions, attribution is
+  provided by the signed receipt layer below; the chain's own hash remains
+  unkeyed by design.
 - **Automatic repair.** A failed verification is reported, never auto-mutated.
   Recovery from confirmed tampering is a manual, maintainer decision.
 
@@ -100,3 +101,49 @@ if (!report.ok) {
   // inspect report.failures[i].failedIndex / expected / actual
 }
 ```
+
+## Signed audit receipts for privileged actions
+
+`AuditReceiptService` (in `api/src/audit/`) adds **non-repudiable, verifiable
+receipts** on top of the unchanged hash chain. It is additive: `AuditRecord`,
+`AuditWrite`, `AuditWriteResult`, the chain hash algorithm, and all existing
+routes keep their current shapes.
+
+- `recordPrivilegedAction(write, { actorRoles })` writes the audit entry and
+  returns `{ record, receipt }`. Pass the roles from your auth guard; only
+  `admin` and `auditor` may request a signed receipt. Omitting `actorRoles`
+  preserves the internal-caller behaviour.
+- `issue(record)` signs an existing entry; `verify(record, receipt, trusted?)`
+  verifies it. By default only the current signing key is trusted; pass
+  `trustedPublicKeys` to accept receipts from a rotated key.
+- Receipts are Ed25519 signatures (domain separator `verdant-audit-receipt:v1\n`)
+  over `stableStringify` of every authoritative audit field, plus binding
+  fields (`recordId`, `hash`, `action`, `actor`, `entityType`, `entityId`) that
+  prevent replaying one receipt for another entry.
+
+**Configuration:** set `AUDIT_RECEIPT_SIGNING_KEY` to a PKCS#8 Ed25519 private
+key. An invalid configured key fails closed at boot. If unset, an ephemeral
+key is generated with a warning: receipts then verify only within that process
+and **will not survive a restart**. Publish the corresponding SPKI public key
+via `AuditReceiptService.publicKey` to verifiers.
+
+| Path | Verified behaviour (`api/src/audit/audit.receipt.spec.ts`) |
+|---|---|
+| Normal | Issue and verify; configured key; chain still verifies after issuance. |
+| Failure | Tampered payload → `signature_mismatch`; changed binding field → `record_mismatch`; forged signature; unsupported version; malformed signature; rejected audit write → `ServiceUnavailableException`; invalid configured key fails boot. |
+| Retry / replay | Deterministic signatures (re-signing is idempotent); repeated verification; receipt cannot be replayed for a different record; key rotation via explicit trusted-key list. |
+| Authorization | Non-privileged role → `ForbiddenException`; receipt from an untrusted key → `untrusted_signer`. |
+
+**Edge cases and recovery:**
+- Verification order is version → shape → binding fields → trusted key →
+  signature, so the failure reason tells you which control fired.
+- Ed25519 signatures are deterministic for a fixed key and message; a stable
+  key means reissuing a receipt for the same record reproduces the same bytes.
+- Key rotation: keep the old public key in `trustedPublicKeys` for the overlap
+  window, then drop it. A compromised key requires reissuing affected receipts
+  under a new key and treating old signatures as untrusted.
+- There is no durability for the receipts themselves yet; the durable Postgres
+  audit store is not wired into `AuditModule`. Export signed receipts alongside
+  the evidence bundle if they must outlive a restart. Rolling back is a code
+  revert of `audit.receipt.ts`, `audit-receipt.service.ts` and the module
+  provider entry — no schema migration is involved.

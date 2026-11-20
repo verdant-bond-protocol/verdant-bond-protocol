@@ -58,3 +58,42 @@ report of `{ deleted, held, errors }`.
 Deletion is irreversible. To recover a file deleted in error, restore it from backup and
 set its mtime, or move it out of the classified directory. To roll back the job's behaviour,
 revert `data-retention.service.ts`. Nothing is persisted by the job itself.
+
+### Sensitive-metadata enforcement preview
+
+`DataRetentionService.previewCleanup()` is a **read-only** counterpart to the nightly
+enforcement job. It returns a deterministic `RetentionPlan`: entries sorted by data type
+then filename, each with `{ type, file, action, ageDays }` where `action` is one of
+`delete`, `never-expire` (the live KYC store) or `evidence-hold`. No wall-clock timestamp
+is part of the plan, so two previews of an unchanged directory are identical. It reuses
+the same retention limits, never-expire allow-list and fail-closed incident-hold loader
+as enforcement — the `delete` entries are exactly the files the next run removes.
+
+Focused verification: `api/src/ops/data-retention.sensitive-metadata.spec.ts` (real temp
+directories and real `unlink`) pins:
+
+| Path | Covered behaviour |
+|---|---|
+| Normal | Preview predictions match the enforcement report exactly; preview deletes nothing; the append-only KYC audit log expires while the live KYC store is held. |
+| Authorization boundary | Only the four classified directories are eligible; the live KYC store and evidence linked by incident id **or wallet-address subject** survive. Blank incident keys are ignored so an empty id cannot hold every file. |
+| Failure | Incident-store outage holds all evidence (fail closed) but other types still run; an undeletable file is counted in `errors` while the rest is cleaned; a failed `stat` is skipped. |
+| Retry | A transient `unlink` error is recovered by the next scheduled sweep with no reconfiguration; runs are idempotent; an evidence hold is released once the incident resolves. |
+| Edge cases | Strictly-greater age rule (at-limit kept); hold matching is a filename **substring** test, so a coincidental id in a name holds that file. |
+
+**Edge cases and limitations:**
+- Holds are matched by substring, not by exact identity. This is intentional (evidence
+  filenames carry incident ids/subjects) but can over-hold unrelated files; the file is
+  released on the next run once the incident is resolved, or an operator can rename it.
+- `previewCleanup()` and `runCleanupJob()` evaluate mtimes at call time. Between a preview
+  and an enforcement run a file can age across the boundary or an incident can be
+  resolved — re-preview immediately before acting on a plan.
+- Only regular files directly inside the classified directories are eligible; symlinks
+  and nested directories are ignored.
+- Deletion is physical `unlink`, with no before-image journal. Recovery means restoring
+  from backup and resetting mtime, or moving the file out of the classified directory.
+  There is no automated undo; the plan is a preview only.
+
+**Contract compatibility:** `runCleanupJob()` keeps its zero-argument cron signature and
+its `{ deleted, held, errors }` report shape. `previewCleanup()` is additive, so no
+existing caller or scheduled task is affected. Rolling back is a code revert of the
+service file; no stored schema or migration is involved.
