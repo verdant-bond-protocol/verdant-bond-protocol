@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 
 export enum FeatureFlag {
   ENABLE_SECONDARY_MARKET = 'ENABLE_SECONDARY_MARKET',
@@ -80,11 +80,18 @@ export class FeatureFlagsService {
       return false;
     }
 
-    if (state.canary && userId) {
-      return this.isSampledUser(flag, userId, 0.1);
+    if (state.canary) {
+      return userId ? this.isSampledUser(flag, userId, 0.1) : false;
     }
 
     return state.status === FeatureFlagStatus.ENABLED;
+  }
+
+  /** Fail closed at a feature boundary when rollout or emergency state disallows access. */
+  assertEnabled(flag: FeatureFlag, userId?: string): void {
+    if (!this.isEnabled(flag, userId)) {
+      throw new ServiceUnavailableException(`Feature ${flag} is not currently available`);
+    }
   }
 
   /**
@@ -93,6 +100,7 @@ export class FeatureFlagsService {
   enableFeature(flag: FeatureFlag, reason: string = 'Manual rollout'): void {
     const state = this.flagStates.get(flag) || { flag, status: FeatureFlagStatus.DISABLED };
     state.status = FeatureFlagStatus.ENABLED;
+    state.canary = false;
     state.enabledAt = Date.now();
     state.reason = reason;
     this.flagStates.set(flag, state);
@@ -196,7 +204,7 @@ export class FeatureFlagsService {
   private isSampledUser(flag: FeatureFlag, userId: string, rate: number): boolean {
     const key = `${flag}:${userId}`;
     const hash = this.simpleHash(key);
-    return (hash % 100) < rate * 100;
+    return (hash >>> 0) / 0x1_0000_0000 < rate;
   }
 
   private simpleHash(str: string): number {
