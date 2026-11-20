@@ -1,11 +1,11 @@
 import { FeatureFlagsRollbackService, HealthMetric } from './feature-flags-rollback.service';
-import { FeatureFlag } from './feature-flags.service';
+import { FeatureFlag, FeatureFlagStatus, FeatureFlagsService } from './feature-flags.service';
 
 describe('FeatureFlagsRollbackService', () => {
   let service: FeatureFlagsRollbackService;
 
   beforeEach(() => {
-    service = new FeatureFlagsRollbackService();
+    service = new FeatureFlagsRollbackService(new FeatureFlagsService());
   });
 
   describe('Initialization', () => {
@@ -70,24 +70,28 @@ describe('FeatureFlagsRollbackService', () => {
     it('should trigger automatic rollback on health metric breach', () => {
       const flag = FeatureFlag.ENABLE_SECONDARY_MARKET;
 
-      // Initial state: enabled
-      let status = service.getRollbackStatus(flag);
-      expect(status?.enabled).toBe(false); // Default is disabled
+      const featureFlags = new FeatureFlagsService();
+      featureFlags.enableFeature(flag);
+      service = new FeatureFlagsRollbackService(featureFlags);
+      expect(service.getRollbackStatus(flag)?.enabled).toBe(true);
 
-      // This would need the flag to be enabled first via env vars
-      // For testing, we check that rollback logic is sound
       service.updateHealthMetrics(flag, [
         { name: 'error_rate', value: 15 }, // Above threshold
         { name: 'p99_latency_ms', value: 1000 }, // Above threshold
       ]);
 
-      status = service.getRollbackStatus(flag);
+      const status = service.getRollbackStatus(flag);
       expect(status?.rollbackReason).toBeDefined();
+      expect(featureFlags.isEnabled(flag)).toBe(false);
+      expect(featureFlags.getAllFlags()[flag].status).toBe(FeatureFlagStatus.EMERGENCY);
     });
 
     it('should log rollback reason', () => {
       const flag = FeatureFlag.ENABLE_GOVERNANCE_PROPOSALS;
 
+      const featureFlags = new FeatureFlagsService();
+      featureFlags.enableFeature(flag);
+      service = new FeatureFlagsRollbackService(featureFlags);
       service.updateHealthMetrics(flag, [
         { name: 'memory_usage_percent', value: 95 },
         { name: 'database_connection_pool_exhaustion', value: 98 },

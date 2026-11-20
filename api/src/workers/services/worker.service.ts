@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { JobQueueService } from './job-queue.service';
 import { JobType, JOB_PROCESSING_TIMEOUT_MS } from '../interfaces/job.interface';
 import { TelemetryService } from '../../common/services/telemetry.service';
+import { resolveWorkerConcurrency } from './worker-concurrency';
 
 export interface JobHandler {
   handle(payload: any): Promise<Record<string, any>>;
@@ -11,7 +12,9 @@ export interface JobHandler {
 export class WorkerService {
   private readonly logger = new Logger(WorkerService.name);
   private readonly handlers = new Map<JobType, JobHandler>();
-  private isProcessing = false;
+  /** Jobs currently claimed by this worker; never exceeds `maxConcurrency`. */
+  private inFlight = 0;
+  private readonly maxConcurrency = resolveWorkerConcurrency();
 
   constructor(
     private readonly jobQueue: JobQueueService,
@@ -23,12 +26,20 @@ export class WorkerService {
     this.logger.log(`Registered handler for job type: ${jobType}`);
   }
 
+  /** Slot usage, for health checks and tests. */
+  getStats(): { inFlight: number; maxConcurrency: number } {
+    return { inFlight: this.inFlight, maxConcurrency: this.maxConcurrency };
+  }
+
   async processNextJob(): Promise<boolean> {
-    if (this.isProcessing) {
+    // Backpressure: with every slot busy, leave the job in the queue instead of
+    // claiming work this worker cannot start. The slot is taken synchronously,
+    // before any await, so concurrent callers can never overshoot the bound.
+    if (this.inFlight >= this.maxConcurrency) {
       return false;
     }
 
-    this.isProcessing = true;
+    this.inFlight++;
     try {
       const job = await this.jobQueue.dequeue();
       if (!job) {
@@ -80,12 +91,14 @@ export class WorkerService {
         return true;
       }
     } finally {
-      this.isProcessing = false;
+      this.inFlight--;
     }
   }
 
   async startProcessing(intervalMs = 5000): Promise<void> {
-    this.logger.log(`Starting worker with ${intervalMs}ms interval`);
+    this.logger.log(
+      `Starting worker with ${intervalMs}ms interval and concurrency ${this.maxConcurrency}`,
+    );
 
     const process = async () => {
       try {
@@ -102,6 +115,9 @@ export class WorkerService {
       }
     };
 
-    process();
+    // One polling loop per slot; processNextJob enforces the bound itself.
+    for (let slot = 0; slot < this.maxConcurrency; slot++) {
+      process();
+    }
   }
 }
