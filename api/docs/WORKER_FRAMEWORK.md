@@ -297,6 +297,44 @@ async requestExport() {
 
 Client polls `/api/v1/jobs/{jobId}` for completion.
 
+## Bounded Concurrency and Backpressure
+
+A worker processes at most `WORKER_CONCURRENCY` jobs at once (default `1`, hard
+ceiling `32`). Enqueue-time admission limits (see `queue-backpressure.ts`) bound
+how much work may wait; this bound limits how much work one worker may run.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `WORKER_CONCURRENCY` | Jobs one worker processes in parallel | `1` |
+
+`WorkerService.processNextJob()` takes a slot before it touches the queue. When
+every slot is busy it returns `false` **without dequeuing**, so a saturated
+worker never claims work it cannot start. Excess jobs stay in Redis, where they
+remain visible to other worker instances and to the admission bounds.
+`startProcessing()` runs one polling loop per slot. `getStats()` reports
+`{ inFlight, maxConcurrency }`.
+
+### Edge cases
+
+- **Invalid values** (`""`, `abc`, `0`, negative, fractional) fall back to `1`
+  rather than stalling or unbounding the worker. Values above `32` are clamped.
+- **Handler failure, timeout, missing handler, or an error from the queue**
+  always release the slot, so a failing job cannot shrink capacity.
+- **Racing callers** cannot overshoot the bound: the slot is taken synchronously
+  before the first `await`.
+- **Crash while jobs are in flight**: in-memory slots vanish with the process.
+  The jobs themselves are recovered by the existing processing-lock expiry and
+  `POST /api/v1/jobs/recover/stuck`; nothing new needs reconciling.
+- **Multiple instances** each apply their own bound, so total parallelism is
+  `WORKER_CONCURRENCY` times the number of worker instances.
+- **Handlers must be safe to run concurrently.** Jobs of the same type may now
+  overlap; keep handlers idempotent (see Best Practices).
+
+### Rollback
+
+Unset `WORKER_CONCURRENCY` (or set it to `1`) and restart. This restores the
+previous one-job-at-a-time behaviour exactly; no data migration is involved.
+
 ## Best Practices
 
 1. **Keep Jobs Focused** - Each handler should do one thing well
