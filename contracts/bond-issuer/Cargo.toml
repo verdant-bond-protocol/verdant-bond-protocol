@@ -12,6 +12,7 @@ nbbs-shared = { path = "../shared" }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+nbbs-project-registry = { path = "../project-registry" }
 proptest = "1"
 
 [features]

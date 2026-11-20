@@ -65,3 +65,19 @@ is converted into distributable credits:
 - IoT Sensors: continuous soil carbon/moisture
 - Blue Carbon Surveys: seasonal plot-level biomass and soil carbon (mangrove, seagrass, saltmarsh)
 - Community Monitors: quarterly species surveys
+
+## Geospatial Boundary Format & Validation (#112)
+
+Project registrations support canonical GeoJSON boundary representations (`Polygon` or `MultiPolygon`) to ensure verifiable project perimeters before IPFS pinning and on-chain registration.
+
+### Accepted Format
+- Geometry type must be `Polygon` or `MultiPolygon` (raw geometry or wrapped in a GeoJSON `Feature`).
+- Coordinates format: WGS84 `[longitude, latitude]` pairs in degrees.
+- Longitude range: `[-180.0, 180.0]`.
+- Latitude range: `[-90.0, 90.0]`.
+
+### Validation Requirements
+1. **Linear Ring Closure**: Each ring must contain at least 4 coordinate pairs, and the first coordinate pair must equal the last coordinate pair.
+2. **Area Sanity Check**: The geodesic polygon area (derived via spherical surface integration) is checked against the reported `totalAreaHa`. If the area differs beyond a **10%** tolerance threshold, registration is rejected.
+3. **IPFS Provenance**: Validated boundary geometry and its SHA-256 digest (`boundaryHash`) are stored in the project's IPFS metadata record.
+

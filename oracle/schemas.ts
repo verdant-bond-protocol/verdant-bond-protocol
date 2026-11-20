@@ -16,10 +16,10 @@ export const isoDate = z
 
 /** Methodology symbols compatible with the on-chain `Symbol` field. */
 export const METHODOLOGY = {
-  VERRA_VCS: 'VERRA-VCS',
-  REMOTE_SENSING: 'REMOTE-SENSING',
-  IOT_SENSORS: 'IOT-SENSORS',
-  BLUE_CARBON: 'BLUE-CARBON',
+  VERRA_VCS: 'VERRA_VCS',
+  REMOTE_SENSING: 'REMOTE_SENSING',
+  IOT_SENSORS: 'IOT_SENSORS',
+  BLUE_CARBON: 'BLUE_CARBON',
 } as const;
 
 // ─────────────────────────── Verra registry ───────────────────────────
@@ -27,7 +27,7 @@ export const METHODOLOGY = {
 export const VerraProjectSchema = z.object({
   project_id: z.string().min(1),
   name: z.string().min(1),
-  registry: z.string().min(1).default('VERRA-VCS'),
+  registry: z.string().min(1).default('VERRA_VCS'),
   status: z.enum(['REGISTERED', 'ACTIVE', 'COMPLETED', 'WITHDRAWN']),
   methodologies: z.array(z.string().min(1)).default([]),
 });

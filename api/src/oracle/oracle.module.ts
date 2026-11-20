@@ -1,25 +1,37 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ProjectsModule } from '../projects/projects.module';
+import { AuditModule } from '../audit/audit.module';
 import { OracleController } from './oracle.controller';
 import { OracleService } from './oracle.service';
 import { OracleScheduler } from './oracle.scheduler';
 import { OracleMonitoringService } from './oracle.monitoring.service';
+import { OracleIncidentRepository } from './oracle-incident.repository';
+import { GracePeriodService } from './grace-period.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 import { BlueCarbonProvider } from './providers/blue-carbon.provider';
+import { IotProvider } from './providers/iot.provider';
+
+import { CircuitBreakerService } from './circuit-breaker.service';
 
 @Module({
-  imports: [ScheduleModule.forRoot(), ProjectsModule],
+  imports: [ScheduleModule.forRoot(), ProjectsModule, AuditModule],
+
   controllers: [OracleController],
   providers: [
     OracleService,
     OracleScheduler,
     OracleMonitoringService,
+    OracleIncidentRepository,
+    GracePeriodService,
     VerraProvider,
     SatelliteProvider,
     BlueCarbonProvider,
+    IotProvider,
+    CircuitBreakerService,
   ],
-  exports: [OracleService, OracleMonitoringService],
+  exports: [OracleService, OracleMonitoringService, OracleIncidentRepository, CircuitBreakerService],
 })
 export class OracleModule {}
+

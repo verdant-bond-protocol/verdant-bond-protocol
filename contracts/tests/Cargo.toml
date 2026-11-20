@@ -13,6 +13,14 @@ nbbs-project-registry = { path = "../project-registry" }
 nbbs-credit-retirement = { path = "../credit-retirement" }
 nbbs-governance = { path = "../governance" }
 nbbs-shared = { path = "../shared" }
+nbbs-storage = { path = "../storage" }
+
+[features]
+default = []
+# Enables regeneration of `fixtures/storage_keys.json` (#159).
+storage-fixture-update = []
 
 [dev-dependencies]
 proptest = "1"
+serde = "1"
+serde_json = "1"

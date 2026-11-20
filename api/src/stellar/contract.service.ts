@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, GatewayTimeoutException } from '@nestjs/common';
 import {
   rpc,
   TransactionBuilder,
@@ -12,6 +12,9 @@ import {
   xdr,
 } from '@stellar/stellar-sdk';
 import { StellarService } from './stellar.service';
+import { NonceService } from '../common/services/nonce.service';
+import { ConfigService } from '../config/config.service';
+import { ContractException, ERROR_MAPPINGS, StableErrorCode } from './contract-errors';
 
 export interface ContractCallOptions {
   contractAddress: string;
@@ -26,14 +29,79 @@ export interface ContractCallResult {
   successful: boolean;
 }
 
+// sendTransaction() returns as soon as Soroban RPC *accepts* the transaction,
+// not once it's actually applied to the ledger. Callers that need to know the
+// final outcome should poll getTransactionStatus() with the returned hash.
+export type TransactionStatus = 'pending' | 'confirmed' | 'failed';
+
+export interface TransactionStatusResult {
+  hash: string;
+  status: TransactionStatus;
+}
+
 @Injectable()
 export class ContractService {
   private sorobanRpc: rpc.Server;
 
-  constructor(private readonly stellarService: StellarService) {
+  constructor(
+    private readonly stellarService: StellarService,
+    private readonly nonceService: NonceService,
+    private readonly configService: ConfigService,
+  ) {
     this.sorobanRpc = new rpc.Server(
       process.env.SOROBAN_RPC_URL || 'http://localhost:8000/soroban/rpc',
       { allowHttp: true },
+    );
+  }
+
+  private getContractCategory(contractAddress: string): string {
+    if (!contractAddress) return 'UNKNOWN';
+    const normalized = contractAddress.trim();
+    if (normalized === this.configService.getBondIssuerAddress().trim()) {
+      return 'BOND';
+    }
+    if (normalized === this.configService.getCouponEngineAddress().trim()) {
+      return 'BOND'; // coupon engine uses BondError
+    }
+    if (normalized === this.configService.getOracleConsumerAddress().trim()) {
+      return 'ORACLE';
+    }
+    if (normalized === this.configService.getDexRouterAddress().trim()) {
+      return 'DEX';
+    }
+    if (normalized === this.configService.getProjectRegistryAddress().trim()) {
+      return 'REGISTRY';
+    }
+    if (normalized === this.configService.getCreditRetirementAddress().trim()) {
+      return 'CREDIT';
+    }
+    return 'UNKNOWN';
+  }
+
+  private mapErrorCodeToStable(category: string, code?: number): { code: StableErrorCode; message: string } {
+    if (code !== undefined && ERROR_MAPPINGS[category] && ERROR_MAPPINGS[category][code]) {
+      return ERROR_MAPPINGS[category][code];
+    }
+    return {
+      code: StableErrorCode.UNKNOWN_CONTRACT_ERROR,
+      message: `An unknown contract error occurred on category ${category} (raw code: ${code})`,
+    };
+  }
+
+  private throwMappedContractError(
+    contractAddress: string,
+    method: string,
+    rawErrorMsg?: string,
+    code?: number,
+  ): never {
+    const category = this.getContractCategory(contractAddress);
+    const mapped = this.mapErrorCodeToStable(category, code);
+    throw new ContractException(
+      mapped.code,
+      mapped.message || rawErrorMsg || `Contract error on ${category} contract`,
+      contractAddress,
+      method,
+      code,
     );
   }
 
@@ -59,24 +127,21 @@ export class ContractService {
       const simulation = await this.sorobanRpc.simulateTransaction(transaction);
 
       if (rpc.Api.isSimulationError(simulation)) {
-        throw new BadRequestException(
-          `Contract simulation failed: ${this.describeSimulationError(simulation.error, simulation.events)}`,
-        );
+        const code = this.extractContractErrorCode(simulation.error, simulation.events);
+        this.throwMappedContractError(contractAddress, method, simulation.error, code);
       }
 
       if (!simulation.result) {
-        throw new BadRequestException(
-          'Simulation returned no result',
-        );
+        throw new BadRequestException('Simulation returned no result');
       }
 
       return simulation.result.retval;
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      if (error instanceof ContractException || error instanceof BadRequestException) {
         throw error;
       }
       throw new BadRequestException(
-        `Failed to simulate contract call: ${error.message}`,
+        `Failed to simulate contract call: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -108,9 +173,8 @@ export class ContractService {
       const simulation = await this.sorobanRpc.simulateTransaction(transaction);
 
       if (rpc.Api.isSimulationError(simulation)) {
-        throw new BadRequestException(
-          `Transaction simulation failed: ${this.describeSimulationError(simulation.error, simulation.events)}`,
-        );
+        const code = this.extractContractErrorCode(simulation.error, simulation.events);
+        this.throwMappedContractError(contractAddress, method, simulation.error, code);
       }
 
       const preparedTransaction = await this.sorobanRpc.prepareTransaction(transaction);
@@ -120,23 +184,70 @@ export class ContractService {
       const response = await this.sorobanRpc.sendTransaction(preparedTransaction);
 
       if (response.status === 'ERROR') {
-        const errorMessage = this.decodeContractError(contractAddress, method);
-        throw new BadRequestException(errorMessage);
+        const code: number | undefined = undefined;
+        let errMsg = `Contract transaction submission failed with status ERROR`;
+        if (response.errorResult) {
+          errMsg += `: ${response.errorResult.toXDR('base64')}`;
+        }
+        this.throwMappedContractError(contractAddress, method, errMsg, code);
+      }
+
+      const transactionResult = await this.pollTransaction(response.hash);
+      if (transactionResult.status !== 'SUCCESS') {
+        throw new BadRequestException(
+          `Contract transaction failed with status ${transactionResult.status}: ${this.describeTransactionFailure(transactionResult)}`,
+        );
       }
 
       return {
-        result: simulation.result?.retval ?? xdr.ScVal.scvVoid(),
+        result: transactionResult.returnValue ?? xdr.ScVal.scvVoid(),
         transactionHash: response.hash,
         successful: true,
       };
     } catch (error) {
-      if (error instanceof BadRequestException) {
+      if (error instanceof ContractException || error instanceof BadRequestException) {
         throw error;
       }
       throw new BadRequestException(
-        `Failed to submit contract transaction: ${error.message}`,
+        `Failed to submit contract transaction: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  private async pollTransaction(hash: string): Promise<any> {
+    const intervalMs = this.positiveInteger(process.env.SOROBAN_POLL_INTERVAL_MS, 1_000);
+    const timeoutMs = this.positiveInteger(process.env.SOROBAN_POLL_TIMEOUT_MS, 120_000);
+    const deadline = Date.now() + timeoutMs;
+    const retryable = new Set(['NOT_FOUND', 'PENDING', 'DUPLICATE', 'TRY_AGAIN_LATER']);
+
+    while (Date.now() <= deadline) {
+      const transaction = await this.sorobanRpc.getTransaction(hash) as any;
+      if (!retryable.has(transaction.status)) {
+        return transaction;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    throw new GatewayTimeoutException(
+      `Timed out waiting for Soroban transaction ${hash} after ${timeoutMs}ms`,
+    );
+  }
+
+  private describeTransactionFailure(transaction: any): string {
+    const diagnosticCode = this.extractContractErrorCode(
+      transaction.errorResult,
+      transaction.diagnosticEventsXdr,
+    );
+    if (diagnosticCode !== undefined) {
+      return `${transaction.errorResult || 'contract execution failed'} (contract error code ${diagnosticCode})`;
+    }
+    const resultMeta = transaction.resultMetaXdr?.toString?.();
+    return transaction.errorResult || resultMeta || 'no contract error details available';
+  }
+
+  private positiveInteger(value: string | undefined, fallback: number): number {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
   }
 
   encodeArg(value: unknown, type: string): xdr.ScVal {
@@ -192,7 +303,7 @@ export class ContractService {
     method: string,
     callerSecretKey: string,
     args: unknown[],
-    nonce: number,
+    nonceAddress: string,
   ): Promise<ContractCallResult> {
     const encodedArgs = args.map((arg) => {
       if (arg instanceof xdr.ScVal) {
@@ -201,15 +312,24 @@ export class ContractService {
       return nativeToScVal(arg);
     });
 
-    const nonceScVal = nativeToScVal(BigInt(nonce), { type: 'u64' });
-    const allArgs = [...encodedArgs, nonceScVal];
-
-    return this.sendTransaction({
+    return this.nonceService.withNonce(
       contractAddress,
-      method,
-      args: allArgs,
-      sourceSecretKey: callerSecretKey,
-    });
+      nonceAddress,
+      async () => {
+        const value = await this.simulateCall({
+          contractAddress,
+          method: 'get_nonce',
+          args: [Address.fromString(nonceAddress).toScVal()],
+        });
+        return Number(scValToNative(value));
+      },
+      (nonce) => this.sendTransaction({
+        contractAddress,
+        method,
+        args: [...encodedArgs, nativeToScVal(BigInt(nonce), { type: 'u64' })],
+        sourceSecretKey: callerSecretKey,
+      }),
+    );
   }
 
   private describeSimulationError(
@@ -226,7 +346,13 @@ export class ContractService {
   private decodeContractError(
     contractAddress: string,
     method: string,
+    error?: string,
+    events?: xdr.DiagnosticEvent[],
   ): string {
+    const code = this.extractContractErrorCode(error, events);
+    if (code !== undefined) {
+      return `Contract error on ${contractAddress}.${method} (contract error code ${code})`;
+    }
     return `Contract error on ${contractAddress}.${method}`;
   }
 
@@ -256,5 +382,24 @@ export class ContractService {
 
   getSorobanRpc(): rpc.Server {
     return this.sorobanRpc;
+  }
+
+  /** Polls the final on-ledger outcome of a transaction submitted via
+   *  sendTransaction(). 'pending' covers both "not yet applied" and
+   *  "RPC hasn't indexed it yet" (both map to NOT_FOUND). */
+  async getTransactionStatus(hash: string): Promise<TransactionStatusResult> {
+    const response = await this.sorobanRpc.getTransaction(hash);
+    let status: TransactionStatus;
+    switch (response.status) {
+      case rpc.Api.GetTransactionStatus.SUCCESS:
+        status = 'confirmed';
+        break;
+      case rpc.Api.GetTransactionStatus.FAILED:
+        status = 'failed';
+        break;
+      default:
+        status = 'pending';
+    }
+    return { hash, status };
   }
 }

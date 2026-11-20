@@ -1,7 +1,13 @@
 #![no_std]
 #![allow(deprecated)]
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec};
 use nbbs_shared::{CreditError, CreditType};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec,
+};
+
+/// Issue #188: versioned-interface convention. Bump on a breaking storage
+/// layout or interface change; see docs/upgrade-migrations.md.
+pub const SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone)]
 #[contracttype]
@@ -120,18 +126,29 @@ impl CreditRetirement {
             .ok_or(CreditError::NotInitialized)?;
         let accrued: i128 = env.invoke_contract(
             &coupon_engine,
-            &Symbol::new(&env, "accrued_credits"),
+            &Symbol::new(&env, "escrowed_credits"),
             vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
+        );
+
+        if amount > accrued {
+            return Err(CreditError::InsufficientCredits);
+        }
+
+        // Settle against the coupon ledger before minting anything: the same
+        // credits must not be retirable here and later claimable there.
+        env.invoke_contract::<()>(
+            &coupon_engine,
+            &Symbol::new(&env, "consume_credits"),
+            vec![
+                &env,
+                holder.clone().into_val(&env),
+                bond_id.into_val(&env),
+                amount.into_val(&env),
+            ],
         );
 
         let retired_key = DataKey::RetiredPerBond(bond_id, holder.clone());
         let already_retired: i128 = env.storage().instance().get(&retired_key).unwrap_or(0);
-        let remaining = accrued
-            .checked_sub(already_retired)
-            .ok_or(CreditError::InsufficientCredits)?;
-        if amount > remaining {
-            return Err(CreditError::InsufficientCredits);
-        }
         env.storage()
             .instance()
             .set(&retired_key, &(already_retired + amount));
@@ -184,7 +201,7 @@ impl CreditRetirement {
             .set(&DataKey::HolderRetirements(holder.clone()), &retirements);
 
         env.events().publish(
-            (Symbol::new(&env, "CreditsRetired"),),
+            (Symbol::new(&env, "credits_retired"),),
             (holder.clone(), amount, credit_type),
         );
 
@@ -242,17 +259,66 @@ impl CreditRetirement {
             .get(&DataKey::RetirementCount)
             .unwrap_or(0)
     }
+
+    pub fn set_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+        nonce: u64,
+    ) -> Result<(), CreditError> {
+        current_admin.require_auth();
+
+        let expected_nonce = get_nonce(&env, &current_admin);
+        if nonce != expected_nonce {
+            return Err(CreditError::InvalidNonce);
+        }
+        set_nonce(&env, &current_admin, expected_nonce + 1);
+
+        require_admin(&env, &current_admin)?;
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_changed"),),
+            (current_admin, new_admin),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_admin(env: Env) -> Result<Address, CreditError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(CreditError::NotInitialized)
+    }
+
+    /// Issue #188: versioned-interface convention — bump when the contract's
+    /// storage layout or callable interface changes in a breaking way. See
+    /// docs/upgrade-migrations.md.
+    pub fn schema_version(env: Env) -> u32 {
+        let _ = env;
+        SCHEMA_VERSION
+    }
+}
+
+fn require_admin(env: &Env, caller: &Address) -> Result<(), CreditError> {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Admin)
+        .ok_or(CreditError::NotInitialized)?;
+    if caller != &admin {
+        return Err(CreditError::Unauthorized);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{
-        testutils::Address as _, vec as svec, BytesN, Env, Symbol,
-    };
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
     use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
     use nbbs_shared::{BiodiversityMetrics, BondConfig};
+    use soroban_sdk::{testutils::Address as _, vec as svec, BytesN, Env, Symbol};
 
     fn make_certificate_hash(env: &Env, value: u8) -> BytesN<32> {
         let mut arr = [0u8; 32];
@@ -273,15 +339,9 @@ mod test {
         project_id: &BytesN<32>,
         carbon: i128,
     ) -> u64 {
-        let oc_client =
-            nbbs_oracle_consumer::OracleConsumerClient::new(env, oracle_id);
+        let oc_client = nbbs_oracle_consumer::OracleConsumerClient::new(env, oracle_id);
         let provider = Address::generate(env);
-        oc_client.register_provider(
-            admin,
-            &provider,
-            &Symbol::new(env, "verra_vcs"),
-            &0,
-        );
+        oc_client.register_provider(admin, &provider, &Symbol::new(env, "verra_vcs"), &0);
         let report_id = oc_client.submit_report(
             &provider,
             project_id,
@@ -294,15 +354,31 @@ mod test {
             &0,
         );
         oc_client.verify_report(admin, &report_id, &1);
+
+        // DEFAULT_SIGNATURE_THRESHOLD is 2, so the admin's verification alone
+        // leaves the report Pending. Register a second, independently staked
+        // verifier to reach the threshold, matching the oracle design doc and
+        // coupon-engine's submit_verified_report helper.
+        let second_verifier = Address::generate(env);
+        oc_client.register_provider(admin, &second_verifier, &Symbol::new(env, "satellite"), &2);
+        oc_client.add_stake(
+            &second_verifier,
+            &nbbs_oracle_consumer::DEFAULT_MIN_VERIFIER_STAKE,
+            &0,
+        );
+        oc_client.verify_report(&second_verifier, &report_id, &1);
+
         report_id
     }
 
     struct Setup {
         _env: Env,
         client: CreditRetirementClient<'static>,
+        admin: Address,
         holder: Address,
         bond_id: u64,
         accrued: i128,
+        ce_client: CouponEngineClient<'static>,
     }
 
     fn setup() -> Setup {
@@ -324,16 +400,15 @@ mod test {
             credit_type: CreditType::Carbon,
             maturity_date: 3_000_000,
             total_supply: 10_000,
-        };
+            credit_vintage: 2024,
+            serial_number_start: 1,
+            serial_number_end: 10_000,
+            };
         let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
         issuer_client.subscribe(&holder, &bond_id, &10_000, &0);
 
-        let oracle_id = env.register(
-            nbbs_oracle_consumer::OracleConsumer,
-            (admin.clone(),),
-        );
-        let report_id =
-            submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
+        let oracle_id = env.register(nbbs_oracle_consumer::OracleConsumer, (admin.clone(),));
+        let report_id = submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
 
         let ce_id = env.register(
             CouponEngine,
@@ -344,22 +419,58 @@ mod test {
 
         let holders = svec![&env, holder.clone()];
         ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
-        let accrued = ce_client.accrued_credits(&bond_id, &holder);
+        let accrued = ce_client.escrowed_credits(&bond_id, &holder);
         assert!(accrued > 0);
 
         let contract_id = env.register(
             CreditRetirement,
-            (admin, issuer_id.clone(), ce_id.clone()),
+            (admin.clone(), issuer_id.clone(), ce_id.clone()),
         );
         let client = CreditRetirementClient::new(&env, &contract_id);
 
         Setup {
             _env: env,
             client,
+            admin,
             holder,
             bond_id,
             accrued,
+            ce_client,
         }
+    }
+
+    #[test]
+    fn test_retire_debits_coupon_ledger_and_blocks_double_spend() {
+        let s = setup();
+        let half = s.accrued / 2;
+
+        s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &half,
+            &CreditType::Carbon,
+            &make_certificate_hash(&s._env, 1),
+            &0,
+        );
+        assert_eq!(
+            s.ce_client.escrowed_credits(&s.bond_id, &s.holder),
+            s.accrued - half
+        );
+
+        s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &(s.accrued - half),
+            &CreditType::Carbon,
+            &make_certificate_hash(&s._env, 2),
+            &1,
+        );
+        assert_eq!(s.ce_client.escrowed_credits(&s.bond_id, &s.holder), 0);
+
+        // Retired credits are gone from the coupon ledger, so a claim after
+        // retirement yields nothing.
+        assert_eq!(s.ce_client.claim_credits(&s.holder, &s.bond_id, &0), 0);
+        assert_eq!(s.client.get_total_retired(&s.holder), s.accrued);
     }
 
     #[test]
@@ -547,17 +658,16 @@ mod test {
             credit_type: CreditType::Carbon,
             maturity_date: 3_000_000,
             total_supply: 10_000,
-        };
+            credit_vintage: 2024,
+            serial_number_start: 1,
+            serial_number_end: 10_000,
+            };
         let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
         issuer_client.subscribe(&holder1, &bond_id, &3_000, &0);
         issuer_client.subscribe(&holder2, &bond_id, &7_000, &0);
 
-        let oracle_id = env.register(
-            nbbs_oracle_consumer::OracleConsumer,
-            (admin.clone(),),
-        );
-        let report_id =
-            submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
+        let oracle_id = env.register(nbbs_oracle_consumer::OracleConsumer, (admin.clone(),));
+        let report_id = submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
 
         let ce_id = env.register(
             CouponEngine,
@@ -569,28 +679,46 @@ mod test {
         let holders = svec![&env, holder1.clone(), holder2.clone()];
         ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
 
-        let accrued1 = ce_client.accrued_credits(&bond_id, &holder1);
-        let accrued2 = ce_client.accrued_credits(&bond_id, &holder2);
+        let accrued1 = ce_client.escrowed_credits(&bond_id, &holder1);
+        let accrued2 = ce_client.escrowed_credits(&bond_id, &holder2);
         assert!(accrued1 > 0);
         assert!(accrued2 > 0);
 
-        let cr_id = env.register(
-            CreditRetirement,
-            (admin, issuer_id.clone(), ce_id.clone()),
-        );
+        let cr_id = env.register(CreditRetirement, (admin, issuer_id.clone(), ce_id.clone()));
         let cr_client = CreditRetirementClient::new(&env, &cr_id);
 
         let hash1 = make_certificate_hash(&env, 1);
-        cr_client.retire_credits(&holder1, &bond_id, &accrued1, &CreditType::Carbon, &hash1, &0);
+        cr_client.retire_credits(
+            &holder1,
+            &bond_id,
+            &accrued1,
+            &CreditType::Carbon,
+            &hash1,
+            &0,
+        );
 
         let hash2 = make_certificate_hash(&env, 2);
-        cr_client.retire_credits(&holder2, &bond_id, &accrued2, &CreditType::Biodiversity, &hash2, &0);
+        cr_client.retire_credits(
+            &holder2,
+            &bond_id,
+            &accrued2,
+            &CreditType::Biodiversity,
+            &hash2,
+            &0,
+        );
 
         assert_eq!(cr_client.get_total_retired(&holder1), accrued1);
         assert_eq!(cr_client.get_total_retired(&holder2), accrued2);
         assert_eq!(cr_client.total_retirements(), 2);
 
-        let result = cr_client.try_retire_credits(&holder1, &bond_id, &1i128, &CreditType::Carbon, &hash1, &1);
+        let result = cr_client.try_retire_credits(
+            &holder1,
+            &bond_id,
+            &1i128,
+            &CreditType::Carbon,
+            &hash1,
+            &1,
+        );
         assert_eq!(result, Err(Ok(CreditError::InsufficientCredits)));
 
         let result = cr_client.try_retire_credits(
@@ -627,5 +755,23 @@ mod test {
             &1,
         );
         assert_eq!(result, Err(Ok(CreditError::InvalidNonce)));
+    }
+
+    #[test]
+    fn test_admin_rotation_requires_current_admin() {
+        let s = setup();
+        let new_admin = Address::generate(&s._env);
+        let stranger = Address::generate(&s._env);
+
+        let result = s.client.try_set_admin(&stranger, &new_admin, &0);
+        assert_eq!(result, Err(Ok(CreditError::Unauthorized)));
+        assert_eq!(s.client.get_admin(), s.admin);
+
+        s.client.set_admin(&s.admin, &new_admin, &0);
+        assert_eq!(s.client.get_admin(), new_admin);
+
+        let another_admin = Address::generate(&s._env);
+        let result = s.client.try_set_admin(&s.admin, &another_admin, &1);
+        assert_eq!(result, Err(Ok(CreditError::Unauthorized)));
     }
 }

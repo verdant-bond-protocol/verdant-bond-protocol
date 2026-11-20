@@ -2,7 +2,7 @@
 
 # 🌍 Verdant Bond Protocol
 
-### *Tokenized Nature-based Solution Bonds on Stellar*
+### _Tokenized Nature-based Solution Bonds on Stellar_
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![CI](https://github.com/prissca/verdant-bond-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/prissca/verdant-bond-protocol/actions/workflows/ci.yml)
@@ -44,6 +44,7 @@
 - [API Reference](#-api-reference)
 - [Testing](#-testing)
 - [Deployment](#-deployment)
+- [Reproducible Builds](#reproducible-builds)
 - [Governance](#-governance)
 - [Compliance & KYC](#-compliance--kyc)
 - [Roadmap](#-roadmap)
@@ -64,17 +65,17 @@ This is not merely a carbon offset product. It is a **financial primitive** — 
 
 ### At a Glance
 
-| Property | Value |
-|---|---|
-| **Blockchain** | Stellar (Soroban) |
-| **Smart Contract Language** | Rust |
-| **Coupon Currency** | Carbon Credits / Biodiversity Credits |
-| **Bond Type** | Nature-based Solution (NbS) |
-| **Secondary Market** | Stellar DEX |
-| **Document Storage** | IPFS |
-| **Oracle Type** | Multi-source (Auditor + Satellite + IoT) |
-| **Minimum Investment** | Fractional (no floor) |
-| **Target Projects** | Reforestation, Blue Carbon, Biodiversity Corridors |
+| Property                    | Value                                              |
+| --------------------------- | -------------------------------------------------- |
+| **Blockchain**              | Stellar (Soroban)                                  |
+| **Smart Contract Language** | Rust                                               |
+| **Coupon Currency**         | Carbon Credits / Biodiversity Credits              |
+| **Bond Type**               | Nature-based Solution (NbS)                        |
+| **Secondary Market**        | Stellar DEX                                        |
+| **Document Storage**        | IPFS                                               |
+| **Oracle Type**             | Multi-source (Auditor + Satellite + IoT)           |
+| **Minimum Investment**      | Fractional (no floor)                              |
+| **Target Projects**         | Reforestation, Blue Carbon, Biodiversity Corridors |
 
 ---
 
@@ -92,14 +93,14 @@ The global voluntary carbon market exceeded **$2 billion** in 2023 and is projec
 
 ### What Verdant Bond Protocol Changes
 
-| Problem | Our Solution |
-|---|---|
-| Carbon credit integrity is hard to verify | On-chain oracle anchors real project measurements |
-| Green bonds lack coupon-to-impact traceability | Each tranche is 1:1 backed by a single, named project |
-| Bond coupons are illiquid for retail holders | Stellar DEX enables permissionless secondary trading |
-| Manual settlement is costly and slow | Soroban contracts automate the full lifecycle |
-| Greenwashing is rampant | IPFS-anchored audit trails are permanent and public |
-| Access is limited to institutions | Tokenization allows fractional ownership from any wallet |
+| Problem                                        | Our Solution                                             |
+| ---------------------------------------------- | -------------------------------------------------------- |
+| Carbon credit integrity is hard to verify      | On-chain oracle anchors real project measurements        |
+| Green bonds lack coupon-to-impact traceability | Each tranche is 1:1 backed by a single, named project    |
+| Bond coupons are illiquid for retail holders   | Stellar DEX enables permissionless secondary trading     |
+| Manual settlement is costly and slow           | Soroban contracts automate the full lifecycle            |
+| Greenwashing is rampant                        | IPFS-anchored audit trails are permanent and public      |
+| Access is limited to institutions              | Tokenization allows fractional ownership from any wallet |
 
 ### Our Thesis
 
@@ -135,6 +136,7 @@ A biodiversity credit represents a **measurable, verifiable unit of biodiversity
 ### Bond Tranche
 
 A bond tranche is a discrete issuance with defined:
+
 - **Face Value** (in XLM or USDC equivalent)
 - **Maturity Date**
 - **Coupon Schedule** (quarterly, semi-annual, annual)
@@ -169,30 +171,39 @@ A bond tranche is a discrete issuance with defined:
 ### Detailed Step-by-Step
 
 #### Step 1 — Project Registration
+
 A project developer submits project documentation (geospatial boundaries, ecological baseline, methodology, legal title) to IPFS. The content hash is registered with the `ProjectRegistry` contract on Stellar. An accredited auditor validates the baseline and co-signs the on-chain record.
 
 #### Step 2 — Bond Tranche Issuance
+
 A bond issuer (project developer, green bank, or SPV) calls `BondIssuer.issue_bond()` specifying the face value, coupon schedule, project backing, and credit type. The contract mints bond tokens and holds them in escrow pending investor subscriptions.
 
 #### Step 3 — Investor Subscription
+
 Investors connect their Stellar wallets, pass KYC (handled off-chain via the NestJS API), and purchase bond tokens. Each token represents a pro-rata claim on the tranche. Minimum subscription is one token (fractional NbS exposure).
 
 #### Step 4 — Continuous Oracle Monitoring
+
 The oracle network continuously monitors carbon stock growth via satellite imagery, IoT sensors, and periodic third-party audits. Signed measurement reports are submitted on-chain to the `OracleConsumer` contract. A report only becomes `Verified` after **independent qualifying sources** endorse it: each qualifying verify call is recorded on-chain and counted against a configurable signature threshold, providers must meet the configured minimum stake before their vote counts, and a provider can never verify its own report. This multi-source consensus makes fabricated measurements economically and cryptographically impractical.
 
 #### Step 5 — Coupon Calculation
+
 At each coupon date, the `CouponEngine` contract reads the verified oracle report **by its on-chain `report_id`** and calculates the total carbon credits earned by the project during that period. Reports that are not `Verified` are rejected, and the report's project must match the bond's registered project. Credits are allocated pro-rata to all bond token holders.
 
 #### Step 6 — Automatic Distribution & Claiming
+
 Coupon distribution runs entirely on-chain, referencing only reports that have passed multi-source verification, and records the `report_id` on-chain for full auditability. Accrued credits are claimed directly to the bondholder's wallet via `claim_credits()` (or the `POST /bonds/:id/claim` API). No manual intervention, no intermediary, no settlement delay.
 
 #### Step 7 — Secondary Market Trading
+
 At any point, investors may list bond tokens on the Stellar DEX. When an order is filled, the `DEXRouter` contract invokes `BondIssuer.transfer()` to move the tokens **on-chain from seller to buyer atomically** — the order status only updates after the token transfer succeeds, eliminating off-ledger settlement risk. Tokens can also be transferred peer-to-peer via `BondIssuer.transfer()` (or the `POST /bonds/:id/transfer` API). Price discovery happens permissionlessly, reflecting market views on project performance.
 
 #### Step 8 — Maturity & Settlement
+
 At maturity, the `BondIssuer` contract returns principal to bondholders and settles any remaining credits. The bond tranche is marked inactive and removed from the active registry.
 
 #### Step 9 — Credit Retirement
+
 Bondholders may retire their carbon credits on-chain, generating a permanent, verifiable retirement certificate. Retired credits are burned and recorded in the public ledger — usable for corporate net-zero reporting.
 
 ---
@@ -200,30 +211,39 @@ Bondholders may retire their carbon credits on-chain, generating a permanent, ve
 ## ✨ Key Features
 
 ### 🔗 Smart Contract Bond Lifecycle
+
 The entire bond lifecycle — issuance, coupon accrual, distribution, maturity, and redemption — is handled by Soroban smart contracts written in Rust. No intermediary, no manual settlement, no counterparty risk. Every state transition is a publicly visible, immutable ledger entry.
 
 ### 🌐 Oracle-Driven Performance Verification
+
 An oracle network feeds real-world project data (carbon stock measurements, satellite imagery hashes, third-party audit reports) on-chain. Credit coupon amounts are dynamically calculated based on **actual ecological performance**, not projections. Under-performing projects yield fewer credits; outperforming ones reward bondholders generously.
 
 ### 💱 Native Secondary Market Liquidity
+
 Bond tokens and individual credit coupon tokens are standard **Stellar Assets**, making them natively compatible with the Stellar DEX. No bridges, no wrapped assets, no additional smart contract risk — just native Stellar primitives trading in a permissionless marketplace.
 
 ### 🌱 Fractional Green Exposure
+
 Tokenization allows **fractional ownership** of bond tranches, opening nature-based finance to retail investors who couldn't access traditional green bond minimums (often $100,000+). Any wallet, any size.
 
 ### 📄 IPFS-Backed Immutable Documentation
+
 All project prospectuses, audit reports, satellite data, and legal documentation are stored on **IPFS** with content hashes anchored on-chain. Documents are permanent, tamper-proof, and publicly accessible — making greenwashing technically impossible.
 
 ### 🛰️ Multi-Source Oracle Architecture
+
 Carbon stock data is sourced from multiple independent providers: certified auditors, satellite imagery processors, and IoT sensor networks. Multi-source consensus prevents single points of failure or manipulation.
 
 ### 🔐 Nonce-Based Replay Protection
+
 All sensitive contract interactions are protected by nonce-based replay protection. Each signed transaction consumes a unique nonce, preventing double-spend attacks, replay attacks, and front-running across the protocol.
 
 ### 🌊 Blue Carbon Support
+
 The protocol is purpose-built to support blue carbon projects — coastal ecosystems that sequester carbon at 3–5x the rate of terrestrial forests but have been chronically underfunded due to measurement complexity. Verdant Bond Protocol's oracle architecture handles the unique measurement methodologies of blue carbon science.
 
 ### 🤝 CarbonChain Integration
+
 Built as a composable layer on top of CarbonChain's existing credit infrastructure, the protocol reuses battle-tested oracle feeds, IPFS anchoring patterns, and DEX integrations — dramatically reducing time-to-market and smart contract surface area.
 
 ---
@@ -284,20 +304,20 @@ ProjectRegistry ──► BondIssuer ──► Bond Tokens ──► Stellar DEX
 
 ## 🧰 Tech Stack
 
-| Layer | Technology | Version | Purpose |
-|---|---|---|---|
-| **Smart Contracts** | Soroban (Rust) | latest | Bond lifecycle, credit distribution, replay protection |
-| **Backend API** | NestJS | v10+ | Business logic, oracle integration, KYC/auth |
-| **Frontend** | Angular | v17+ | Investor dashboard, project registry, DEX UI |
-| **Off-chain Storage** | IPFS / Pinata | — | Project docs, audit trails, satellite data |
-| **Marketplace** | Stellar DEX | — | Secondary trading of bond tokens & credit coupons |
-| **Security** | Nonce-based replay protection | — | Prevent double-spend and replay attacks |
-| **Blockchain** | Stellar Network | — | Settlement, tokenization, decentralized exchange |
-| **Credit Infrastructure** | CarbonChain | — | Underlying carbon credit registry and oracle feeds |
-| **Testing (Contracts)** | `soroban-sdk` test harness | — | Unit & integration tests for Rust contracts |
-| **Testing (API)** | Jest + Supertest | — | API endpoint testing |
-| **Testing (Frontend)** | Jasmine + Karma | — | Angular component testing |
-| **CI/CD** | GitHub Actions | — | Automated build, test, and deploy pipeline |
+| Layer                     | Technology                    | Version | Purpose                                                |
+| ------------------------- | ----------------------------- | ------- | ------------------------------------------------------ |
+| **Smart Contracts**       | Soroban (Rust)                | latest  | Bond lifecycle, credit distribution, replay protection |
+| **Backend API**           | NestJS                        | v10+    | Business logic, oracle integration, KYC/auth           |
+| **Frontend**              | Angular                       | v17+    | Investor dashboard, project registry, DEX UI           |
+| **Off-chain Storage**     | IPFS / Pinata                 | —       | Project docs, audit trails, satellite data             |
+| **Marketplace**           | Stellar DEX                   | —       | Secondary trading of bond tokens & credit coupons      |
+| **Security**              | Nonce-based replay protection | —       | Prevent double-spend and replay attacks                |
+| **Blockchain**            | Stellar Network               | —       | Settlement, tokenization, decentralized exchange       |
+| **Credit Infrastructure** | CarbonChain                   | —       | Underlying carbon credit registry and oracle feeds     |
+| **Testing (Contracts)**   | `soroban-sdk` test harness    | —       | Unit & integration tests for Rust contracts            |
+| **Testing (API)**         | Jest + Supertest              | —       | API endpoint testing                                   |
+| **Testing (Frontend)**    | Jasmine + Karma               | —       | Angular component testing                              |
+| **CI/CD**                 | GitHub Actions                | —       | Automated build, test, and deploy pipeline             |
 
 ---
 
@@ -505,13 +525,13 @@ The integrity of this protocol depends entirely on the quality and trustworthine
 
 ### Data Sources
 
-| Source | Type | Frequency | Use |
-|---|---|---|---|
-| Accredited Auditors (Verra, Gold Standard) | Third-party verification | Annual | Baseline & periodic verification |
-| Satellite Imagery (Sentinel-2, Landsat) | Remote sensing | Monthly | NDVI, biomass proxy, deforestation alerts |
-| IoT Sensors | In-situ measurement | Continuous | Soil carbon, water table, microclimate |
-| Blue Carbon Surveys | Plot-level measurement | Seasonal | Mangrove/seagrass/saltmarsh biomass & soil carbon |
-| Community Monitors | Ground truth | Quarterly | Species surveys, canopy cover |
+| Source                                     | Type                     | Frequency  | Use                                               |
+| ------------------------------------------ | ------------------------ | ---------- | ------------------------------------------------- |
+| Accredited Auditors (Verra, Gold Standard) | Third-party verification | Annual     | Baseline & periodic verification                  |
+| Satellite Imagery (Sentinel-2, Landsat)    | Remote sensing           | Monthly    | NDVI, biomass proxy, deforestation alerts         |
+| IoT Sensors                                | In-situ measurement      | Continuous | Soil carbon, water table, microclimate            |
+| Blue Carbon Surveys                        | Plot-level measurement   | Seasonal   | Mangrove/seagrass/saltmarsh biomass & soil carbon |
+| Community Monitors                         | Ground truth             | Quarterly  | Species surveys, canopy cover                     |
 
 ### Oracle Security Model
 
@@ -540,14 +560,20 @@ The standalone adapters in `oracle/` poll real upstream endpoints, validate ever
 
 ### Adapters
 
-| Adapter | File | Upstream | Methodology | Input schema (`oracle/schemas.ts`) |
-|---|---|---|---|---|
-| Verra registry | `oracle/verra-adapter.ts` | `VERRA_REGISTRY_URL` (Verra-compatible VCS registry) | `VERRA-VCS` | `VerraProjectSchema`, `VerraMonitoringReportSchema` |
-| Satellite | `oracle/satellite-processor.ts` | `SATELLITE_API_URL` (Sentinel-2 / Landsat NDVI stats) | `REMOTE-SENSING` | `SatelliteSceneSchema`, `SatelliteProjectConfigSchema` |
-| IoT | `oracle/iot-aggregator.ts` | `IOT_API_URL` (in-situ soil sensors) | `IOT-SENSORS` | `IoTSensorReadingSchema`, `IotProjectConfigSchema` |
-| Blue carbon | `oracle/blue-carbon-adapter.ts` | `BLUE_CARBON_API_URL` (mangrove/seagrass/saltmarsh plot surveys) | `BLUE-CARBON` | `BlueCarbonSurveySchema`, `BlueCarbonProjectConfigSchema` |
+| Adapter        | File                            | Upstream                                                         | Methodology      | Input schema (`oracle/schemas.ts`)                        |
+| -------------- | ------------------------------- | ---------------------------------------------------------------- | ---------------- | --------------------------------------------------------- |
+| Verra registry | `oracle/verra-adapter.ts`       | `VERRA_REGISTRY_URL` (Verra-compatible VCS registry)             | `VERRA-VCS`      | `VerraProjectSchema`, `VerraMonitoringReportSchema`       |
+| Satellite      | `oracle/satellite-processor.ts` | `SATELLITE_API_URL` (Sentinel-2 / Landsat NDVI stats)            | `REMOTE-SENSING` | `SatelliteSceneSchema`, `SatelliteProjectConfigSchema`    |
+| IoT            | `oracle/iot-aggregator.ts`      | `IOT_API_URL` (in-situ soil sensors)                             | `IOT-SENSORS`    | `IoTSensorReadingSchema`, `IotProjectConfigSchema`        |
+| Blue carbon    | `oracle/blue-carbon-adapter.ts` | `BLUE_CARBON_API_URL` (mangrove/seagrass/saltmarsh plot surveys) | `BLUE-CARBON`    | `BlueCarbonSurveySchema`, `BlueCarbonProjectConfigSchema` |
 
-All four validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`, `BlueCarbonSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned.
+All four validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`, `BlueCarbonSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned. In the NestJS API, `IOT-SENSORS` is registered via `IotProvider` (`api/src/oracle/providers/iot.provider.ts`) and can be enabled during oracle polling via `ENABLE_IOT_PROVIDER=true`.
+
+### On-Chain Pre-flight Validation
+
+To prevent adapters from wasting transaction fees by submitting reports that are syntactically valid but violate strict on-chain conditions, the `oracle` package implements a shared pre-flight validator (`oracle/validator.ts`). This mirrors the exact rules enforced by `OracleConsumer.submit_report` in the smart contract (e.g., non-negative sequestration, strict `Symbol` regex for methodologies, and IPFS CIDv0 format checking).
+
+Every report generated by an adapter is automatically passed through this validator. If an adapter produces a report that would be rejected on-chain, it immediately throws an `OracleValidationError` before any transaction is signed. You can run `npm test` in the `oracle` directory to ensure all adapters correctly pass the pre-flight checks against mock fixtures.
 
 ### Report format
 
@@ -555,7 +581,7 @@ All four validate their inputs **before** producing a report; a response that vi
 {
   "project_id": "VCS-1234",
   "provider": "VerraRegistry",
-  "methodology": "VERRA-VCS",
+  "methodology": "VERRA_VCS",
   "period_start": "2025-01-01",
   "period_end": "2025-03-31",
   "carbon_sequestered": 50000,
@@ -606,6 +632,7 @@ To point an adapter at a live registry instead, set the matching environment var
 ### Carbon Credits (tCO₂e)
 
 Standard carbon credits representing verified carbon sequestration or avoidance. Measured in metric tonnes of CO₂ equivalent. Compatible with:
+
 - Verra VCS (Verified Carbon Standard)
 - Gold Standard
 - American Carbon Registry (ACR)
@@ -614,6 +641,7 @@ Standard carbon credits representing verified carbon sequestration or avoidance.
 ### Biodiversity Credits
 
 Emerging credit type representing measurable biodiversity outcomes. Units vary by methodology:
+
 - Habitat hectares restored
 - Species Abundance Index (SAI) improvement
 - Biodiversity Unit (UK BNG methodology)
@@ -621,6 +649,7 @@ Emerging credit type representing measurable biodiversity outcomes. Units vary b
 ### Blue Carbon Credits
 
 Credits from coastal and marine ecosystems — mangroves, seagrass beds and saltmarshes — that sequester carbon at 3–5x the rate of terrestrial forests. Units are tCO₂e measured against a project baseline carbon stock via plot-level biomass and soil carbon surveys (see [Credit Methodology](./docs/credit-methodology.md)). Compatible with:
+
 - Verra VM0033 (Tidal Wetland and Seagrass Restoration)
 - Blue Carbon Initiative methodologies
 
@@ -636,13 +665,13 @@ Bond tokens and credit coupon tokens are standard **Stellar Assets**, making the
 
 ### Trading Pairs
 
-| Pair | Description |
-|---|---|
-| `BOND-XLM` | Bond tokens priced in XLM |
-| `BOND-USDC` | Bond tokens priced in USDC |
-| `CARBON-USDC` | Carbon credit coupons priced in USDC |
-| `BIO-USDC` | Biodiversity credit coupons priced in USDC |
-| `CARBON-BOND` | Credits swapped directly for bond tokens |
+| Pair          | Description                                |
+| ------------- | ------------------------------------------ |
+| `BOND-XLM`    | Bond tokens priced in XLM                  |
+| `BOND-USDC`   | Bond tokens priced in USDC                 |
+| `CARBON-USDC` | Carbon credit coupons priced in USDC       |
+| `BIO-USDC`    | Biodiversity credit coupons priced in USDC |
+| `CARBON-BOND` | Credits swapped directly for bond tokens   |
 
 ### Stellar DEX Features Used
 
@@ -657,19 +686,48 @@ Bond tokens and credit coupon tokens are standard **Stellar Assets**, making the
 
 ### Smart Contract Security
 
-| Mechanism | Description |
-|---|---|
-| Nonce-based replay protection | Every state-changing call consumes a unique nonce per address |
-| Access control | Admin-only functions guarded by `require_auth()` |
-| Re-entrancy guards | State updates before external calls throughout |
-| Integer overflow protection | Rust's native overflow checking in all arithmetic |
-| Upgrade pattern | Contracts upgradeable via timelock (48hr delay) |
+| Mechanism                     | Description                                                     |
+| ----------------------------- | --------------------------------------------------------------- |
+| Nonce-based replay protection | Every state-changing call consumes a unique nonce per address   |
+| Access control                | Admin functions protected by governance multisig + timelock     |
+| Re-entrancy guards            | State updates before external calls throughout                  |
+| Integer overflow protection   | Rust's native overflow checking in all arithmetic               |
+| Admin rotation                | All contracts include `set_admin()` for trustless admin handoff |
+
+### Governance Control Flow
+
+**All operational contracts are adminned by the Governance contract**, implementing a 3-of-5 multisig + 48-hour timelock:
+
+1. **Governance Signers** (3-of-5 consensus required):
+   - Project Developers
+   - Bond Issuers
+   - Oracle Providers
+   - Protocol Maintainers
+   - Token Holders
+
+2. **Proposal → Vote → Timelock → Execute**:
+   - A signer proposes an admin action (e.g., `set_admin()`, `register_provider()`)
+   - 3+ signers approve (or 3+ veto) within voting window
+   - Approved proposals enter 48-hour cooldown
+   - After 48 hours, any account may execute
+
+3. **Affected Contracts**:
+   - `ProjectRegistry` — project approval, KYC parameter changes
+   - `BondIssuer` — bond configuration, maturity control
+   - `CouponEngine` — coupon distribution parameters
+   - `OracleConsumer` — oracle provider management, oracle parameters
+   - `DEXRouter` — order settlement parameters
+   - `CreditRetirement` — retirement transaction oversight
+
+4. **Deployment Verification**:
+   - Scripts verify each contract's `get_admin()` returns the Governance address
+   - Any admin action must go through governance multisig
 
 ### Operational Security
 
 - API signing keys are accessed through a `SigningKeyProvider` abstraction. Development may use env vars or the local file provider; production deployments should back this abstraction with KMS/HSM-backed signing before handling real custodial funds.
-- Multi-sig (3-of-5) required for protocol parameter changes
-- 48-hour timelock on all contract upgrades
+- **3-of-5 multisig** required for all contract admin changes
+- **48-hour timelock** ensures community can respond to proposed changes
 - Public bug bounty program (see [Security Disclosure](#-security-disclosure))
 - Quarterly third-party smart contract audits
 
@@ -677,8 +735,8 @@ Bond tokens and credit coupon tokens are standard **Stellar Assets**, making the
 
 - Provider whitelist with staked collateral (`add_stake` / `withdraw_stake`, 10% slash on rejected challenges)
 - 72-hour challenge window on all submitted reports
-- Multi-sig required for high-value bond reports
-- Dispute resolution committee with on-chain escalation path
+- Multi-source verification (minimum 2 independent signatures) before `Verified` status
+- Dispute resolution via challenge resolution on-chain
 
 ---
 
@@ -712,6 +770,15 @@ cd frontend && npm install && cd ..
 cd contracts && cargo build --release && cd ..
 ```
 
+### Contributor Diagnostics
+
+Before starting development or opening your first PR, it is highly recommended to run the read-only diagnostics script. This verifies your local environment, Node.js version, environment variables, Redis connectivity, and Postgres connectivity. It provides actionable remediation steps for any failures.
+
+```bash
+cd api
+npm run diagnostics
+```
+
 ### Quick Start (Testnet)
 
 ```bash
@@ -732,6 +799,52 @@ cd frontend && ng serve
 open http://localhost:4200
 ```
 
+### Local Development Fixtures (Seeding)
+
+The API serves list/detail pages (dashboard, projects, bonds, marketplace,
+oracle) from a Redis cache that is normally populated by on-chain contract
+calls. To develop without deployed contracts, you can seed the local cache with
+a **deterministic, realistic fixture set** so every page renders meaningful data.
+
+```bash
+# Within the api package:
+cd api
+
+# 1. Ensure Redis is running (see docker-compose.yml).
+# 2. Apply the fixtures (idempotent — skips if already seeded):
+npm run seed
+
+# Re-apply fixtures after changing them (overwrites seed keys):
+npm run seed -- --force
+
+# Clear all seeded keys and the seed marker:
+npm run seed -- --reset
+```
+
+What gets seeded (all values are stable and repeatable across runs):
+
+| Domain          | Fixtures                                                                   |
+| --------------- | -------------------------------------------------------------------------- |
+| Users/roles     | 4 users covering admin, developer, investor, oracle-provider               |
+| Projects        | 6 projects spanning every status and 4 credit methodologies                |
+| Bonds           | 9 bonds across Active/Matured/**Defaulted** and all credit types           |
+| Marketplace     | 6 orders covering every order status                                        |
+| Oracle reports  | 11 reports across all report statuses, including one anchored to "now" so it is unambiguously overdue |
+| Authorizations  | 3 delegated grants: active, expired-but-uncleaned, and revoked             |
+
+The seed is idempotent (guarded by a `seed:verdant:marker` Redis key) and never
+duplicates or clobbers unrelated keys. See `api/src/seed/fixtures.ts` for the
+data and `api/scripts/seed.ts` for the CLI entry point.
+
+**Edge cases covered for contributor testing** (issue #304): a **failed
+settlement** (the Defaulted bond), **revoked access** (the revoked
+authorization grant), an **overdue workflow** (the oracle report anchored to
+`now` rather than the fixed fixture date), and **historical records** (the
+matured legacy bond, created years before the fixture's anchor date). A
+dedicated test suite, `api/src/seed/fixtures.consistency.spec.ts`, checks the
+dataset's internal consistency (no dangling foreign ids, no duplicate ids,
+correctly ordered timestamps) and that it is byte-identical across two builds.
+
 ---
 
 ## 🔧 Environment Variables
@@ -744,6 +857,8 @@ STELLAR_NETWORK=testnet                        # testnet | mainnet
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
 STELLAR_PUBLIC_KEY=G...                        # Admin public key (used by deploy scripts)
+STELLAR_AUTH_SECRET_KEY=S...                    # Server key used to sign SEP-10 challenges
+STELLAR_HOME_DOMAIN=localhost:3000             # Domain embedded in the SEP-10 challenge
 
 # ── Signer Keys (used by the API to build transactions) ──────────
 ADMIN_SECRET_KEY=S...                          # Issuer/admin secret key
@@ -771,7 +886,9 @@ DEFAULT_PROVIDER_ADDRESS=G...                  # Default provider used by the sc
 
 # ── Authentication ───────────────────────────────────────────────
 JWT_SECRET=your_very_long_jwt_secret_here
-JWT_EXPIRY=7d
+JWT_EXPIRY=15m
+JWT_REFRESH_SECRET=your_very_long_refresh_jwt_secret_here
+JWT_REFRESH_EXPIRY=7d
 KYC_PROVIDER_URL=https://kyc.your-provider.com
 KYC_API_KEY=your_kyc_api_key
 
@@ -784,6 +901,21 @@ PORT=3000
 NODE_ENV=development
 LOG_LEVEL=debug
 ```
+
+### Wallet Authentication
+
+The login flow uses a SEP-10-style challenge transaction. The API creates a
+short-lived Stellar transaction containing a random nonce in a `ManageData`
+operation, binds it to the configured network passphrase and home domain, and
+signs it with `STELLAR_AUTH_SECRET_KEY`. Freighter signs that transaction
+envelope and returns base64 XDR. The API verifies that the envelope matches the
+stored challenge and contains valid signatures from both the server and the
+requested wallet before issuing a JWT. Raw Ed25519 signatures and envelopes
+from another Stellar network are rejected.
+
+`STELLAR_AUTH_SECRET_KEY` must belong to the server authentication account and
+must be kept private. `STELLAR_HOME_DOMAIN` should be the public host serving
+the authentication endpoint in deployed environments.
 
 ---
 
@@ -910,40 +1042,40 @@ verdant-bond-protocol/
 
 ### Bonds
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/bonds` | Issue a new bond tranche |
-| `GET` | `/bonds` | List all active bond tranches |
-| `GET` | `/bonds/:id` | Get bond tranche details |
-| `POST` | `/bonds/:id/subscribe` | Subscribe to a bond tranche |
-| `GET` | `/bonds/:id/holders` | List all token holders |
-| `POST` | `/bonds/:id/coupon` | Trigger coupon distribution (admin) |
+| Method | Endpoint               | Description                         |
+| ------ | ---------------------- | ----------------------------------- |
+| `POST` | `/bonds`               | Issue a new bond tranche            |
+| `GET`  | `/bonds`               | List all active bond tranches       |
+| `GET`  | `/bonds/:id`           | Get bond tranche details            |
+| `POST` | `/bonds/:id/subscribe` | Subscribe to a bond tranche         |
+| `GET`  | `/bonds/:id/holders`   | List all token holders              |
+| `POST` | `/bonds/:id/coupon`    | Trigger coupon distribution (admin) |
 
 ### Projects
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/projects` | Register a new NbS project |
-| `GET` | `/projects` | List all registered projects |
-| `GET` | `/projects/:id` | Get project details and oracle history |
-| `POST` | `/projects/:id/documents` | Upload project documentation to IPFS |
+| Method | Endpoint                  | Description                            |
+| ------ | ------------------------- | -------------------------------------- |
+| `POST` | `/projects`               | Register a new NbS project             |
+| `GET`  | `/projects`               | List all registered projects           |
+| `GET`  | `/projects/:id`           | Get project details and oracle history |
+| `POST` | `/projects/:id/documents` | Upload project documentation to IPFS   |
 
 ### Marketplace
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/marketplace/orders` | List open DEX orders |
-| `POST` | `/marketplace/list` | List bond tokens for sale |
-| `POST` | `/marketplace/buy` | Purchase bond tokens |
-| `GET` | `/marketplace/prices` | Current DEX prices for all pairs |
+| Method | Endpoint              | Description                      |
+| ------ | --------------------- | -------------------------------- |
+| `GET`  | `/marketplace/orders` | List open DEX orders             |
+| `POST` | `/marketplace/list`   | List bond tokens for sale        |
+| `POST` | `/marketplace/buy`    | Purchase bond tokens             |
+| `GET`  | `/marketplace/prices` | Current DEX prices for all pairs |
 
 ### Oracle
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/oracle/reports` | Submit a measurement report (providers only) |
-| `GET` | `/oracle/reports/:projectId` | Get oracle history for a project |
-| `POST` | `/oracle/challenge/:reportId` | Challenge a submitted report |
+| Method | Endpoint                      | Description                                  |
+| ------ | ----------------------------- | -------------------------------------------- |
+| `POST` | `/oracle/reports`             | Submit a measurement report (providers only) |
+| `GET`  | `/oracle/reports/:projectId`  | Get oracle history for a project             |
+| `POST` | `/oracle/challenge/:reportId` | Challenge a submitted report                 |
 
 ---
 
@@ -978,6 +1110,18 @@ npm run test:e2e
 # Coverage report
 npm run test:cov
 ```
+
+### End-to-End Lifecycle Testing
+
+The repository includes a complete end-to-end lifecycle test harness that runs the full happy-path of the protocol (project registration, approval, bond issuance, subscription, oracle reporting, coupon distribution, DEX trading, and redemption) on Stellar Testnet.
+
+To run the full E2E test with a single command:
+
+```bash
+./scripts/run-lifecycle-test.sh
+```
+
+This script automatically generates temporary wallets, funds them via Friendbot, builds and deploys the Soroban contracts, and executes the Jest test suite.
 
 ### Frontend
 
@@ -1026,6 +1170,42 @@ docker-compose up -d
 docker-compose logs -f api
 ```
 
+### Reproducible Builds
+
+Releases must be reproducible: the same commit must yield the same Lockfiles,
+WASM contract artifacts, and Node bundles on any machine or CI runner. A
+committed, in-sync lockfile is the primary guarantee; drifting lockfiles or
+uncommitted dependency resolutions are the leading cause of unreproducible
+builds.
+
+Run the self-contained reproducibility gate:
+
+```bash
+# Validates lockfile presence + sync for api/frontend/oracle, Cargo.lock for
+# contracts, and (when the soroban CLI is available) contract WASM checksums:
+./scripts/reproducibility/verify.sh
+```
+
+What each check enforces, and how to regenerate baselines:
+
+| Check                                                     | Script                                                        | Baseline to commit              |
+| --------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------- |
+| Node lockfiles present & in sync (`npm ci --dry-run`)     | `scripts/reproducibility/lockfiles.sh`                        | `api|frontend|oracle/package-lock.json` |
+| Rust workspace pinned                                     | `scripts/reproducibility/lockfiles.sh`                        | `contracts/Cargo.lock`          |
+| Contract WASM artifact checksums                          | `scripts/reproducibility/wasm-checksums.sh --verify`          | `contracts/checksums.sha256`    |
+
+Regenerating the contract WASM checksum baseline (only when artifacts
+intentionally change):
+
+```bash
+./scripts/reproducibility/wasm-checksums.sh --generate
+```
+
+The CI pipeline runs `verify.sh` on every push/PR, so a commit that breaks
+reproducibility (e.g. an out-of-sync lockfile) is blocked before merge, and
+the `contracts` job re-verifies WASM checksums whenever the soroban CLI is
+available in the build environment.
+
 ---
 
 ## 🏛️ Governance
@@ -1066,18 +1246,18 @@ Verdant Bond Protocol takes a pragmatic approach to compliance:
 
 ## 🗺️ Roadmap
 
-| Phase | Milestone | Status |
-|---|---|---|
-| **Phase 1** | Core smart contracts (BondIssuer, CouponEngine, ProjectRegistry, CreditRetirement) | ✅ Delivered |
-| **Phase 2** | Oracle integration & testnet deployment | 🟡 In Progress — oracle adapters (Verra, satellite, IoT) and `OracleConsumer` with staking/slashing are live in code; testnet deployment scripts ready, not yet verified on a live network |
-| **Phase 3** | Angular frontend MVP | ✅ Delivered |
-| **Phase 4** | Stellar DEX secondary market integration (escrowed settlement via `DEXRouter`) | ✅ Delivered |
-| **Phase 5** | Third-party smart contract audit | 📋 Not started |
-| **Phase 6** | Mainnet launch with pilot reforestation bond | 📋 Not started — `deploy-mainnet.sh` scaffolded |
-| **Phase 7** | Blue carbon bond support | ✅ Delivered — `CreditType::BlueCarbon`, `BLUE-CARBON` oracle adapter, methodology docs |
-| **Phase 8** | Biodiversity credit coupon support | 🔭 Future (partial — `CreditType::Biodiversity` supported) |
-| **Phase 9** | Governance token & DAO transition | 🔭 Future (governance documented, multi-sig not on-chain) |
-| **Phase 10** | Multi-chain bridge for credit portability | 🔭 Future |
+| Phase        | Milestone                                                                          | Status                                                                                                                                                                                     |
+| ------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Phase 1**  | Core smart contracts (BondIssuer, CouponEngine, ProjectRegistry, CreditRetirement) | ✅ Delivered                                                                                                                                                                               |
+| **Phase 2**  | Oracle integration & testnet deployment                                            | 🟡 In Progress — oracle adapters (Verra, satellite, IoT) and `OracleConsumer` with staking/slashing are live in code; testnet deployment scripts ready, not yet verified on a live network |
+| **Phase 3**  | Angular frontend MVP                                                               | ✅ Delivered                                                                                                                                                                               |
+| **Phase 4**  | Stellar DEX secondary market integration (escrowed settlement via `DEXRouter`)     | ✅ Delivered                                                                                                                                                                               |
+| **Phase 5**  | Third-party smart contract audit                                                   | 📋 Not started                                                                                                                                                                             |
+| **Phase 6**  | Mainnet launch with pilot reforestation bond                                       | 📋 Not started — `deploy-mainnet.sh` scaffolded                                                                                                                                            |
+| **Phase 7**  | Blue carbon bond support                                                           | ✅ Delivered — `CreditType::BlueCarbon`, `BLUE-CARBON` oracle adapter, methodology docs                                                                                                    |
+| **Phase 8**  | Biodiversity credit coupon support                                                 | 🔭 Future (partial — `CreditType::Biodiversity` supported)                                                                                                                                 |
+| **Phase 9**  | Governance token & DAO transition                                                  | 🔭 Future (governance documented, multi-sig not on-chain)                                                                                                                                  |
+| **Phase 10** | Multi-chain bridge for credit portability                                          | 🔭 Future                                                                                                                                                                                  |
 
 ---
 
@@ -1113,6 +1293,7 @@ Please read [CONTRIBUTING.md](./CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](./CODE
 We take security extremely seriously. If you discover a vulnerability, **please do not open a public GitHub issue.**
 
 Instead, email **nwoguvictoriachiamaka@gmail.com** with:
+
 - A description of the vulnerability
 - Steps to reproduce
 - Potential impact assessment
@@ -1142,7 +1323,7 @@ This project is licensed under the **MIT License** — see [LICENSE](./LICENSE) 
 
 **Built for the planet. Powered by Stellar.**
 
-*Verdant Bond Protocol — where financial returns and ecological restoration are the same thing.*
+_Verdant Bond Protocol — where financial returns and ecological restoration are the same thing._
 
 ⭐ Star this repo if you believe DeFi can help heal the planet ⭐
 

@@ -1,26 +1,187 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
 import { Rfc7807ExceptionFilter } from './rfc7807-exception.filter';
+import { ContractException, StableErrorCode } from '../../stellar/contract-errors';
+import { ErrorCode, ErrorTaxonomy, DomainException, remediationFor } from '../errors/error-codes';
+import { ApiProblemException } from '../errors/problem-exception';
+
+function makeHost(exceptionPath = '/api/test') {
+  const json = jest.fn();
+  const status = jest.fn(() => ({ json }));
+  const response = { status, setHeader: jest.fn() };
+  const request = { url: exceptionPath, correlationId: 'corr-123' };
+  const host: any = {
+    switchToHttp: () => ({
+      getResponse: () => response,
+      getRequest: () => request,
+    }),
+  };
+  return { host, status, json };
+}
 
 describe('Rfc7807ExceptionFilter', () => {
-  it('preserves a stable application error code', () => {
-    const json = jest.fn();
-    const response = { status: jest.fn().mockReturnValue({ json }) };
-    const host = {
-      switchToHttp: () => ({
-        getResponse: () => response,
-        getRequest: () => ({ url: '/projects' }),
-      }),
-    } as any;
+  it('normalizes validation failures with safe messages and correlation id', () => {
+    const { host, status, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
 
-    new Rfc7807ExceptionFilter().catch(
-      new BadRequestException({ code: 'VALIDATION_ERROR', message: 'invalid project' }),
+    filter.catch(new BadRequestException(['address must be a Stellar public key']), host);
+
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: `https://errors.verdant-bond-protocol.org/${ErrorCode.VALIDATION_FAILED}`,
+        status: 400,
+        code: ErrorCode.VALIDATION_FAILED,
+        detail: ErrorTaxonomy[ErrorCode.VALIDATION_FAILED].safeMessage,
+        correlationId: 'corr-123',
+        retryable: false,
+        errors: [{ field: 'address', message: 'address must be a Stellar public key' }],
+      }),
+    );
+  });
+
+  it('handles authorization failures safely', () => {
+    const { host, status, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new UnauthorizedException('Token expired or invalid'), host);
+
+    expect(status).toHaveBeenCalledWith(401);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: ErrorCode.UNAUTHORIZED,
+        detail: ErrorTaxonomy[ErrorCode.UNAUTHORIZED].safeMessage,
+        retryable: false,
+      }),
+    );
+  });
+
+  it('includes safe contract context and settlement failure code for contract exceptions', () => {
+    const { host, status, json } = makeHost('/api/marketplace/buy');
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(
+      new ContractException(
+        StableErrorCode.DEX_ORDER_ALREADY_FILLED,
+        'Marketplace order is already filled',
+        'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+        'buy_order',
+        5,
+      ),
       host,
     );
 
-    expect(response.status).toHaveBeenCalledWith(400);
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'VALIDATION_ERROR',
-      type: 'https://errors.verdant-bond-protocol.org/validation_error',
-    }));
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Contract Error',
+        code: ErrorCode.SETTLEMENT_FAILED,
+        detail: ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage,
+        retryable: true,
+        contract: {
+          address: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
+          method: 'buy_order',
+          rawErrorCode: 5,
+        },
+      }),
+    );
+  });
+
+  it('handles unexpected catch-all errors cleanly', () => {
+    const { host, status, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new InternalServerErrorException('Database disconnected unexpectedly'), host);
+
+    expect(status).toHaveBeenCalledWith(500);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: ErrorCode.INTERNAL_ERROR,
+        detail: ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].safeMessage,
+        retryable: false,
+        correlationId: 'corr-123',
+      }),
+    );
+    // Ensure sensitive details are not leaked
+    const jsonCall = json.mock.calls[0][0];
+    expect(jsonCall.detail).not.toContain('Database');
+  });
+
+  it('does not expose a stack trace or internal cause in the response body', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+    const internal = new InternalServerErrorException('Database connection pool exhausted at host db-primary:5432');
+
+    filter.catch(internal, host);
+
+    const body = json.mock.calls[0][0];
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('stack');
+    expect(serialized).not.toContain('db-primary');
+    expect(serialized).not.toContain('5432');
+    expect(body.detail).toBe(ErrorTaxonomy[ErrorCode.INTERNAL_ERROR].safeMessage);
+  });
+
+  it('replaces raw unauthorized message with the taxonomy safe message', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new UnauthorizedException('jwt malformed: header.payload.signature'), host);
+
+    const body = json.mock.calls[0][0];
+    expect(body.detail).toBe(ErrorTaxonomy[ErrorCode.UNAUTHORIZED].safeMessage);
+    expect(JSON.stringify(body)).not.toContain('jwt malformed');
+  });
+
+  it('handles custom domain exceptions cleanly', () => {
+    const { host, status, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new DomainException(ErrorCode.INSUFFICIENT_BALANCE), host);
+
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: ErrorCode.INSUFFICIENT_BALANCE,
+        detail: ErrorTaxonomy[ErrorCode.INSUFFICIENT_BALANCE].safeMessage,
+        retryable: false,
+        remediation: remediationFor(ErrorCode.INSUFFICIENT_BALANCE),
+      }),
+    );
+  });
+
+  it('always includes a remediation hint in the problem details', () => {
+    const { host, json } = makeHost();
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(new UnauthorizedException('Token expired or invalid'), host);
+
+    const problem = json.mock.calls[0][0];
+    expect(typeof problem.remediation).toBe('string');
+    expect(problem.remediation.length).toBeGreaterThan(0);
+  });
+
+  it('renders ApiProblemException with its stable code, status, remediation and context', () => {
+    const { host, status, json } = makeHost('/api/bonds');
+    const filter = new Rfc7807ExceptionFilter();
+
+    filter.catch(
+      new ApiProblemException(ErrorCode.RISK_REVIEW_REQUIRED, {
+        status: 403,
+        context: { score: 90, band: 'high', reasons: ['velocity'] },
+      }),
+      host,
+    );
+
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: `https://errors.verdant-bond-protocol.org/${ErrorCode.RISK_REVIEW_REQUIRED}`,
+        code: ErrorCode.RISK_REVIEW_REQUIRED,
+        status: 403,
+        retryable: false,
+        remediation: remediationFor(ErrorCode.RISK_REVIEW_REQUIRED),
+        context: { score: 90, band: 'high', reasons: ['velocity'] },
+      }),
+    );
   });
 });

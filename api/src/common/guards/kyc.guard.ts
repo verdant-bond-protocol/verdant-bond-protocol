@@ -14,11 +14,22 @@ export class KycGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required');
     }
 
-    const eligible = await this.kycService.isEligible(user.walletAddress, KycStatus.VERIFIED);
+    const { eligible, record } = await this.kycService.isEligibleRecord(
+      user.walletAddress,
+      KycStatus.VERIFIED,
+    );
     if (!eligible) {
+      const status = record.status;
+      if (status === KycStatus.EXPIRED) {
+        throw new ForbiddenException('KYC verification has expired; please re-verify');
+      }
+      if (status === KycStatus.REJECTED) {
+        throw new ForbiddenException('KYC verification was rejected');
+      }
       throw new ForbiddenException('KYC verification required');
     }
 
+    user.kycStatus = record.status;
     return true;
   }
 }

@@ -166,6 +166,17 @@ export async function ingestSatelliteMeasurement(
       mean_ndwi: meanOfDefined(usable.map((scene) => scene.ndwi_mean)),
       sources: [...new Set(usable.map((scene) => scene.source))],
     },
+    raw_observations: {
+      scene_ids: usable.map((scene) => scene.scene_id),
+      sources: [...new Set(usable.map((scene) => scene.source))],
+      scene_count: usable.length,
+    },
+    transformation_parameters: {
+      bbox: validatedProject.bbox,
+      area_ha: validatedProject.area_ha,
+      baseline_ndvi: validatedProject.baseline_ndvi,
+      max_cloud_cover: maxCloudCover,
+    },
   });
 }
 

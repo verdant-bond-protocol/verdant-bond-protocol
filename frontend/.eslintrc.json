@@ -21,6 +21,12 @@
       "files": ["*.html"],
       "extends": ["plugin:@angular-eslint/template/recommended"],
       "rules": {}
+    },
+    {
+      "files": ["src/app/shared/services/api.service.ts"],
+      "rules": {
+        "@typescript-eslint/no-explicit-any": "error"
+      }
     }
   ]
 }

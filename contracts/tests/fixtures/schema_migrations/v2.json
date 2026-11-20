@@ -1,0 +1,9 @@
+{
+  "fromVersion": 1,
+  "toVersion": 2,
+  "status": "draft",
+  "baseline": "storage_keys.v1.json",
+  "description": "Next storage schema version (#392). No breaking storage change is scheduled yet; every breaking DataKey change for v2 must add a step here before it can merge.",
+  "rollback": "Re-execute the pinned v1 WASM hashes through governance (docs/upgrade-migrations.md §5). v1 keys are retained until finalize_migration, so a rollback before finalize reads unchanged state.",
+  "steps": []
+}

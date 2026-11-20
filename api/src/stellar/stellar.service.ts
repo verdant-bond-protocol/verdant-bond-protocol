@@ -48,12 +48,26 @@ export class StellarService {
     }
   }
 
-  async getBalance(publicKey: string): Promise<string> {
+  async getBalance(publicKey: string, assetCode?: string, assetIssuer?: string): Promise<string> {
     const account = await this.getAccount(publicKey);
-    const native = account.balances.find(
-      (b): b is Horizon.HorizonApi.BalanceLineNative => b.asset_type === 'native',
-    );
-    return native?.balance ?? '0';
+    
+    if (!assetCode || assetCode === 'XLM' || assetCode === 'native') {
+      const native = account.balances.find((b) => b.asset_type === 'native');
+      return native?.balance ?? '0';
+    }
+
+    const match = account.balances.find((b) => {
+      if (b.asset_type === 'native') return false;
+      
+      const bcode = (b as any).asset_code;
+      const bissuer = (b as any).asset_issuer;
+      
+      const codeMatch = bcode === assetCode;
+      if (assetIssuer) return codeMatch && bissuer === assetIssuer;
+      return codeMatch;
+    });
+
+    return match?.balance ?? '0';
   }
 
   async getBalances(publicKey: string): Promise<Horizon.HorizonApi.BalanceLine[]> {

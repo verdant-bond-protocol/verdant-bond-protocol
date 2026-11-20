@@ -9,10 +9,10 @@ crate-type = ["cdylib", "lib"]
 [dependencies]
 soroban-sdk = "26.0.1"
 nbbs-shared = { path = "../shared" }
-nbbs-oracle-consumer = { path = "../oracle-consumer" }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+nbbs-oracle-consumer = { path = "../oracle-consumer", features = ["testutils"] }
 nbbs-bond-issuer = { path = "../bond-issuer", features = ["testutils"] }
 proptest = "1"
 

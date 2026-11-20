@@ -1,9 +1,16 @@
+import { createHash } from 'crypto';
 import {
   canonicalJson,
   hashEvidence,
   uploadEvidence,
   ipfsCidV0FromBytes,
   encodeBase58btc,
+  decodeBase58btc,
+  decodeCidV0,
+  isValidEvidenceHash,
+  checkEvidenceRetrievable,
+  sha256Hex,
+  InvalidEvidenceHashError,
 } from '../ipfs/evidence';
 import { MockHttpClient } from './test-helpers';
 
@@ -43,6 +50,86 @@ describe('ipfs evidence hashing', () => {
     expect(ipfsCidV0FromBytes(Buffer.from('', 'utf8'))).toBe(
       'QmdfTbBqBPQ7VNxZEYEj14VmRuZBkqFbiwReogJgS1zR1n',
     );
+  });
+
+  it('decodeBase58btc is the inverse of encodeBase58btc', () => {
+    const bytes = Buffer.from([0x12, 0x20, 0xde, 0xad, 0xbe, 0xef]);
+    expect(decodeBase58btc(encodeBase58btc(bytes))).toEqual(bytes);
+  });
+});
+
+describe('evidence hash validation (#93)', () => {
+  const digest = createHash('sha256').update('evidence-payload').digest();
+  const cid = ipfsCidV0FromBytes(Buffer.from('evidence-payload'));
+  const hex = sha256Hex(Buffer.from('evidence-payload'));
+
+  describe('decodeCidV0', () => {
+    it('decodes a real CIDv0 back to its 32-byte digest', () => {
+      expect(decodeCidV0(cid)).toEqual(digest);
+    });
+
+    it('round-trips through hashEvidence -> decodeCidV0', () => {
+      const { ipfs_evidence_hash, canonicalJson: serialized } = hashEvidence({ a: 1 });
+      const recovered = decodeCidV0(ipfs_evidence_hash);
+      const expectedDigest = createHash('sha256').update(serialized, 'utf8').digest();
+      expect(recovered).toEqual(expectedDigest);
+    });
+
+    it('rejects malformed hex disguised with a Qm-like shape', () => {
+      expect(() => decodeCidV0('Qm' + 'z'.repeat(44))).toThrow(InvalidEvidenceHashError);
+    });
+
+    it('rejects a CIDv0 of the wrong length', () => {
+      expect(() => decodeCidV0(cid.slice(0, -1))).toThrow(InvalidEvidenceHashError);
+    });
+
+    it('rejects a non-CID string', () => {
+      expect(() => decodeCidV0('not-a-cid')).toThrow(InvalidEvidenceHashError);
+    });
+  });
+
+  describe('isValidEvidenceHash', () => {
+    it('accepts a valid CIDv0', () => {
+      expect(isValidEvidenceHash(cid)).toBe(true);
+    });
+
+    it('accepts a valid 64-character hex digest', () => {
+      expect(isValidEvidenceHash(hex)).toBe(true);
+    });
+
+    it('rejects malformed hex', () => {
+      expect(isValidEvidenceHash('zz'.repeat(32))).toBe(false);
+    });
+
+    it('rejects the wrong digest length', () => {
+      expect(isValidEvidenceHash('ab'.repeat(10))).toBe(false);
+    });
+
+    it('rejects an unsupported CID version (CIDv1)', () => {
+      expect(isValidEvidenceHash('bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi')).toBe(false);
+    });
+
+    it('rejects a plain, non-evidence-shaped string', () => {
+      expect(isValidEvidenceHash('not-an-evidence-hash')).toBe(false);
+    });
+  });
+
+  describe('checkEvidenceRetrievable (bounded, mocked -- no real network access)', () => {
+    it('returns true when the gateway responds with 2xx', async () => {
+      const http = new MockHttpClient([{ status: 200, data: {} }]);
+      await expect(checkEvidenceRetrievable(cid, 'https://gateway.example/ipfs/', 5000, http)).resolves.toBe(true);
+      expect(http.calls[0].url).toBe(`https://gateway.example/ipfs/${cid}`);
+    });
+
+    it('returns false when the gateway responds with a non-2xx status', async () => {
+      const http = new MockHttpClient([{ status: 404, data: {} }]);
+      await expect(checkEvidenceRetrievable(cid, 'https://gateway.example/ipfs/', 5000, http)).resolves.toBe(false);
+    });
+
+    it('returns false (does not throw) when the request errors or times out', async () => {
+      const http = new MockHttpClient([new Error('timeout')]);
+      await expect(checkEvidenceRetrievable(cid, 'https://gateway.example/ipfs/', 5000, http)).resolves.toBe(false);
+    });
   });
 });
 

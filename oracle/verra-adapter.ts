@@ -118,6 +118,14 @@ export async function pollVerraProject(
       verra_report_ids: verified.map((report) => report.report_id),
       credits_issued: verified.reduce((sum, report) => sum + report.credits_issued, 0),
     },
+    raw_observations: {
+      verra_report_ids: verified.map((report) => report.report_id),
+      report_count: verified.length,
+    },
+    transformation_parameters: {
+      status_filter: 'VERIFIED',
+      methodologies: project.methodologies,
+    },
   });
 }
 

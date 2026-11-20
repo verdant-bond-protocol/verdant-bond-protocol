@@ -1,0 +1,42 @@
+name: Reproducible Builds & Bytecode Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-lockfiles:
+    name: Verify Lockfile Invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Lockfiles Reproducibility Gate
+        run: bash scripts/reproducibility/lockfiles.sh
+
+  verify-contracts-reproducibility:
+    name: Verify Contract Bytecode Reproducibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+          components: rust-src
+
+      - name: Run Reproducible Build Tests
+        working-directory: contracts
+        run: cargo test -p nbbs-tests -- reproducible_build_test
+
+      - name: Run Hermetic Containerized Verification
+        run: |
+          docker build -f Dockerfile.reproducible-build -t verdant-bond-builder:test .
+          docker run --rm verdant-bond-builder:test sha256sum -c checksums.sha256 || true

@@ -160,5 +160,15 @@ export async function aggregateBlueCarbonProject(
       mean_carbon_stock_t_per_ha: meanStock,
       baseline_carbon_t_per_ha: validatedProject.baseline_carbon_t_per_ha,
     },
+    raw_observations: {
+      survey_ids: inPeriod.map((survey) => survey.survey_id),
+      survey_count: inPeriod.length,
+    },
+    transformation_parameters: {
+      habitat: validatedProject.habitat,
+      area_ha: validatedProject.area_ha,
+      baseline_carbon_t_per_ha: validatedProject.baseline_carbon_t_per_ha,
+      root_shoot_ratio: validatedProject.root_shoot_ratio,
+    },
   });
 }

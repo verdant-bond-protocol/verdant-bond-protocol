@@ -1,17 +1,18 @@
 export const DEFAULT_CADENCE_SECONDS = 365 * 24 * 60 * 60;
 export const DEFAULT_GRACE_SECONDS = 30 * 24 * 60 * 60;
 
-const CADENCE_OVERRIDES: Array<{ pattern: RegExp; seconds: number }> = [
-  { pattern: /REMOTE.?SENSING|SATELLITE/i, seconds: 90 * 24 * 60 * 60 },
-  { pattern: /IOT|SENSOR/i, seconds: 30 * 24 * 60 * 60 },
-];
+/** Explicit cadence overrides keyed by methodology constants from contracts/shared/src/types.rs. */
+const METHODOLOGY_CADENCES: Record<string, number> = {
+  'REMOTE-SENSING': 90 * 24 * 60 * 60,
+  'SATELLITE': 90 * 24 * 60 * 60,
+  'IOT': 30 * 24 * 60 * 60,
+  'IOT-SENSORS': 30 * 24 * 60 * 60,
+  'BLUE-CARBON': 90 * 24 * 60 * 60,
+};
 
 /** Expected reporting cadence for a methodology (seconds between reports). */
 export function cadenceForMethodology(methodology: string): number {
-  for (const override of CADENCE_OVERRIDES) {
-    if (override.pattern.test(methodology)) return override.seconds;
-  }
-  return DEFAULT_CADENCE_SECONDS;
+  return METHODOLOGY_CADENCES[methodology.toUpperCase()] ?? DEFAULT_CADENCE_SECONDS;
 }
 
 export interface StalenessInput {

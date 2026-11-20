@@ -1,14 +1,33 @@
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
 import { IpfsService } from './ipfs.service';
-import { AuthModule } from '../auth/auth.module';
-import { PrivacyExportService } from '../common/services/privacy-export.service';
+import { IpfsHealthService } from './ipfs-health.service';
+import { IpfsUploadPolicy } from './ipfs-upload.policy';
+import { IpfsDocumentCacheService } from './ipfs-document-cache.service';
+import { IpfsAvailabilityService } from './ipfs-availability.service';
 
 @Module({
-  imports: [AuthModule],
+  imports: [ScheduleModule.forRoot()],
   controllers: [ProjectsController],
-  providers: [ProjectsService, IpfsService, PrivacyExportService],
-  exports: [IpfsService, ProjectsService],
+  providers: [
+    ProjectsService,
+    IpfsService,
+    IpfsHealthService,
+    IpfsDocumentCacheService,
+    IpfsAvailabilityService,
+    {
+      provide: IpfsUploadPolicy,
+      useFactory: () => new IpfsUploadPolicy(),
+    },
+  ],
+  exports: [
+    IpfsService,
+    IpfsHealthService,
+    ProjectsService,
+    IpfsDocumentCacheService,
+    IpfsAvailabilityService,
+  ],
 })
 export class ProjectsModule {}

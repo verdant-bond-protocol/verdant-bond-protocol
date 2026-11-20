@@ -22,21 +22,6 @@ services:
       timeout: 5s
       retries: 5
 
-  api:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    ports: ["3000:3000"]
-    environment:
-      STELLAR_NETWORK: testnet
-      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
-      DATABASE_URL: postgresql://nbs:nbs@postgres:5432/verdant_bond
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_started }
-    volumes: [./api:/app, /app/node_modules]
-
   ipfs:
     image: ipfs/kubo:latest
     ports: ["5001:5001", "8080:8080"]
@@ -46,6 +31,30 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports: ["3000:3000"]
+    environment:
+      STELLAR_NETWORK: testnet
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+      STELLAR_AUTH_SECRET_KEY: ${STELLAR_AUTH_SECRET_KEY}
+      STELLAR_HOME_DOMAIN: ${STELLAR_HOME_DOMAIN:-localhost:3000}
+      DATABASE_URL: postgresql://nbs:nbs@postgres:5432/verdant_bond
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ipfs: { condition: service_healthy }
+    volumes: [./api:/app, /app/node_modules]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   pgdata:
