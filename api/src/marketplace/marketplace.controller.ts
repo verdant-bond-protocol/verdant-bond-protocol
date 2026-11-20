@@ -1,63 +1,91 @@
 import {
-  Controller, Get, Post, Delete, Body, Param, Query, Req,
-  HttpCode, HttpStatus, ParseIntPipe,
+  Controller, Get, Post, Put, Delete, Body, Param, Query, Req,
+  HttpCode, HttpStatus, ParseIntPipe, UseGuards, NotFoundException, BadRequestException,
 } from '@nestjs/common';
 import { DexService } from './dex.service';
 import { LiquidityService } from './liquidity.service';
+import { PriceImpactService } from './price-impact.service';
+import { StellarService } from '../stellar/stellar.service';
+import { DexReconciliationService, ReconciliationReport } from './dex.reconciliation.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { ListBondDto } from './dto/list-bond.dto';
 import { BuyBondDto } from './dto/buy-bond.dto';
 import { DepositQuoteDto } from './dto/deposit-quote.dto';
 import { WithdrawQuoteDto } from './dto/withdraw-quote.dto';
 import { QuoteBalanceQueryDto } from './dto/quote-balance-query.dto';
+import { UpdatePriceImpactConfigDto } from './dto/price-impact-config.dto';
+import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import {
   OrderResponse,
   PriceFeedResponse,
+  PriceImpactConfig,
+  PriceImpactEvaluation,
   PriceLevel,
+  QuoteAsset,
   QuoteBalanceResponse,
   QuoteTransactionResponse,
   SlippageResponse,
 } from './interfaces/marketplace.interface';
-import { PaginatedResponse } from '../common/dto/pagination.dto';
+import { PaginatedResponse, PaginationDto } from '../common/dto/pagination.dto';
+import { toBigIntString } from '../common/utils';
+import { listSupportedQuoteAssets, QuoteAssetConfig } from './quote-assets';
+import { Idempotent } from '../common/decorators/idempotent.decorator';
 
 @Controller('marketplace')
 export class MarketplaceController {
   constructor(
     private readonly dexService: DexService,
     private readonly liquidityService: LiquidityService,
+    private readonly priceImpactService: PriceImpactService,
+    private readonly stellarService: StellarService,
+    private readonly reconciliation: DexReconciliationService,
   ) {}
+
+  /**
+   * The canonical quote asset registry (issue #92). The frontend fetches
+   * this instead of hardcoding its own asset list, so the two never drift.
+   */
+  @Get('quote-assets')
+  listQuoteAssets(): readonly QuoteAssetConfig[] {
+    return listSupportedQuoteAssets();
+  }
 
   @Get('orders')
   async listOrders(
     @Query('bondId') bondId?: number,
     @Query('status') status?: string,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query() pagination: PaginationDto = new PaginationDto(),
   ): Promise<PaginatedResponse<OrderResponse>> {
     return this.dexService.listOrders(
       bondId ? Number(bondId) : undefined,
       status,
-      page || 1,
-      limit || 20,
+      pagination.page ?? 1,
+      pagination.limit ?? 20,
+      pagination.cursor,
     );
   }
 
   @Post('list')
+  @Idempotent()
+  @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.CREATED)
   async listBondTokens(
     @Body() dto: ListBondDto,
     @Req() req: any,
   ): Promise<OrderResponse> {
-    const sellerAddress = req.headers['x-wallet-address'] as string || '';
+    const sellerAddress = req.headers['x-wallet-address'] as string;
     return this.dexService.listBondTokens(dto, sellerAddress);
   }
 
   @Post('buy')
+  @Idempotent()
+  @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.OK)
   async buyBondTokens(
     @Body() dto: BuyBondDto,
     @Req() req: any,
   ): Promise<OrderResponse> {
-    const buyerAddress = req.headers['x-wallet-address'] as string || '';
+    const buyerAddress = req.headers['x-wallet-address'] as string;
     return this.dexService.buyBondTokens(dto, buyerAddress);
   }
 
@@ -66,37 +94,52 @@ export class MarketplaceController {
     @Query() query: QuoteBalanceQueryDto,
     @Req() req: any,
   ): Promise<QuoteBalanceResponse> {
-    const address = req.headers['x-wallet-address'] as string || '';
+    const address = req.headers['x-wallet-address'] as string;
     return this.dexService.getQuoteBalance(address, query.asset ?? 'USDC');
   }
 
+  @Get('wallet-balance')
+  async getWalletBalance(
+    @Query() query: QuoteBalanceQueryDto,
+    @Req() req: any,
+  ): Promise<QuoteBalanceResponse> {
+    const address = req.headers['x-wallet-address'] as string;
+    const asset = query.asset ?? 'USDC';
+    const balanceStr = await this.stellarService.getBalance(address, asset);
+    return { address, asset, balance: balanceStr };
+  }
+
   @Post('deposit')
+  @Idempotent()
   @HttpCode(HttpStatus.OK)
   async depositQuote(
     @Body() dto: DepositQuoteDto,
     @Req() req: any,
   ): Promise<QuoteTransactionResponse> {
-    const address = req.headers['x-wallet-address'] as string || '';
+    const address = req.headers['x-wallet-address'] as string;
     return this.dexService.depositQuote(dto, address);
   }
 
   @Post('withdraw')
+  @Idempotent()
   @HttpCode(HttpStatus.OK)
   async withdrawQuote(
     @Body() dto: WithdrawQuoteDto,
     @Req() req: any,
   ): Promise<QuoteTransactionResponse> {
-    const address = req.headers['x-wallet-address'] as string || '';
+    const address = req.headers['x-wallet-address'] as string;
     return this.dexService.withdrawQuote(dto, address);
   }
 
   @Delete('orders/:id')
+  @Idempotent()
+  @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.NO_CONTENT)
   async cancelOrder(
     @Param('id', ParseIntPipe) id: number,
     @Req() req: any,
   ): Promise<void> {
-    const callerAddress = req.headers['x-wallet-address'] as string || '';
+    const callerAddress = req.headers['x-wallet-address'] as string;
     return this.dexService.cancelOrder(id, callerAddress);
   }
 
@@ -110,23 +153,111 @@ export class MarketplaceController {
   @Get('prices')
   async getPriceFeed(
     @Query('bondId') bondId?: number,
+    @Query('quoteAsset') quoteAsset?: QuoteAsset,
   ): Promise<PriceFeedResponse[]> {
-    return this.liquidityService.getPriceFeed(bondId ? Number(bondId) : undefined);
+    return this.liquidityService.getPriceFeed(
+      bondId ? Number(bondId) : undefined,
+      quoteAsset,
+    );
   }
 
   @Get('prices/:bondId/best')
   async getBestPrice(
     @Param('bondId', ParseIntPipe) bondId: number,
     @Query('side') side: 'buy' | 'sell' = 'sell',
+    @Query('quoteAsset') quoteAsset?: QuoteAsset,
   ): Promise<PriceLevel> {
-    return this.liquidityService.getBestPrice(bondId, side);
+    return this.liquidityService.getBestPrice(bondId, side, quoteAsset);
   }
 
   @Get('prices/:bondId/slippage')
   async calculateSlippage(
     @Param('bondId', ParseIntPipe) bondId: number,
-    @Query('amount') amount: number,
+    @Query('amount') amount: string,
+    @Query('quoteAsset') quoteAsset: QuoteAsset = 'USDC',
   ): Promise<SlippageResponse> {
-    return this.liquidityService.calculateSlippage(bondId, Number(amount));
+    return this.liquidityService.calculateSlippage(bondId, amount, quoteAsset);
+  }
+
+  @Get('prices/:bondId/impact')
+  async evaluatePriceImpact(
+    @Param('bondId', ParseIntPipe) bondId: number,
+    @Query('amount') amount: string,
+    @Query('quoteAsset') quoteAsset: QuoteAsset = 'USDC',
+  ): Promise<PriceImpactEvaluation> {
+    return this.priceImpactService.evaluatePriceImpact(bondId, amount, quoteAsset);
+  }
+
+  @Get('config/:bondId/impact-limits')
+  async getPriceImpactConfig(
+    @Param('bondId', ParseIntPipe) bondId: number,
+  ): Promise<PriceImpactConfig> {
+    return this.priceImpactService.getConfig(bondId);
+  }
+
+  @Put('config/:bondId/impact-limits')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async updatePriceImpactConfig(
+    @Param('bondId', ParseIntPipe) bondId: number,
+    @Body() dto: UpdatePriceImpactConfigDto,
+    @Req() req: any,
+  ): Promise<PriceImpactConfig> {
+    const operator = req.headers['x-wallet-address'] as string;
+    if (!operator) {
+      throw new BadRequestException('Missing x-wallet-address header for operator authorization');
+    }
+    const patch: Partial<PriceImpactConfig> = {};
+    if (dto.illiquidThresholdAmount !== undefined) patch.illiquidThresholdAmount = dto.illiquidThresholdAmount;
+    if (dto.moderateThresholdAmount !== undefined) patch.moderateThresholdAmount = dto.moderateThresholdAmount;
+    if (dto.maxIlliquidDepthConsumptionBps !== undefined) patch.maxIlliquidDepthConsumptionBps = dto.maxIlliquidDepthConsumptionBps;
+    if (dto.maxLiquidImpactBps !== undefined || dto.maxModerateImpactBps !== undefined || dto.maxIlliquidImpactBps !== undefined) {
+      const current = await this.priceImpactService.getConfig(bondId);
+      patch.tierImpactLimitsBps = {
+        LIQUID: dto.maxLiquidImpactBps ?? current.tierImpactLimitsBps.LIQUID,
+        MODERATE: dto.maxModerateImpactBps ?? current.tierImpactLimitsBps.MODERATE,
+        ILLIQUID: dto.maxIlliquidImpactBps ?? current.tierImpactLimitsBps.ILLIQUID,
+      };
+    }
+    return this.priceImpactService.setConfig(bondId, patch);
+  }
+
+  /**
+   * Operator reconciliation surface (#recon). Marketplace endpoints are
+   * wallet-header authenticated, so these are operator-tooling routes gated by
+   * the same `x-wallet-address` convention rather than a JWT.
+   */
+  @Post('reconciliation/run')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async runReconciliation(
+    @Body() body: { wallets?: string[]; assets?: string[]; maxOrderScan?: number },
+  ): Promise<ReconciliationReport> {
+    return this.reconciliation.reconcile({
+      wallets: body?.wallets,
+      assets: body?.assets as any,
+      maxOrderScan: body?.maxOrderScan,
+    });
+  }
+
+  @Get('reconciliation/mismatches')
+  async listReconciliationMismatches(
+    @Query('limit') limit?: string,
+  ): Promise<unknown[]> {
+    return this.reconciliation.listMismatches(limit ? Number(limit) : 50);
+  }
+
+  @Post('reconciliation/repair')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async repairReconciliation(
+    @Body() body: { report?: ReconciliationReport },
+  ): Promise<{ correlationId: string; repaired: number; actions: string[] }> {
+    const report = body?.report ?? (await this.reconciliation.getLastReport());
+    if (!report) {
+      throw new NotFoundException('No reconciliation report available to repair');
+    }
+    const actions = await this.reconciliation.repair(report);
+    return { correlationId: report.correlationId, repaired: actions.length, actions };
   }
 }

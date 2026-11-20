@@ -23,6 +23,8 @@ Thumbs.db
 # Testing
 test_snapshots/
 coverage/
+.stryker-tmp/
+api/reports/mutation/
 
 # Build artifacts
 *.log
@@ -30,3 +32,7 @@ build/
 
 # Angular cache
 **/.angular/cache/
+
+# Backfill checkpoints, locks and rollback journals (operator state)
+api/data/backfill/
+api/data/repair/

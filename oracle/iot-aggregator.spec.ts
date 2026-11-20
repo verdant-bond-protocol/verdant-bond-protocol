@@ -83,12 +83,12 @@ describe('aggregateSensorReadings', () => {
 });
 
 describe('aggregateIotProject', () => {
-  it('produces a validated IOT-SENSORS report with evidence hash', async () => {
+  it('produces a validated IOT_SENSORS report with evidence hash', async () => {
     const http = new MockHttpClient([{ status: 200, data: { readings: READINGS } }]);
     const report = await aggregateIotProject(PROJECT, PERIOD, { baseUrl: BASE_URL, http });
 
     expect(report.project_id).toBe('VCS-1234');
-    expect(report.methodology).toBe('IOT-SENSORS');
+    expect(report.methodology).toBe('IOT_SENSORS');
     expect(report.period_start).toBe('2025-01-01');
     expect(report.period_end).toBe('2025-03-31');
     expect(report.ipfs_evidence_hash).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);
@@ -103,6 +103,27 @@ describe('aggregateIotProject', () => {
   it('meanSoilCarbonDeltaPpm averages per-device first/last deltas', () => {
     expect(meanSoilCarbonDeltaPpm(READINGS as any)).toBe(150);
     expect(meanSoilCarbonDeltaPpm([READINGS[0]] as any)).toBeNull();
+  });
+
+  it('floors carbon_sequestered at zero for a net soil-carbon loss period', async () => {
+    // NBS-SOIL-001 loses soil carbon over the period (4350 -> 4200 ppm),
+    // producing a negative delta. OracleConsumer.submit_report rejects
+    // carbon_sequestered < 0, so the report must clamp it to zero while
+    // still surfacing the raw negative delta in evidence for context.
+    const lossReadings = [
+      { ...READINGS[0], timestamp: '2025-02-15T06:00:00Z', metrics: { ...READINGS[0].metrics, soil_carbon_ppm: 4350 } },
+      { ...READINGS[0], timestamp: '2025-03-15T06:00:00Z', metrics: { ...READINGS[0].metrics, soil_carbon_ppm: 4200 } },
+    ];
+    const http = new MockHttpClient([{ status: 200, data: { readings: lossReadings } }]);
+    const report = await aggregateIotProject(
+      { ...PROJECT, device_ids: ['NBS-SOIL-001'] },
+      PERIOD,
+      { baseUrl: BASE_URL, http },
+    );
+
+    expect(report.evidence.soil_carbon_delta_ppm).toBe(-150);
+    expect(report.carbon_sequestered).toBe(0);
+    expect(report.carbon_sequestered).toBeGreaterThanOrEqual(0);
   });
 
   it('throws IotSchemaError when a reading violates the schema', async () => {

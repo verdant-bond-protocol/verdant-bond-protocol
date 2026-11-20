@@ -86,4 +86,8 @@ describe('cadenceForMethodology', () => {
   it('uses monthly cadence for IoT sensors', () => {
     expect(cadenceForMethodology('IOT-SENSORS')).toBe(30 * 24 * 60 * 60);
   });
+
+  it('uses seasonal (90-day) cadence for BLUE-CARBON methodology', () => {
+    expect(cadenceForMethodology('BLUE-CARBON')).toBe(90 * 24 * 60 * 60);
+  });
 });

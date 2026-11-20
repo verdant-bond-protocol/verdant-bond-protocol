@@ -1,34 +1,65 @@
 import {
   Controller, Get, Post, Body, Param, Req,
-  HttpCode, HttpStatus, ParseIntPipe,
+  HttpCode, HttpStatus, ParseIntPipe, UseGuards, Header, Query,
 } from '@nestjs/common';
 import { OracleService } from './oracle.service';
 import { OracleMonitoringService } from './oracle.monitoring.service';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { ProviderGuard } from '../common/guards/provider.guard';
 import { SubmitReportDto } from './dto/submit-report.dto';
 import { ChallengeDto } from './dto/challenge.dto';
 import { RegisterProviderDto } from './dto/register-provider.dto';
+import { ListOracleIncidentsDto } from './dto/list-oracle-incidents.dto';
+import { ResolveOracleIncidentDto } from './dto/resolve-oracle-incident.dto';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../auth/rbac';
+import { RequireQuota } from '../common/decorators/quota.decorator';
+import { QuotaResource } from '../common/services/quota.service';
+import { IntentGuard } from '../common/guards/intent.guard';
+import { RequireIntent } from '../common/decorators/require-intent.decorator';
+import { RateLimit } from '../common/decorators/rate-limit.decorator';
 import {
   ReportResponse,
   ChallengeResponse,
   ProviderResponse,
   ProviderStatsWithHistory,
   OracleStalenessReport,
+  ChallengeStateResponse,
+  ChallengedReportSummary,
+  CouponEligibility,
+  OracleAnomalyReport,
 } from './interfaces/oracle.interface';
+import { OracleIncident } from './interfaces/oracle-incident.interface';
+import { OracleIncidentRepository } from './oracle-incident.repository';
+import { PaginatedResponse } from '../common/dto/pagination.dto';
+import { DisputeEvidenceBundle } from './interfaces/dispute-bundle.interface';
+import { HistoricalOracleCorrectionDto } from './dto/historical-correction.dto';
+import {
+  HistoricalCorrectionRecord,
+  HistoricalCorrectionResponse,
+} from './interfaces/oracle-correction.interface';
+
+
+import { CircuitBreakerService, CircuitBreakerState } from './circuit-breaker.service';
 
 @Controller('oracle')
 export class OracleController {
   constructor(
     private readonly oracleService: OracleService,
     private readonly monitoringService: OracleMonitoringService,
+    private readonly incidents: OracleIncidentRepository,
+    private readonly circuitBreaker: CircuitBreakerService,
   ) {}
 
   @Post('reports')
+  @RequireQuota(QuotaResource.SUBMIT_ORACLE_REPORT)
   @HttpCode(HttpStatus.CREATED)
   async submitReport(
     @Body() dto: SubmitReportDto,
     @Req() req: any,
   ): Promise<ReportResponse> {
-    const providerAddress = req.headers['x-provider-address'] as string || process.env.DEFAULT_PROVIDER_ADDRESS || '';
+    const providerAddress = req.headers['x-provider-address'] as string;
     return this.oracleService.submitReport(dto, providerAddress);
   }
 
@@ -39,6 +70,41 @@ export class OracleController {
     return this.oracleService.getProjectReports(projectId);
   }
 
+  /**
+   * Challenge review surface (#oracle-challenge): list every challenged report
+   * for a project, each with its latest challenge record (counter-evidence hash,
+   * challenger, submitted time, resolution).
+   */
+  @Get('reports/:projectId/challenges')
+  async getProjectChallengedReports(
+    @Param('projectId') projectId: string,
+  ): Promise<ChallengedReportSummary[]> {
+    return this.oracleService.getProjectChallengedReports(projectId);
+  }
+
+  /**
+   * Full challenge detail for a single report: current status plus all on-chain
+   * challenge records (counter-evidence hash, challenger, submitted time,
+   * resolution). Resolution history links to coupon-distribution eligibility.
+   */
+  @Get('challenges/:reportId')
+  async getReportChallengeState(
+    @Param('reportId', ParseIntPipe) reportId: number,
+  ): Promise<ChallengeStateResponse> {
+    return this.oracleService.getReportChallengeState(reportId);
+  }
+
+  /**
+   * Coupon-distribution eligibility for a project (#oracle-challenge). Used by
+   * the bond coupon flow to block/warn distribution when a report is challenged.
+   */
+  @Get('projects/:projectId/coupon-eligibility')
+  async getCouponEligibility(
+    @Param('projectId') projectId: string,
+  ): Promise<CouponEligibility> {
+    return this.oracleService.getCouponEligibility(projectId);
+  }
+
   @Post('challenge/:reportId')
   @HttpCode(HttpStatus.OK)
   async challengeReport(
@@ -46,11 +112,53 @@ export class OracleController {
     @Body() dto: ChallengeDto,
     @Req() req: any,
   ): Promise<ChallengeResponse> {
-    const challengerAddress = req.headers['x-wallet-address'] as string || '';
+    const challengerAddress = req.headers['x-wallet-address'] as string;
     return this.oracleService.challengeReport(reportId, dto, challengerAddress);
   }
 
+  /**
+   * Deterministic dispute evidence bundle for contested performance reports (#458).
+   */
+  @Get('reports/:reportId/dispute-bundle')
+  async getDisputeEvidenceBundle(
+    @Param('reportId', ParseIntPipe) reportId: number,
+  ): Promise<DisputeEvidenceBundle> {
+    return this.oracleService.getDisputeEvidenceBundle(reportId);
+  }
+
+  /**
+   * Historical oracle correction workflow with compensating audit events (#461).
+   */
+  @Post('reports/correction')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @RequireIntent('oracle_correction')
+  @HttpCode(HttpStatus.OK)
+  async submitHistoricalCorrection(
+    @Body() dto: HistoricalOracleCorrectionDto,
+    @Req() req: any,
+  ): Promise<HistoricalCorrectionResponse> {
+    const actorAddress =
+      req.user?.walletAddress || req.headers['x-wallet-address'] || 'system:admin';
+    return this.oracleService.submitHistoricalCorrection(dto, actorAddress);
+  }
+
+  /**
+   * Query historical correction log for a performance report (#461).
+   */
+  @Get('reports/:reportId/corrections')
+  async getHistoricalCorrections(
+    @Param('reportId', ParseIntPipe) reportId: number,
+  ): Promise<HistoricalCorrectionRecord[]> {
+    return this.oracleService.getHistoricalCorrections(reportId);
+  }
+
+
   @Post('providers')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.REGISTER_PROVIDER)
+  @RequireIntent('register_provider', 'id', 'global')
+  @RateLimit({ type: 'oracle' })
   @HttpCode(HttpStatus.CREATED)
   async registerProvider(@Body() dto: RegisterProviderDto): Promise<ProviderResponse> {
     return this.oracleService.registerProvider(dto);
@@ -72,4 +180,98 @@ export class OracleController {
   async staleness(): Promise<OracleStalenessReport> {
     return this.monitoringService.computeStaleness();
   }
+
+  @Get('staleness/:projectId')
+  async getProjectStalenessState(@Param('projectId') projectId: string) {
+    return this.oracleService.getProjectStalenessState(projectId);
+  }
+
+  @Get('monitoring/anomalies')
+  @Header('Cache-Control', 'no-cache')
+  async anomalies(): Promise<OracleAnomalyReport> {
+    return this.monitoringService.computeCrossSourceAnomalies();
+  }
+
+  /**
+   * Operator-facing incident surface (issue #95). Admin-guarded like the
+   * other privileged actions in this API (e.g. `BondsController`'s
+   * `sweep-undistributed` and `admin.guard.ts`'s own doc comment): incident
+   * acknowledgement/resolution is operational state, not public data.
+   */
+  @Get('incidents')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  async listIncidents(
+    @Query() query: ListOracleIncidentsDto,
+  ): Promise<PaginatedResponse<OracleIncident>> {
+    return this.incidents.findMany(query.page, query.limit, query.status, query.cursor);
+  }
+
+  @Post('incidents/:id/acknowledge')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @RequireIntent('acknowledge_incident', 'id')
+  @HttpCode(HttpStatus.OK)
+  async acknowledgeIncident(
+    @Param('id') id: string,
+    @Req() req: any,
+  ): Promise<OracleIncident> {
+    const acknowledgedBy = req.headers['x-wallet-address'] as string || '';
+    return this.incidents.acknowledge(id, acknowledgedBy);
+  }
+
+  @Post('incidents/:id/resolve')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @RequireIntent('resolve_incident', 'id')
+  @HttpCode(HttpStatus.OK)
+  async resolveIncident(
+    @Param('id') id: string,
+    @Body() dto: ResolveOracleIncidentDto,
+    @Req() req: any,
+  ): Promise<OracleIncident> {
+    const resolvedBy = req.headers['x-wallet-address'] as string || '';
+    return this.incidents.resolve(id, resolvedBy, dto.resolutionNote);
+  }
+
+  /**
+   * Check circuit breaker pause status for a project or tranche (#332).
+   */
+  @Get('circuit-breaker/:projectId')
+  async getCircuitBreakerStatus(
+    @Param('projectId') projectId: string,
+    @Query('tranche') tranche?: string,
+  ): Promise<{ isPaused: boolean; state: CircuitBreakerState | null }> {
+    const isPaused = this.circuitBreaker.isProjectPaused(projectId, tranche);
+    const state = this.circuitBreaker.getCircuitBreakerState(projectId, tranche);
+    return { isPaused, state };
+  }
+
+  /**
+   * Governance/multisig action to unpause and resume project distribution & trading (#332).
+   * Circuit breaker NEVER unpauses automatically via timeout.
+   */
+  @Post('circuit-breaker/resume')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.MANAGE_INCIDENTS)
+  @HttpCode(HttpStatus.OK)
+  async resumeProject(
+    @Body() body: {
+      projectId: string;
+      tranche?: string;
+      multisigSignatures: string[];
+      resumptionReason: string;
+    },
+    @Req() req: any,
+  ): Promise<CircuitBreakerState> {
+    const governanceActor = req.user?.walletAddress || 'GOVERNANCE_MULTISIG';
+    return this.circuitBreaker.resumeProject({
+      projectId: body.projectId,
+      tranche: body.tranche,
+      governanceActor,
+      multisigSignatures: body.multisigSignatures,
+      resumptionReason: body.resumptionReason,
+    });
+  }
 }
+

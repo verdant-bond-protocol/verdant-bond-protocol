@@ -10,6 +10,7 @@ describe('QuoteBalanceComponent', () => {
   let fixture: ComponentFixture<QuoteBalanceComponent>;
   let apiService: {
     getQuoteBalance: jasmine.Spy;
+    getWalletBalance: jasmine.Spy;
     depositQuote: jasmine.Spy;
     withdrawQuote: jasmine.Spy;
   };
@@ -19,8 +20,13 @@ describe('QuoteBalanceComponent', () => {
     apiService = {
       getQuoteBalance: jasmine
         .createSpy('getQuoteBalance')
-        .and.callFake((asset: string) =>
+        .and.callFake((asset: 'USDC' | 'XLM') =>
           of({ address: 'GALICE', asset, balance: asset === 'USDC' ? 25000 : 5000 }),
+        ),
+      getWalletBalance: jasmine
+        .createSpy('getWalletBalance')
+        .and.callFake((asset: 'USDC' | 'XLM') =>
+          of({ address: 'GALICE', asset, balance: asset === 'USDC' ? 500 : 100 }),
         ),
       depositQuote: jasmine
         .createSpy('depositQuote')
@@ -54,7 +60,10 @@ describe('QuoteBalanceComponent', () => {
   it('loads escrowed balances for both quote assets', () => {
     expect(apiService.getQuoteBalance).toHaveBeenCalledWith('USDC');
     expect(apiService.getQuoteBalance).toHaveBeenCalledWith('XLM');
+    expect(apiService.getWalletBalance).toHaveBeenCalledWith('USDC');
+    expect(apiService.getWalletBalance).toHaveBeenCalledWith('XLM');
     expect(component.balances()).toEqual({ USDC: 25000, XLM: 5000 });
+    expect(component.walletBalances()).toEqual({ USDC: 500, XLM: 100 });
   });
 
   it('emits balance changes to the parent', () => {

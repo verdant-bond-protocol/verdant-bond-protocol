@@ -47,6 +47,18 @@ cd frontend && npm install && cd ..
 cd contracts && cargo build --release && cargo test && cd ..
 ```
 
+## Contributor Domain Map
+
+Hard issues are labeled with domain tags that route contributors to the right files, commands, and maintainers. Use this map to know where to focus your efforts.
+
+| Label | Domain | Target Files | Test Commands | Maintainers |
+|-------|--------|--------------|---------------|-------------|
+| `hard:contract` | Contract (Rust/Soroban) | `contracts/*/src/lib.rs`, `contracts/shared/` | `cargo test -p <contract>`, `cargo test --all` | `@core-contracts` |
+| `hard:api` | API (NestJS) | `api/src/**/*`, `api/src/seed/` | `npm run test`, `npm run test:e2e` | `@api-team` |
+| `hard:frontend` | Frontend (Angular) | `frontend/src/**/*` | `ng test`, `ng e2e` | `@ui-team` |
+| `hard:oracle` | Oracle (adapters + consumer) | `oracle/`, `api/src/oracle/`, `contracts/oracle-consumer/` | `cd oracle && npm test`, `cargo test -p oracle-consumer` | `@oracle-team` |
+| `hard:ops` | Ops/DevOps | `.github/workflows/`, `scripts/`, `docs/` | `npm run lint`, `cargo clippy` | `@maintainers` |
+
 ## Project Structure
 
 ```
@@ -84,6 +96,22 @@ verdant-bond-protocol/
 5. **Run the test suite** locally
 6. **Commit** using conventional commits (see below)
 7. **Push** and open a **Pull Request** against `main`
+
+## E2E Testing
+
+To run the end-to-end tests locally, use the following command in the `api` directory:
+
+```bash
+npm run test:e2e
+```
+
+For the highest-risk user journey (subscription with failure and recovery modes), run:
+
+```bash
+npx jest --config ./test/jest-e2e.json test/subscription-journey.e2e-spec.ts
+```
+
+Ensure you have a local Redis instance running if required, and mock environments are configured properly.
 
 ### Branch Naming
 
@@ -127,6 +155,33 @@ chore(ci): add cargo-audit to workflow
 - Use Angular reactive forms for user input
 - Follow the existing component structure in `frontend/src/app/shared/`
 
+### Accessibility Checklist
+
+- Confirm wallet, project creation, bond detail, marketplace, and claim flows are usable with keyboard navigation only.
+- Ensure every interactive control has a visible focus state and an accessible name.
+- Tie validation errors to their fields with `aria-describedby`, and announce form-level failures with `role="alert"` or `aria-live`.
+- Verify dialogs, menus, and dropdowns can be opened, used, and dismissed without losing focus.
+- Add or update automated accessibility assertions for shared controls when changing core workflows.
+
+### Feature Flags
+
+- Use feature flags for high-risk changes and large new feature rollouts.
+- Maintain safe defaults in `FeatureFlagsService` so that missing config safely disables or falls back to standard behavior.
+- Document rollout and rollback steps in [docs/feature_flags.md](docs/feature_flags.md).
+- Do not introduce breaking changes without a feature flag that can disable the new path.
+
+### Operational Health & Dashboard
+
+Maintainers monitor the health of Verdant Bond Protocol via the **Ops Dashboard** (`GET /ops/dashboard`), which aggregates:
+- **Oracle Incidents**: Unresolved or escalating exceptions from data providers.
+- **Marketplace Reconciliation Drift**: Discrepancies between off-chain cache and on-chain balances.
+- **Bond Holder Index Staleness**: Bonds that have not been reconciled against on-chain records recently.
+
+When adding new background workers, external integrations, or caching mechanisms, contributors **must**:
+1. Surface relevant failures as aggregated metrics rather than just logging.
+2. Ensure counts match underlying records in tests or validation scripts.
+3. Hook these indicators into the `OpsModule` to keep the maintainer dashboard comprehensive.
+
 ## Testing
 
 ### Smart Contracts
@@ -161,7 +216,53 @@ ng e2e                   # E2E tests
 cd contracts && cargo test && cd ..
 cd api && npm run test && cd ..
 cd frontend && ng test --watch=false --browsers=ChromeHeadless && cd ..
+cd oracle && npm test && cd ..
 ```
+
+### Docker Compose (Full Stack)
+
+```bash
+# Bootstrap infrastructure and API
+./scripts/bootstrap.sh
+
+# Or manually:
+docker compose up -d
+```
+
+## Mutation Testing
+
+Mutation testing introduces controlled faults (mutants) into the codebase to verify that the test suite can detect them. This provides higher confidence that tests actually validate the critical financial and authorization paths.
+
+### Running Mutation Tests (API)
+
+```bash
+cd api
+npm run mutate     # Run Stryker mutation testing
+npm run test:mutate # Run with threshold check (fails if score < 50%)
+```
+
+Mutation testing runs locally, not in CI: the critical modules below produce
+about 2,400 mutants, which takes hours. Run it before merging changes to them.
+
+The mutation testing configuration is in `api/stryker-config.json`. Critical modules monitored:
+- Financial math: `api/src/bonds/`, `api/src/oracle/`
+- Authorization: `api/src/auth/`, `api/src/portfolio/`
+
+### Mutation Testing (Rust Contracts)
+
+Mutation testing for Soroban contracts can be run using `cargo-mut` or similar tools:
+
+```bash
+cd contracts
+cargo install cargo-mut
+cargo mut run --package <package-name>
+```
+
+### Interpreting Results
+
+- **Mutation score**: Percentage of mutants killed (detected) by the test suite
+- **Surviving mutants**: Indicate potential test gaps - triage and link to follow-up issues
+- **Threshold**: Initial gate at 50% for critical paths, aiming for 80%+ over time
 
 ## Pull Request Process
 
@@ -210,6 +311,17 @@ Use the [Feature Request template](.github/ISSUE_TEMPLATE/feature_request.md). I
 - Check existing [issues](https://github.com/prissca/verdant-bond-protocol/issues) and [discussions](https://github.com/prissca/verdant-bond-protocol/discussions)
 - Review [docs/](./docs/) for architecture and design details
 - Open a [discussion](https://github.com/prissca/verdant-bond-protocol/discussions) for questions
+
+## Role-Based Access Control (RBAC)
+
+Verdant Bond Protocol uses a centralized, consistently enforced role-based access control system across both API and UI boundaries. 
+The defined roles and their capabilities are:
+- **MAINTAINER**: Has all permissions. Usually assigned to the protocol admin.
+- **ISSUER**: Can create bonds, distribute coupons, mature bonds, export bonds, and approve/reject projects.
+- **INVESTOR**: Can subscribe to bonds, claim credits, and transfer bonds.
+- **SETTLEMENT_MANAGER**: Can reconcile holders, reindex holders, sweep undistributed funds, register oracle providers, and manage oracle incidents.
+
+Roles are granted based on wallet addresses matching configured environment variables (e.g., `ISSUER_PUBLIC_KEYS`, `SETTLEMENT_PUBLIC_KEYS`) or via the `STELLAR_PUBLIC_KEY` for the maintainer.
 
 ---
 

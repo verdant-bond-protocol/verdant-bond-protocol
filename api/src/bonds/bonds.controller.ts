@@ -1,32 +1,70 @@
 import {
-  Controller, Get, Post, Body, Param, Query,
-  HttpCode, HttpStatus, UseGuards, ParseIntPipe,
+  Controller, Get, Post, Body, Param, Query, Req, Res, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException, ForbiddenException
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { BondsService } from './bonds.service';
+import { RegulatorExportService } from './regulator-export.service';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { DistributeCouponDto } from './dto/distribute-coupon.dto';
+import { DistributeCouponBatchDto } from './dto/distribute-coupon-batch.dto';
 import { ClaimCreditsDto } from './dto/claim-credits.dto';
 import { TransferBondDto } from './dto/transfer-bond.dto';
+import { RedeemBondDto } from './dto/redeem-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
-import { AdminGuard } from '../common/guards/admin.guard';
+import { PermissionsGuard } from '../common/guards/permissions.guard';
+import { KycGuard } from '../common/guards/kyc.guard';
+import { IntentGuard } from '../common/guards/intent.guard';
+import { RiskGuard } from '../common/risk/risk.guard';
+import { RiskScored } from '../common/risk/risk.decorator';
+import { RequirePermissions } from '../common/decorators/permissions.decorator';
+import { Permission } from '../auth/rbac';
+import { RequireQuota } from '../common/decorators/quota.decorator';
+import { QuotaResource } from '../common/services/quota.service';
+import { RequireIntent } from '../common/decorators/require-intent.decorator';
+import { Idempotent } from '../common/decorators/idempotent.decorator';
+import { RateLimit } from '../common/decorators/rate-limit.decorator';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import {
   BondResponse,
   SubscriptionResponse,
   HolderListResponse,
+  HeldBondResponse,
   CouponDistributionResponse,
+  CouponBatchStatusResponse,
+  CouponBatchDistributionResponse,
   ClaimCreditsResponse,
   TransferResponse,
   UndistributedTotalResponse,
   SweepUndistributedResponse,
+  BondDetailResponse,
+  ClaimableCreditsResponse,
+  RedeemResponse,
 } from './interfaces/bond.interface';
 
+
+import { CouponBacktestService, PerformanceDataset, BacktestReport } from './coupon-backtest.service';
+import { MaturedBondArchivalService, ArchiveBondDto, RestoreBondDto, ArchivalResult, RestoreResult, BondRestoreVerificationReport } from './matured-bond-archival.service';
+import { Optional } from '@nestjs/common';
+
+@ApiTags('bonds')
+@ApiBearerAuth()
 @Controller('bonds')
 export class BondsController {
-  constructor(private readonly bondsService: BondsService) {}
+  constructor(
+    private readonly bondsService: BondsService,
+    private readonly regulatorExportService: RegulatorExportService,
+    private readonly backtestService: CouponBacktestService,
+    @Optional() private readonly archivalService?: MaturedBondArchivalService,
+  ) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard, RiskGuard)
+  @RequirePermissions(Permission.CREATE_BOND)
+  @RequireQuota(QuotaResource.CREATE_BOND)
+  @RequireIntent('create_bond')
+  @RiskScored({ operation: 'bond.issue', amountFields: ['faceValue'] })
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() dto: CreateBondDto): Promise<BondResponse> {
     return this.bondsService.create(dto);
@@ -37,12 +75,48 @@ export class BondsController {
     return this.bondsService.findAll(query.page, query.limit);
   }
 
+  /**
+   * Wallet-scoped holdings view (#174). A non-admin may only query holdings
+   * for their own authenticated wallet address; admins may query any address.
+   */
+  @Get('held/:address')
+  @UseGuards(JwtAuthGuard)
+  async findHeldByAddress(
+    @Param('address') address: string,
+    @Req() req: any,
+  ): Promise<HeldBondResponse[]> {
+    const requester = req.user?.walletAddress;
+    if (!requester) {
+      throw new ForbiddenException('Authenticated wallet required');
+    }
+
+    const isAdmin = Boolean(
+      process.env.STELLAR_PUBLIC_KEY && requester === process.env.STELLAR_PUBLIC_KEY,
+    );
+    if (address !== requester && !isAdmin) {
+      throw new ForbiddenException('You may only view your own holdings');
+    }
+
+    return this.bondsService.findHeldByAddress(address);
+  }
+
   @Get(':id')
+  @Header('Cache-Control', 'no-cache')
   async findOne(@Param('id', ParseIntPipe) id: number): Promise<BondResponse> {
     return this.bondsService.findOne(id);
   }
 
+  @Get(':id/detail')
+  @Header('Cache-Control', 'no-cache')
+  async getBondDetail(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<BondDetailResponse> {
+    return this.bondsService.getBondDetail(id);
+  }
+
   @Post(':id/subscribe')
+  @UseGuards(JwtAuthGuard, KycGuard)
+  @Idempotent()
   @HttpCode(HttpStatus.OK)
   async subscribe(
     @Param('id', ParseIntPipe) id: number,
@@ -51,6 +125,11 @@ export class BondsController {
     return this.bondsService.subscribe(id, dto);
   }
 
+  /**
+   * Public on-chain holder list (#174). Documented intent: On-chain ledger
+   * holder positions are public blockchain data on Stellar, so this aggregate
+   * per-bond holder distribution endpoint remains public for market transparency.
+   */
   @Get(':id/holders')
   async getHolders(
     @Param('id', ParseIntPipe) id: number,
@@ -59,6 +138,9 @@ export class BondsController {
   }
 
   @Post(':id/coupon')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.DISTRIBUTE_COUPON)
+  @RequireIntent('distribute_coupon')
   @HttpCode(HttpStatus.OK)
   async distributeCoupon(
     @Param('id', ParseIntPipe) id: number,
@@ -67,7 +149,37 @@ export class BondsController {
     return this.bondsService.distributeCoupon(id, dto);
   }
 
+  /**
+   * Bounded batch distribution for large holder sets (#456).
+   */
+  @Post(':id/coupon-batch')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.DISTRIBUTE_COUPON)
+  @RequireIntent('distribute_coupon')
+  @HttpCode(HttpStatus.OK)
+  async distributeCouponBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: DistributeCouponBatchDto,
+  ): Promise<CouponBatchDistributionResponse> {
+    return this.bondsService.distributeCouponBatch(id, dto);
+  }
+
+  /**
+   * Query coupon batch progress and cursor for large distributions (#456).
+   */
+  @Get(':id/coupon-batch-status')
+  async getCouponBatchStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('periodIndex', ParseIntPipe) periodIndex: number,
+  ): Promise<CouponBatchStatusResponse> {
+    return this.bondsService.getCouponBatchStatus(id, periodIndex);
+  }
+
+
   @Post(':id/claim')
+  @UseGuards(JwtAuthGuard, KycGuard)
+  @Idempotent()
+  @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.OK)
   async claimCredits(
     @Param('id', ParseIntPipe) id: number,
@@ -83,8 +195,28 @@ export class BondsController {
     return this.bondsService.getUndistributedTotal(id);
   }
 
+  @Get(':id/preview-subscribe')
+  async previewSubscribe(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('amount') amount: number,
+  ): Promise<{remaining_supply: number; requested_amount: number; expected_failure: string | null}> {
+    return this.bondsService.previewSubscribe(id, amount);
+  }
+
+  @Get(':id/claimable-credits')
+  @Header('Cache-Control', 'no-cache')
+  async getClaimableCredits(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('address') address?: string,
+  ): Promise<ClaimableCreditsResponse> {
+    return this.bondsService.getClaimableCreditDetails(id, address);
+  }
+
   @Post(':id/sweep-undistributed')
-  @UseGuards(JwtAuthGuard, AdminGuard)
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.SWEEP_UNDISTRIBUTED)
+  @RequireIntent('sweep_undistributed')
+  @RateLimit({ type: 'mutation' })
   @HttpCode(HttpStatus.OK)
   async sweepUndistributed(
     @Param('id', ParseIntPipe) id: number,
@@ -93,6 +225,8 @@ export class BondsController {
   }
 
   @Post(':id/transfer')
+  @UseGuards(JwtAuthGuard, KycGuard)
+  @Idempotent()
   @HttpCode(HttpStatus.OK)
   async transfer(
     @Param('id', ParseIntPipe) id: number,
@@ -101,11 +235,152 @@ export class BondsController {
     return this.bondsService.transfer(id, dto);
   }
 
+  /**
+   * Operational repair (#117): reconcile the authoritative holder index for a
+   * single bond against on-chain balances. Discovers out-of-band transfers.
+   */
+  @Post(':id/reconcile-holders')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.RECONCILE_HOLDERS)
+  @RequireQuota(QuotaResource.RECONCILE_HOLDERS)
+  @RequireIntent('reconcile_holders')
+  @HttpCode(HttpStatus.OK)
+  async reconcileHolders(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<HolderListResponse> {
+    return this.bondsService.reconcileBond(id);
+  }
+
+  /**
+   * Operational repair (#117): reindex every bond's holders against on-chain
+   * balances. Run after Redis loss or suspected direct contract transfers.
+   */
+  @Post('admin/reindex-holders')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.REINDEX_HOLDERS)
+  @RequireIntent('reindex_holders', 'id', 'global')
+  @HttpCode(HttpStatus.OK)
+  async reindexHolders(): Promise<Array<{ bondId: number; total: number }>> {
+    return this.bondsService.reindexHolders();
+  }
+
   @Post(':id/mature')
+  @UseGuards(JwtAuthGuard, PermissionsGuard, IntentGuard)
+  @RequirePermissions(Permission.MATURE_BOND)
+  @RequireIntent('mature_bond')
   @HttpCode(HttpStatus.OK)
   async mature(
     @Param('id', ParseIntPipe) id: number,
   ): Promise<BondResponse> {
     return this.bondsService.mature(id);
   }
+
+  @Post(':id/redeem')
+  @UseGuards(JwtAuthGuard, KycGuard)
+  @HttpCode(HttpStatus.OK)
+  async redeem(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RedeemBondDto,
+    @Req() req: any,
+  ): Promise<RedeemResponse> {
+    if (req.user?.walletAddress && req.user.walletAddress !== dto.investorAddress) {
+      throw new ForbiddenException('Cannot redeem on behalf of another wallet address');
+    }
+    return this.bondsService.redeem(id, dto);
+  }
+
+  @Get(':id/export')
+  @UseGuards(JwtAuthGuard, PermissionsGuard)
+  @RequirePermissions(Permission.EXPORT_BOND)
+  async exportBond(
+    @Param('id', ParseIntPipe) id: number,
+    @Query('format') format: string,
+    @Query('section') section: string,
+    @Req() req: any,
+    @Res() res: Response,
+  ): Promise<void> {
+    const auditorAddress = req.user?.walletAddress || '';
+    const rendered = await this.regulatorExportService.export(id, auditorAddress, {
+      format,
+      section,
+    });
+    res.setHeader('Content-Type', rendered.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${rendered.filename}"`);
+    res.send(rendered.body);
+  }
+
+  /**
+   * Run historical performance backtesting for coupon math (#333).
+   * Evaluates imported or synthetic multi-year datasets against contract logic.
+   */
+  @Post('backtest')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async runCouponBacktest(
+    @Body() body: { dataset?: PerformanceDataset; syntheticYears?: number; formulaVersion?: 'V1' | 'V2' | 'COMPARE' },
+  ): Promise<BacktestReport> {
+    const dataset =
+      body.dataset ||
+      this.backtestService.generateSyntheticDataset({
+        years: body.syntheticYears || 5,
+        baseCarbon: 1000,
+        includeSpike: true,
+        includeDrop: true,
+      });
+
+    return this.backtestService.runBacktest(dataset, body.formulaVersion || 'COMPARE');
+  }
+
+  @Post(':id/archive')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async archiveMaturedRecord(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ArchiveBondDto,
+    @Req() req: any,
+  ): Promise<ArchivalResult> {
+    const caller = req.headers?.['x-wallet-address'] || req.user?.walletAddress || '';
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.archiveMaturedRecord(id, dto, caller);
+  }
+
+  @Post(':id/verify-restore')
+  @HttpCode(HttpStatus.OK)
+  async verifyRestore(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<BondRestoreVerificationReport> {
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.verifyRestore(id);
+  }
+
+  @Post(':id/restore')
+  @RateLimit({ type: 'mutation' })
+  @HttpCode(HttpStatus.OK)
+  async restoreMaturedRecord(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RestoreBondDto,
+    @Req() req: any,
+  ): Promise<RestoreResult> {
+    const caller = req.headers?.['x-wallet-address'] || req.user?.walletAddress || '';
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.restoreMaturedRecord(id, dto, caller);
+  }
+
+  @Get(':id/lifecycle')
+  async getArchivalLifecycle(
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    if (!this.archivalService) {
+      throw new NotFoundException('MaturedBondArchivalService is not available');
+    }
+    return this.archivalService.getArchivalLifecycle(id);
+  }
 }
+
+

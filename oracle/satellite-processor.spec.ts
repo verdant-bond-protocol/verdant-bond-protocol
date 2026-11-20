@@ -103,12 +103,12 @@ describe('fetchNdviData', () => {
 });
 
 describe('ingestSatelliteMeasurement', () => {
-  it('produces a validated REMOTE-SENSING report with evidence hash', async () => {
+  it('produces a validated REMOTE_SENSING report with evidence hash', async () => {
     const http = new MockHttpClient([{ status: 200, data: { scenes: SCENES } }]);
     const report = await ingestSatelliteMeasurement(PROJECT, PERIOD, { baseUrl: BASE_URL, http });
 
     expect(report.project_id).toBe('VCS-1234');
-    expect(report.methodology).toBe('REMOTE-SENSING');
+    expect(report.methodology).toBe('REMOTE_SENSING');
     expect(report.period_start).toBe('2025-01-01');
     expect(report.period_end).toBe('2025-03-31');
     expect(report.ipfs_evidence_hash).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);

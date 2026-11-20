@@ -1,0 +1,17 @@
+{
+  "records": {
+    "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF": {
+      "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      "status": "pending",
+      "source": "system",
+      "actor": null,
+      "reason": "Initial KYC record created on first lookup",
+      "providerReference": null,
+      "createdAt": 1788135215873,
+      "updatedAt": 1788135215873,
+      "expiresAt": null
+    }
+  },
+  "audit": [],
+  "version": 1
+}

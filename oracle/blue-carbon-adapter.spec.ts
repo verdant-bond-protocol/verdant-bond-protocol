@@ -62,7 +62,7 @@ describe('carbonSequesteredKg', () => {
 });
 
 describe('aggregateBlueCarbonProject', () => {
-  it('produces a validated BLUE-CARBON report with evidence hash', async () => {
+  it('produces a validated BLUE_CARBON report with evidence hash', async () => {
     const http = new MockHttpClient([{ status: 200, data: { surveys: SURVEYS } }]);
     const report = await aggregateBlueCarbonProject(PROJECT, PERIOD, {
       baseUrl: BASE_URL,
@@ -70,7 +70,7 @@ describe('aggregateBlueCarbonProject', () => {
     });
 
     expect(report.project_id).toBe('BLUE-2024-001');
-    expect(report.methodology).toBe('BLUE-CARBON');
+    expect(report.methodology).toBe('BLUE_CARBON');
     expect(report.period_start).toBe('2025-01-01');
     expect(report.period_end).toBe('2025-03-31');
     expect(report.ipfs_evidence_hash).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);

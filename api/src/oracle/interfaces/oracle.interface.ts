@@ -10,13 +10,14 @@ export interface ReportResponse {
   projectId: string;
   periodStart: number;
   periodEnd: number;
-  carbonSequestered: number;
+  carbonSequestered: string;
   methodology: string;
   ipfsHash: string;
   providerAddress: string;
   status: ReportStatus;
   createdAt: string;
   verifiedAt?: string;
+  providerStakeAtVerification?: string;
 }
 
 export interface ChallengeResponse {
@@ -38,9 +39,18 @@ export interface ProviderResponse {
 
 export interface SlashRecord {
   reportId: number;
-  penalty: number;
-  remainingStake: number;
+  penalty: string;
+  remainingStake: string;
   timestamp: string;
+  activeAfter: boolean;
+}
+
+export interface SlashPreview {
+  reportId: number;
+  providerAddress: string;
+  currentStake: string;
+  penalty: string;
+  remainingStake: string;
   activeAfter: boolean;
 }
 
@@ -58,8 +68,8 @@ export interface ProviderStatsResponse {
   reportsSubmitted: number;
   challengesFaced: number;
   slashes: number;
-  totalPenalty: number;
-  stake: number;
+  totalPenalty: string;
+  stake: string;
   active: boolean;
 }
 
@@ -93,3 +103,57 @@ export interface OracleStalenessReport {
   projects: StalenessMetric[];
   providers: ProviderStalenessMetric[];
 }
+
+/** Full challenge state for a single report, including the on-chain challenge records. */
+export interface ChallengeStateResponse {
+  reportId: number;
+  status: ReportStatus;
+  challenged: boolean;
+  challenges: ChallengeRecord[];
+}
+
+/** A challenged report paired with its most recent challenge record, for project listings. */
+export interface ChallengedReportSummary {
+  report: ReportResponse;
+  challenge: ChallengeRecord | null;
+}
+
+/**
+ * Coupon-distribution eligibility for a project, derived from the challenge
+ * state of its oracle reports. A project is only eligible when it has at least
+ * one Verified report and no Challenged/Rejected report (a challenged report
+ * means the underlying carbon data is disputed and must not be paid on).
+ */
+export interface CouponEligibility {
+  projectId: string;
+  eligible: boolean;
+  reasons: string[];
+  blockedByReportIds: number[];
+}
+
+export type CrossSourceAnomalyKind =
+  | 'normal'
+  | 'outlier'
+  | 'conflicting_sources'
+  | 'missing_source';
+
+export interface CrossSourceAssessment {
+  projectId: string;
+  periodKey: string;
+  kind: CrossSourceAnomalyKind;
+  severity: 'info' | 'warning' | 'critical';
+  median: number | null;
+  deviations: Array<{
+    sourceId: string;
+    value: number;
+    deviation: number | null;
+  }>;
+  tolerance: number;
+  reason: string;
+}
+
+export interface OracleAnomalyReport {
+  asOf: string;
+  anomalies: CrossSourceAssessment[];
+}
+

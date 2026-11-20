@@ -15,9 +15,9 @@ const PERIOD = { periodStart: '2025-01-01', periodEnd: '2025-03-31' };
 const PROJECT = {
   project_id: 'VCS-1234',
   name: 'Loreto Reforestation Corridor',
-  registry: 'VERRA-VCS',
+  registry: 'VERRA_VCS',
   status: 'ACTIVE',
-  methodologies: ['VERRA-VCS'],
+  methodologies: ['VERRA_VCS'],
 };
 
 const REPORT = {
@@ -26,7 +26,7 @@ const REPORT = {
   verification_date: '2025-02-10',
   reporting_period_start: '2025-01-01',
   reporting_period_end: '2025-03-31',
-  methodology: 'VERRA-VCS',
+  methodology: 'VERRA_VCS',
   carbon_sequestered_kg: 50000,
   credits_issued: 50,
 };
@@ -44,7 +44,7 @@ describe('pollVerraProject', () => {
     expect(report.period_start).toBe('2025-01-01');
     expect(report.period_end).toBe('2025-03-31');
     expect(report.carbon_sequestered).toBe(50000);
-    expect(report.methodology).toBe('VERRA-VCS');
+    expect(report.methodology).toBe('VERRA_VCS');
     expect(report.ipfs_evidence_hash).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);
     expect(report.evidence.verra_report_ids).toEqual(['MR-2024-0112']);
     expect(http.calls).toHaveLength(2);

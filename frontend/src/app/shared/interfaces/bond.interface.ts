@@ -1,15 +1,56 @@
 export interface Bond {
   id: number;
   projectId: string;
-  faceValue: number;
-  couponSchedule: number[];
+  faceValue: string;
+  couponSchedule: string[];
   creditType: 'Carbon' | 'Biodiversity' | 'Basket' | 'BlueCarbon';
   maturityDate: number;
   maturityStatus: 'Active' | 'Matured';
-  totalSupply: number;
-  totalSubscribed: number;
+  totalSupply: string;
+  totalSubscribed: string;
   status: 'Active' | 'Matured' | 'Defaulted';
   createdAt: string;
+  /** Only present on the response to a just-submitted issuance; absent on reads. */
+  transactionHash?: string;
+}
+
+export interface CreateBondDto {
+  projectId: string;
+  faceValue: number;
+  couponSchedule: number[];
+  creditType: Bond['creditType'];
+  maturityDate: number;
+  totalSupply: number;
+}
+
+export interface HeldBond extends Bond {
+  balance: string;
+}
+
+/** A single bond holder and their token balance (issue #4 detail refresh). */
+export interface HolderResponse {
+  address: string;
+  balance: string;
+}
+
+/**
+ * A single period/report/credit-type accrual of claimable credits for a holder
+ * (#156). `amount` is in credit minor units (6 decimals, #157).
+ */
+export interface ClaimableCreditDetail {
+  periodIndex: number;
+  reportId: number;
+  startTime: number;
+  endTime: number;
+  creditType: 'Carbon' | 'Biodiversity' | 'Basket' | 'BlueCarbon';
+  amount: string;
+}
+
+export interface ClaimableCreditsResponse {
+  bondId: number;
+  address: string;
+  total: string;
+  details: ClaimableCreditDetail[];
 }
 
 export interface Project {
@@ -23,6 +64,22 @@ export interface Project {
   totalAreaHa: number;
   carbonSequestrationEstimate: number;
   createdAt: string;
+  /** Only present on the response to a just-submitted registration; absent on reads. */
+  transactionHash?: string;
+}
+
+export interface ProjectProvenanceEvent {
+  type: 'registration' | 'review' | 'report' | 'bond' | 'document';
+  occurredAt: string | null;
+  title: string;
+  status: 'complete' | 'pending' | 'stale';
+  reference?: string;
+  evidenceUrl?: string;
+}
+
+export interface ProjectProvenance {
+  projectId: number;
+  events: ProjectProvenanceEvent[];
 }
 
 export type QuoteAsset = 'USDC' | 'XLM';
@@ -31,11 +88,20 @@ export interface Order {
   id: number;
   seller: string;
   bondId: number;
-  amount: number;
-  pricePerToken: number;
+  amount: string;
+  pricePerToken: string;
   quoteAsset: QuoteAsset;
   status: 'Open' | 'PartiallyFilled' | 'Filled' | 'Cancelled' | 'Expired';
   createdAt: string;
+  expiresAt: string;
+  transactionHash?: string;
+}
+
+export interface OrderQueryParams {
+  bondId?: number;
+  status?: Order['status'];
+  page?: number;
+  limit?: number;
 }
 
 export interface PaginatedResponse<T> {
@@ -46,14 +112,28 @@ export interface PaginatedResponse<T> {
 export interface SubscriptionResponse {
   bondId: number;
   subscriber: string;
-  amount: number;
+  amount: string;
   transactionHash: string;
+}
+
+// Mirror api/src/bonds/interfaces/bond.interface.ts.
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
 }
 
 export interface ClaimCreditsResponse {
   bondId: number;
   investorAddress: string;
-  credits: number;
+  credits: string;
   transactionHash: string;
 }
 
@@ -61,18 +141,18 @@ export interface TransferResponse {
   bondId: number;
   fromAddress: string;
   toAddress: string;
-  amount: number;
+  amount: string;
   transactionHash: string;
 }
 
 export interface UndistributedTotalResponse {
   bondId: number;
-  undistributedTotal: number;
+  undistributedTotal: string;
 }
 
 export interface SweepUndistributedResponse {
   bondId: number;
-  swept: number;
+  swept: string;
   transactionHash: string;
 }
 
@@ -106,13 +186,13 @@ export interface BuyBondDto {
 export interface QuoteBalanceResponse {
   address: string;
   asset: QuoteAsset;
-  balance: number;
+  balance: string;
 }
 
 export interface QuoteTransactionResponse {
   address: string;
   asset: QuoteAsset;
-  amount: number;
+  amount: string;
   transactionHash?: string;
 }
 
@@ -126,4 +206,25 @@ export interface WithdrawQuoteDto {
   asset: QuoteAsset;
   amount: number;
   nonce?: number;
+}
+
+// Mirrors api/src/stellar/contract.service.ts's TransactionStatus/TransactionStatusResult.
+export type TransactionStatus = 'pending' | 'confirmed' | 'failed';
+
+export interface TransactionStatusResponse {
+  hash: string;
+  status: TransactionStatus;
+}
+
+export interface CouponDistributionResponse {
+  bondId: number;
+  periodIndex: number;
+  totalCredits: string;
+  holderCount: number;
+}
+
+export interface HolderListResponse {
+  bondId: number;
+  holders: HolderResponse[];
+  total: number;
 }

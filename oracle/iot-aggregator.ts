@@ -176,8 +176,15 @@ export async function aggregateIotProject(
   }
 
   const aggregate = aggregateSensorReadings(validReadings);
-  const carbonSequestered =
-    soilCarbonDeltaPpm * validatedProject.area_ha * KG_CO2E_PER_HA_PER_PPM;
+  // Mirror blue-carbon-adapter.ts's floor: a period of net soil-carbon loss
+  // yields a negative delta, and OracleConsumer.submit_report rejects
+  // carbon_sequestered < 0 outright. Floor the reported value at zero so such
+  // periods are handled gracefully. The raw (possibly negative) delta is still
+  // surfaced in evidence.soil_carbon_delta_ppm to preserve carbon-loss context.
+  const carbonSequestered = Math.max(
+    0,
+    soilCarbonDeltaPpm * validatedProject.area_ha * KG_CO2E_PER_HA_PER_PPM,
+  );
 
   return buildOracleReport({
     project_id: validatedProject.project_id,
@@ -193,6 +200,16 @@ export async function aggregateIotProject(
       soil_carbon_delta_ppm: soilCarbonDeltaPpm,
       avg_soil_carbon_ppm: aggregate.avgSoilCarbonPpm,
       avg_water_table_cm: aggregate.avgWaterTableCm,
+    },
+    raw_observations: {
+      device_ids: validatedProject.device_ids,
+      sample_count: aggregate.sampleCount,
+      device_count: aggregate.deviceCount,
+    },
+    transformation_parameters: {
+      area_ha: validatedProject.area_ha,
+      soil_carbon_delta_ppm: soilCarbonDeltaPpm,
+      kg_co2e_per_ha_per_ppm: KG_CO2E_PER_HA_PER_PPM,
     },
   });
 }

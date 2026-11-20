@@ -1,13 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { RedisService } from '../common/services/redis.service';
 import { ProjectsService } from '../projects/projects.service';
 import { OracleService } from './oracle.service';
+import { OracleIncidentRepository } from './oracle-incident.repository';
 import {
   ReportStatus,
   StalenessMetric,
   ProviderStalenessMetric,
   OracleStalenessReport,
+  CrossSourceAssessment,
+  OracleAnomalyReport,
 } from './interfaces/oracle.interface';
+import {
+  IncidentDetectionResult,
+  OracleIncidentSubjectType,
+  OracleIncidentSyncSummary,
+} from './interfaces/oracle-incident.interface';
+import { computeCrossSourceAnomalies } from './anomaly.detector';
 
 const DEFAULT_CADENCE_SECONDS = 365 * 24 * 60 * 60;
 const DEFAULT_GRACE_SECONDS = 30 * 24 * 60 * 60;
@@ -15,7 +23,6 @@ const CADENCE_OVERRIDES: Array<{ pattern: RegExp; seconds: number }> = [
   { pattern: /REMOTE.?SENSING|SATELLITE/i, seconds: 90 * 24 * 60 * 60 },
   { pattern: /IOT|SENSOR/i, seconds: 30 * 24 * 60 * 60 },
 ];
-const ALERT_REARM_SECONDS = 24 * 60 * 60;
 
 function cadenceForMethodology(methodology: string): number {
   for (const override of CADENCE_OVERRIDES) {
@@ -41,7 +48,7 @@ export class OracleMonitoringService {
   constructor(
     private readonly projectsService: ProjectsService,
     private readonly oracleService: OracleService,
-    private readonly redis: RedisService,
+    private readonly incidents: OracleIncidentRepository,
   ) {}
 
   async computeStaleness(now: number = Date.now()): Promise<OracleStalenessReport> {
@@ -92,32 +99,105 @@ export class OracleMonitoringService {
     };
   }
 
-  async alertStaleProjects(now: number = Date.now()): Promise<number> {
-    const report = await this.computeStaleness(now);
-    const stale = report.projects.filter((metric) => metric.isStale);
+  /**
+   * Compute cross-source anomaly assessments across every project-period
+   * (#158). Reports from independent providers for the same project-period are
+   * compared against a methodology-family tolerance; disagreements beyond
+   * tolerance are surfaced so an operator can investigate a possibly fabricated
+   * or faulty measurement instead of trusting a single source.
+   */
+  async computeCrossSourceAnomalies(now: number = Date.now()): Promise<OracleAnomalyReport> {
+    const anomalies: CrossSourceAssessment[] = [];
+    const projects = await this.projectsService.findAll(1, 1000);
 
-    let alerted = 0;
-    for (const metric of stale) {
-      const rearmKey = `oracle:alerts:${metric.projectId}`;
-      const lastAlert = await this.redis.get(rearmKey);
-      if (lastAlert && now - Number(lastAlert) < ALERT_REARM_SECONDS * 1000) {
-        continue;
+    for (const project of projects.data) {
+      const projectId = String(project.id);
+      try {
+        const reports = await this.oracleService.getProjectReports(projectId);
+        anomalies.push(...computeCrossSourceAnomalies(reports));
+      } catch {
+        // A project whose chain read fails is skipped; it contributes no period.
       }
+    }
 
-      this.logger.warn(
-        `Oracle alert: project ${metric.projectId} is stale. ` +
-          `Last verified: ${metric.lastVerifiedAt ?? 'never'}, ` +
-          `expected next report by ${metric.expectedNextReportAt}, ` +
-          `staleness: ${this.formatDuration(metric.stalenessSeconds ?? 0)}`,
+    return {
+      asOf: new Date(now).toISOString(),
+      anomalies,
+    };
+  }
+
+  /**
+   * Evaluate the current staleness report and reconcile durable incidents
+   * for every stale project and stale provider (issue #95). Each detection
+   * is recorded via `OracleIncidentRepository.recordDetection`, which
+   * dedupes/updates in place -- so a repeated cron cycle over an
+   * already-open incident produces a database update, not a new row, and
+   * (per `recordAndLog` below) does not re-emit a log line unless the
+   * incident is new or has just escalated. This is the fix for "repeated
+   * cron cycles can spam logs": the previous implementation only
+   * rate-limited the log line via a Redis TTL key and never persisted
+   * anything an operator could query, acknowledge, or resolve.
+   */
+  async syncIncidents(now: number = Date.now()): Promise<OracleIncidentSyncSummary> {
+    const report = await this.computeStaleness(now);
+    const detectedAt = new Date(now).toISOString();
+    const summary: OracleIncidentSyncSummary = { created: 0, updated: 0, escalated: 0 };
+
+    for (const metric of report.projects.filter((m) => m.isStale)) {
+      const result = await this.recordAndLog(OracleIncidentSubjectType.Project, metric.projectId, detectedAt, {
+        lastVerifiedAt: metric.lastVerifiedAt,
+        expectedNextReportAt: metric.expectedNextReportAt,
+        stalenessSeconds: metric.stalenessSeconds,
+      });
+      this.tally(summary, result);
+    }
+
+    for (const metric of report.providers.filter((m) => m.isStale)) {
+      const result = await this.recordAndLog(OracleIncidentSubjectType.Provider, metric.providerAddress, detectedAt, {
+        lastVerifiedAt: metric.lastVerifiedAt,
+        expectedNextReportAt: metric.expectedNextReportAt,
+        stalenessSeconds: metric.stalenessSeconds,
+        projectIds: metric.projectIds,
+      });
+      this.tally(summary, result);
+    }
+
+    if (summary.created + summary.updated > 0) {
+      this.logger.log(
+        `Oracle monitoring: ${summary.created} incident(s) created, ${summary.updated} updated, ` +
+          `${summary.escalated} escalated this cycle`,
       );
-      await this.redis.set(rearmKey, String(now));
-      alerted += 1;
     }
+    return summary;
+  }
 
-    if (alerted > 0) {
-      this.logger.warn(`Oracle monitoring: ${alerted} stale project(s) alerted this cycle`);
+  private async recordAndLog(
+    subjectType: OracleIncidentSubjectType,
+    subjectId: string,
+    detectedAt: string,
+    details: { lastVerifiedAt?: string; expectedNextReportAt?: string; stalenessSeconds?: number; projectIds?: string[] },
+  ): Promise<IncidentDetectionResult> {
+    const result = await this.incidents.recordDetection({ subjectType, subjectId, detectedAt, details });
+
+    if (result.isNew) {
+      this.logger.warn(
+        `Oracle incident opened: ${subjectType} ${subjectId} is stale. ` +
+          `Last verified: ${details.lastVerifiedAt ?? 'never'}, ` +
+          `staleness: ${this.formatDuration(details.stalenessSeconds ?? 0)} (incident ${result.incident.id})`,
+      );
+    } else if (result.escalated) {
+      this.logger.warn(
+        `Oracle incident escalated to ${result.incident.severity}: ${subjectType} ${subjectId} ` +
+          `(occurrence #${result.incident.occurrenceCount}, incident ${result.incident.id})`,
+      );
     }
-    return alerted;
+    return result;
+  }
+
+  private tally(summary: OracleIncidentSyncSummary, result: IncidentDetectionResult): void {
+    if (result.isNew) summary.created += 1;
+    else summary.updated += 1;
+    if (result.escalated) summary.escalated += 1;
   }
 
   private buildProjectMetric(

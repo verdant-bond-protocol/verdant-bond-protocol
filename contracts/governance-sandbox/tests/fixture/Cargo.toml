@@ -1,0 +1,18 @@
+[package]
+name = "sandbox-runtime-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "=26.0.1"
+
+[workspace]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+panic = "abort"

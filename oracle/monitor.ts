@@ -13,6 +13,7 @@ import {
   computeStaleness,
   cadenceForMethodology,
 } from './staleness';
+import { groupAndAssess, CrossSourceAssessment } from './anomaly';
 
 const DEFAULT_PORT = Number(process.env.ORACLE_MONITOR_PORT || 8080);
 
@@ -20,6 +21,17 @@ interface StalenessRequestBody {
   projects?: Array<
     Omit<StalenessInput, 'cadenceSeconds'> & { methodology?: string }
   >;
+}
+
+interface AnomalyRequestBody {
+  reports?: Array<{
+    projectId: string;
+    periodStart: number;
+    periodEnd: number;
+    sourceId: string;
+    methodology?: string | null;
+    carbon: number;
+  }>;
 }
 
 function readStalenessFile(filePath?: string): StalenessInput[] | null {
@@ -111,12 +123,27 @@ export function startMonitorServer(
       return;
     }
 
+    if (url.pathname === '/anomaly' && request.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(request)) as AnomalyRequestBody;
+        const reports = Array.isArray(body) ? body : body.reports ?? [];
+        const results: CrossSourceAssessment[] = groupAndAssess(reports);
+        sendJson(response, 200, { asOf: new Date().toISOString(), anomalies: results });
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+
     sendJson(response, 404, { error: 'not found' });
   });
 
   server.listen(port, () => {
     console.log(`Oracle monitor listening on http://localhost:${port}`);
-    console.log(`Endpoints: /health, GET /staleness, POST /staleness`);
+    console.log(`Endpoints: /health, GET /staleness, POST /staleness, POST /anomaly`);
   });
 
   return server;

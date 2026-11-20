@@ -1,21 +1,31 @@
-import { Module } from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { KycService } from './kyc.service';
+import { KycGuard } from '../common/guards/kyc.guard';
+import { ConfigService } from '../config/config.service';
+import { InvestorEligibilityCacheService } from './investor-eligibility-cache.service';
 
+import { RbacService } from './rbac.service';
+import { SessionService } from './session.service';
+
+@Global()
 @Module({
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'dev-secret-change-in-production',
-      signOptions: { expiresIn: process.env.JWT_EXPIRY || '7d' },
+    JwtModule.registerAsync({
+      useFactory: (config: ConfigService) => ({
+        secret: config.getJwtSecret(),
+        signOptions: { expiresIn: config.getJwtExpiry() },
+      }),
+      inject: [ConfigService],
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, KycService],
-  exports: [AuthService, KycService],
+  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService, SessionService],
+  exports: [AuthService, KycService, KycGuard, RbacService, SessionService],
 })
 export class AuthModule {}
