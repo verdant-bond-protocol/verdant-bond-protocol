@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
 import {
   ExportableRecord,
   ExportCaller,
@@ -8,6 +8,13 @@ import {
   ExportStreamResult,
   ExportStatus,
 } from '../interfaces/export.interface';
+import {
+  ExportRedactionMode,
+  RedactionManifest,
+  createRedactionManifest,
+  isExportRedactionMode,
+  redactExportValue,
+} from './export-field-redaction';
 
 const ROLE_PERMITTED_TYPES: Record<ExportRole, ExportType[]> = {
   [ExportRole.INVESTOR]: [
@@ -79,13 +86,6 @@ const FORBIDDEN_FIELDS_BY_ROLE: Record<ExportRole, string[]> = {
   ],
 };
 
-/**
- * Assigning an own `__proto__` key (as `JSON.parse` produces) onto a plain
- * object rewrites that object's prototype instead of copying a field (#382),
- * so it is never exported, for any role.
- */
-const PROTOTYPE_KEY = '__proto__';
-
 /** Per-role forbidden keys, lower-cased once so lookups are O(1) and case-blind. */
 const FORBIDDEN_KEYS_BY_ROLE = new Map<ExportRole, ReadonlySet<string>>(
   (Object.keys(FORBIDDEN_FIELDS_BY_ROLE) as ExportRole[]).map((role) => [
@@ -103,7 +103,24 @@ export class ExportStreamPipeline {
     return permitted.includes(exportType);
   }
 
-  sanitizeRecordForCaller(record: ExportableRecord, caller: ExportCaller): ExportableRecord {
+  /**
+   * Apply ownership and field rules for `caller`. `mode` picks how forbidden
+   * fields are hidden (#506): `strip` (default) removes them, `mask` keeps
+   * the key with a placeholder. Redactions are counted into `manifest`.
+   */
+  sanitizeRecordForCaller(
+    record: ExportableRecord,
+    caller: ExportCaller,
+    mode: ExportRedactionMode = 'strip',
+    manifest?: RedactionManifest,
+  ): ExportableRecord {
+    // 0. An unrecognised role has no field rules; exporting with an empty
+    // forbidden set would leak everything, so refuse instead (#506).
+    const forbiddenKeys = FORBIDDEN_KEYS_BY_ROLE.get(caller.role);
+    if (!forbiddenKeys) {
+      throw new ForbiddenException(`Role ${caller.role} has no export redaction policy`);
+    }
+
     // 1. Data ownership check: Investors can only export their own records.
     // A record with no owner cannot be proven to be the caller's, so it is
     // refused rather than exported (fail closed, #382).
@@ -111,35 +128,12 @@ export class ExportStreamPipeline {
       throw new ForbiddenException('Cannot access records outside your caller ownership scope');
     }
 
-    // 2. Forbidden field stripping based on caller role, at every nesting depth
-    const forbiddenKeys = FORBIDDEN_KEYS_BY_ROLE.get(caller.role) ?? new Set<string>();
-
+    // 2. Forbidden field redaction based on caller role, at every nesting
+    // depth, case-insensitively (#382).
     return {
       ...record,
-      data: this.stripForbidden(record.data, forbiddenKeys) as Record<string, any>,
+      data: redactExportValue(record.data, forbiddenKeys, mode, manifest) as Record<string, any>,
     };
-  }
-
-  /**
-   * Copy `value` without any forbidden key or `__proto__`, at any
-   * depth of nested objects and arrays (#382). Key matching is
-   * case-insensitive so `SSN` or `PrivateKey` cannot slip past the list.
-   * O(n) time and space in the number of nodes in `value`.
-   */
-  private stripForbidden(value: unknown, forbiddenKeys: ReadonlySet<string>): unknown {
-    if (Array.isArray(value)) {
-      return value.map((item) => this.stripForbidden(item, forbiddenKeys));
-    }
-    if (value === null || typeof value !== 'object' || value instanceof Date) {
-      return value;
-    }
-
-    const cleaned: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-      if (key === PROTOTYPE_KEY || forbiddenKeys.has(key.toLowerCase())) continue;
-      cleaned[key] = this.stripForbidden(child, forbiddenKeys);
-    }
-    return cleaned;
   }
 
   async streamExport<T = any>(
@@ -151,6 +145,7 @@ export class ExportStreamPipeline {
     cancellationCheck?: () => Promise<boolean>,
   ): Promise<ExportStreamResult> {
     const { caller, abortSignal } = options;
+    const mode = options.redaction ?? 'strip';
 
     // Validate high-level permission for export type
     if (!this.validatePermission(caller, exportType)) {
@@ -158,6 +153,12 @@ export class ExportStreamPipeline {
         `Role ${caller.role} is not authorized to export type ${exportType}`,
       );
     }
+    if (!isExportRedactionMode(mode)) {
+      throw new BadRequestException(`Unknown export redaction mode: ${String(mode)}`);
+    }
+
+    // Built fresh per run, so a retried export reports only its own redactions.
+    const redaction = createRedactionManifest(caller.role, mode);
 
     let totalRecordsProcessed = 0;
     let totalChunks = 0;
@@ -175,11 +176,12 @@ export class ExportStreamPipeline {
             totalRecordsProcessed,
             totalChunks,
             cancelledAt: new Date(),
+            redaction,
           };
         }
 
         // Project and sanitize records for caller role
-        const sanitizedChunk = chunk.map((record) => this.sanitizeRecordForCaller(record, caller));
+        const sanitizedChunk = chunk.map((record) => this.sanitizeRecordForCaller(record, caller, mode, redaction));
 
         if (chunkConsumer) {
           await chunkConsumer(sanitizedChunk);
@@ -196,6 +198,7 @@ export class ExportStreamPipeline {
         totalRecordsProcessed,
         totalChunks,
         completedAt: new Date(),
+        redaction,
       };
     } catch (error) {
       if (abortSignal?.aborted || (error as any)?.name === 'AbortError') {
@@ -205,6 +208,7 @@ export class ExportStreamPipeline {
           totalRecordsProcessed,
           totalChunks,
           cancelledAt: new Date(),
+          redaction,
         };
       }
       const errorMsg = error instanceof Error ? error.message : String(error);
@@ -215,6 +219,7 @@ export class ExportStreamPipeline {
         totalRecordsProcessed,
         totalChunks,
         error: errorMsg,
+        redaction,
       };
     }
   }

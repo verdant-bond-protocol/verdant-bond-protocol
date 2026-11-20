@@ -1,0 +1,110 @@
+{
+  "version": "1.0.0",
+  "fixtures": {
+    "compatible_additive": {
+      "baselineVersion": 1,
+      "suiteVersion": 1,
+      "candidateVersions": { "bond-issuer": 1 },
+      "baseline": {
+        "bond-issuer": {
+          "Admin": { "constructor": "Admin", "xdr_hex": "00000001" }
+        }
+      },
+      "candidate": {
+        "bond-issuer": {
+          "Admin": { "constructor": "Admin", "xdr_hex": "00000001" },
+          "PauseWindow": { "constructor": "PauseWindow", "xdr_hex": "00000002" }
+        }
+      },
+      "expectedOk": true
+    },
+    "breaking_valid_with_plan": {
+      "baselineVersion": 1,
+      "suiteVersion": 2,
+      "candidateVersions": { "bond-issuer": 2 },
+      "baseline": {
+        "bond-issuer": {
+          "HolderBalance(1, GABC)": { "constructor": "HolderBalance", "xdr_hex": "aaaa0001" }
+        }
+      },
+      "candidate": {
+        "bond-issuer": {
+          "HolderBalanceV2(1, GABC)": { "constructor": "HolderBalanceV2", "xdr_hex": "bbbb0002" }
+        }
+      },
+      "plan": {
+        "fromVersion": 1,
+        "toVersion": 2,
+        "status": "ready",
+        "baseline": "storage_keys.v1.json",
+        "rollback": "Restore v1 WASM and replay snapshot from pre-migration checkpoint.",
+        "steps": [
+          {
+            "contract": "bond-issuer",
+            "key": "HolderBalance(1, GABC)",
+            "action": "rewrite",
+            "to": "HolderBalanceV2(1, GABC)",
+            "description": "Migrate holder balances to v2 representation inside migration window.",
+            "idempotent": true,
+            "resumable": true,
+            "governanceGated": true,
+            "migrationWindow": true
+          }
+        ]
+      },
+      "expectedOk": true
+    },
+    "breaking_version_skip": {
+      "baselineVersion": 1,
+      "suiteVersion": 3,
+      "candidateVersions": { "bond-issuer": 3 },
+      "baseline": {
+        "bond-issuer": {
+          "Admin": { "constructor": "Admin", "xdr_hex": "00000001" }
+        }
+      },
+      "candidate": {
+        "bond-issuer": {
+          "Admin": { "constructor": "Admin", "xdr_hex": "00000002" }
+        }
+      },
+      "expectedOk": false
+    },
+    "breaking_missing_governance_gate": {
+      "baselineVersion": 1,
+      "suiteVersion": 2,
+      "candidateVersions": { "bond-issuer": 2 },
+      "baseline": {
+        "bond-issuer": {
+          "HolderBalance(1, GABC)": { "constructor": "HolderBalance", "xdr_hex": "aaaa0001" }
+        }
+      },
+      "candidate": {
+        "bond-issuer": {
+          "HolderBalanceV2(1, GABC)": { "constructor": "HolderBalanceV2", "xdr_hex": "bbbb0002" }
+        }
+      },
+      "plan": {
+        "fromVersion": 1,
+        "toVersion": 2,
+        "status": "ready",
+        "baseline": "storage_keys.v1.json",
+        "rollback": "Restore v1 WASM.",
+        "steps": [
+          {
+            "contract": "bond-issuer",
+            "key": "HolderBalance(1, GABC)",
+            "action": "rewrite",
+            "to": "HolderBalanceV2(1, GABC)",
+            "description": "Unchecked migration step without governance gate.",
+            "idempotent": true,
+            "resumable": true,
+            "governanceGated": false,
+            "migrationWindow": true
+          }
+        ]
+      },
+      "expectedOk": false
+    }
+  }
+}

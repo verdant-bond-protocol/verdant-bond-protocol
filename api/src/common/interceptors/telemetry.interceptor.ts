@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap, catchError } from 'rxjs/operators';
-import { TelemetryService } from '../services/telemetry.service';
+import { normalizeTelemetryRoute, TelemetryService } from '../services/telemetry.service';
 
 @Injectable()
 export class TelemetryInterceptor implements NestInterceptor {
@@ -17,6 +17,18 @@ export class TelemetryInterceptor implements NestInterceptor {
     const correlationId = request.correlationId || request.requestId;
     const startTime = Date.now();
     const operation = `${request.method} ${request.path}`;
+    // HTTP telemetry previously carried no labels, so the high-cardinality
+    // guards in TelemetryService were never exercised on the automatic path.
+    // Prefer the router's parametrized pattern; otherwise normalize the raw
+    // path so ids/addresses cannot create a label series per request.
+    const route = request.route?.path
+      ? `${request.baseUrl ?? ''}${request.route.path}`
+      : normalizeTelemetryRoute(request.originalUrl ?? request.path ?? '');
+    const labels = {
+      http_method: String(request.method ?? 'UNKNOWN'),
+      http_route: route || '/',
+      actor_type: this.getActorType(request),
+    };
 
     return next.handle().pipe(
       tap(() => {
@@ -27,6 +39,7 @@ export class TelemetryInterceptor implements NestInterceptor {
           durationMs: Date.now() - startTime,
           correlationId,
           userId: request.user?.sub,
+          labels,
         });
       }),
       catchError((error) => {
@@ -39,6 +52,7 @@ export class TelemetryInterceptor implements NestInterceptor {
           userId: request.user?.sub,
           error: error.message,
           errorCode: error.code || error.statusCode,
+          labels,
         });
         throw error;
       }),

@@ -22,6 +22,7 @@ import {
   RejectedOperationExplanation,
 } from './partial-failure.interface';
 import { PartialFailureService } from './partial-failure.service';
+import { OperatorDashboard } from './operator-dashboard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
 
@@ -78,6 +79,25 @@ export class PartialFailureController {
           : query.includeArchived === true || String(query.includeArchived) === 'true',
       },
     });
+  }
+
+  /**
+   * Operator queue of unresolved failures, highest priority first (#535).
+   * Declared before `:id` so the literal path is not captured as an id.
+   */
+  @Get('unresolved')
+  unresolved(
+    @Query() query: { staleAfterMs?: string; maxRetries?: string; limit?: string } = {},
+  ): OperatorDashboard {
+    try {
+      return this.failures.operatorDashboard({
+        staleAfterMs: query.staleAfterMs ? Number(query.staleAfterMs) : undefined,
+        maxRetries: query.maxRetries ? Number(query.maxRetries) : undefined,
+        limit: query.limit ? Number(query.limit) : undefined,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : String(error));
+    }
   }
 
   @Get('trends')
