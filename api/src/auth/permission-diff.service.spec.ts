@@ -106,4 +106,15 @@ describe('PermissionDiffService', () => {
       expect(result.errors[0]).toContain('no permissions');
     });
   });
+
+  it('previews valid changes without applying them', () => {
+    const before = { ISSUER: ['bond:create'] };
+    const after = { ISSUER: ['bond:create', 'bond:mature'] };
+
+    const preview = service.previewRoleChanges(before, after);
+
+    expect(preview.valid).toBe(true);
+    expect(preview.report.summary.permissionsAdded).toBe(1);
+    expect(service.generateReport(before, before).summary.permissionsAdded).toBe(0);
+  });
 });
