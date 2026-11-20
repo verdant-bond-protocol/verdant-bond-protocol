@@ -1,7 +1,10 @@
 import {
   Controller, Get, Post, Body, Param, Query,
-  HttpCode, HttpStatus, ParseIntPipe,
+  HttpCode, HttpStatus, ParseIntPipe, UseGuards, Req,
 } from '@nestjs/common';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { PrivacyExportService } from '../common/services/privacy-export.service';
+import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 import { ProjectsService } from './projects.service';
 import { CreateProjectDto } from './dto/create-project.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -9,7 +12,7 @@ import { ProjectResponse } from './interfaces/project.interface';
 
 @Controller('projects')
 export class ProjectsController {
-  constructor(private readonly projectsService: ProjectsService) {}
+  constructor(private readonly projectsService: ProjectsService, private readonly privacyExport: PrivacyExportService) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -27,6 +30,12 @@ export class ProjectsController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<ProjectResponse> {
     return this.projectsService.findOne(id);
+  }
+
+  @Get(':id/export')
+  @UseGuards(JwtAuthGuard)
+  async exportProject(@Param('id', ParseIntPipe) id: number, @Req() request: AuthenticatedRequest) {
+    return this.privacyExport.exportProject(await this.projectsService.findOne(id), request.user.walletAddress);
   }
 
   @Post(':id/approve')

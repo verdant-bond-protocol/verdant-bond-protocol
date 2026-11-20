@@ -30,8 +30,14 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       }
     }
 
+    const exceptionResponse = exception instanceof HttpException ? exception.getResponse() : undefined;
+    const responseObject = exceptionResponse !== null && typeof exceptionResponse === 'object'
+      ? exceptionResponse as Record<string, unknown>
+      : undefined;
+    const code = String(responseObject?.code ?? `HTTP_${status}`);
     response.status(status).json({
-      type: `https://errors.verdant-bond-protocol.org/${status}`,
+      type: `https://errors.verdant-bond-protocol.org/${code.toLowerCase()}`,
+      code,
       title,
       status,
       detail,
