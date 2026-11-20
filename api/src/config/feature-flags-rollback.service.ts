@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { FeatureFlag, FeatureFlagStatus } from './feature-flags.service';
+import { FeatureFlag, FeatureFlagsService } from './feature-flags.service';
 
 export interface HealthMetric {
   name: string;
@@ -36,13 +36,13 @@ export class FeatureFlagsRollbackService {
   private readonly rollbackVerifications = new Map<FeatureFlag, RollbackVerification>();
   private readonly healthMetricsHistory = new Map<FeatureFlag, HealthMetric[][]>();
 
-  constructor() {
+  constructor(private readonly featureFlagsService: FeatureFlagsService) {
     this.initializeRollbackVerifications();
   }
 
   private initializeRollbackVerifications(): void {
     for (const flag of Object.values(FeatureFlag)) {
-      const isEnabled = process.env[flag] === 'true' || process.env[`${flag}_STATUS`] === FeatureFlagStatus.ENABLED;
+      const isEnabled = this.featureFlagsService.isEnabled(flag);
       this.rollbackVerifications.set(flag, {
         flag,
         enabled: isEnabled,
@@ -69,7 +69,7 @@ export class FeatureFlagsRollbackService {
    */
   updateHealthMetrics(flag: FeatureFlag, metrics: Partial<HealthMetric>[]): boolean {
     const verification = this.rollbackVerifications.get(flag);
-    if (!verification || !verification.enabled) {
+    if (!verification) {
       return false;
     }
 
@@ -95,7 +95,7 @@ export class FeatureFlagsRollbackService {
     this.healthMetricsHistory.get(flag)!.push([...updated]);
 
     const hasBreaches = updated.some((m) => m.breached);
-    if (hasBreaches && verification.automaticRollbackEnabled) {
+    if (hasBreaches && verification.enabled && verification.automaticRollbackEnabled) {
       this.triggerAutomaticRollback(flag, updated);
       return true;
     }
@@ -109,6 +109,7 @@ export class FeatureFlagsRollbackService {
 
     verification.enabled = false;
     verification.rollbackReason = `Automatic rollback triggered: ${breachDetails}`;
+    this.featureFlagsService.emergencyDisable(flag, verification.rollbackReason);
 
     this.logger.error(
       `AUTOMATIC ROLLBACK: Feature ${flag} disabled due to health metric breaches: ${breachDetails}`,
@@ -172,6 +173,7 @@ export class FeatureFlagsRollbackService {
       rollbackStatus.enabled = true;
       rollbackStatus.enabledAt = Date.now();
       rollbackStatus.rollbackReason = undefined;
+      this.featureFlagsService.enableFeature(flag, 'Health verification passed after rollback');
       this.logger.log(`Feature ${flag} re-enabled after rollback verification passed`);
     }
 
