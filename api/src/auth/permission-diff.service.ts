@@ -17,6 +17,12 @@ export interface RoleDiffReport {
   };
 }
 
+export interface PermissionChangePreview {
+  valid: boolean;
+  errors: string[];
+  report: RoleDiffReport;
+}
+
 export const DEFAULT_ROLES: Record<string, string[]> = {
   MAINTAINER: ['*:*'],
   ISSUER: [
@@ -85,6 +91,17 @@ export class PermissionDiffService {
       timestamp: new Date().toISOString(),
       diffs,
       summary,
+    };
+  }
+
+  previewRoleChanges(
+    before: Record<string, string[]>,
+    after: Record<string, string[]>,
+  ): PermissionChangePreview {
+    const validation = this.validateRoleChanges(before, after);
+    return {
+      ...validation,
+      report: this.generateReport(before, after),
     };
   }
 

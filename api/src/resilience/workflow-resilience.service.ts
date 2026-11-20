@@ -60,6 +60,15 @@ export class WorkflowResilienceService {
 
   // ── Permission changes ────────────────────────────────────────────────────
 
+  /** Preview a policy change without changing the effective role overlay. */
+  previewPermissionChange(before: RoleMap, after: RoleMap): RoleDiffReport {
+    const preview = this.permissions.previewRoleChanges(before, after);
+    if (!preview.valid) {
+      throw new BadRequestException(`Invalid permission change: ${preview.errors.join('; ')}`);
+    }
+    return preview.report;
+  }
+
   /**
    * Validate and apply a permission change. Invalid changes are rejected
    * before they can take effect, so a role can never be left empty or an
