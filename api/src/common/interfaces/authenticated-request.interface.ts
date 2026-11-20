@@ -41,6 +41,9 @@ export interface AuthenticatedUser {
   kycStatus: KycStatus;
   roles?: string[];
   permissions?: string[];
+  /** Present for tokens issued after session revocation support was added. */
+  sessionId?: string;
+  sessionVersion?: number;
 }
 
 export interface AuthenticatedRequest extends Request {

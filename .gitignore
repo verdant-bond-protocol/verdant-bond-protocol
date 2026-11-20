@@ -35,3 +35,4 @@ build/
 
 # Backfill checkpoints, locks and rollback journals (operator state)
 api/data/backfill/
+api/data/repair/
