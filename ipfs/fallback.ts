@@ -93,12 +93,14 @@ const evidenceCache = new EvidenceCache();
  */
 export const DEFAULT_FALLBACK_CONFIG: IpfsFallbackConfig = {
   primaryGateway: process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/',
-  fallbackGateways: [
-    'https://ipfs.io/ipfs/',
-    'https://cloudflare-ipfs.com/ipfs/',
-    'https://dweb.link/ipfs/',
-    'https://gateway.ipfs.io/ipfs/',
-  ],
+  fallbackGateways: process.env.IPFS_FALLBACK_GATEWAYS
+    ? process.env.IPFS_FALLBACK_GATEWAYS.split(',').map((g) => g.trim()).filter(Boolean)
+    : [
+        'https://ipfs.io/ipfs/',
+        'https://cloudflare-ipfs.com/ipfs/',
+        'https://dweb.link/ipfs/',
+        'https://gateway.ipfs.io/ipfs/',
+      ],
   maxRetries: 3,
   timeoutMs: 5000,
   enableCache: true,
@@ -234,39 +236,106 @@ async function tryGatewayWithRetries(
 }
 
 /**
+ * Detailed availability check result across gateway fallbacks
+ */
+export interface EvidenceAvailabilityResult {
+  /** Whether the evidence was available on at least one gateway */
+  available: boolean;
+  /** Gateway that successfully responded */
+  gatewayUsed?: string;
+  /** Total number of gateway attempts made */
+  attempts: number;
+  /** Whether the result was served from cache */
+  fromCache: boolean;
+  /** Total latency in milliseconds */
+  latencyMs: number;
+  /** Error message if unavailable */
+  error?: string;
+}
+
+/**
+ * Check evidence availability across primary and fallback gateways with detailed metrics
+ */
+export async function checkEvidenceAvailability(
+  cid: string,
+  config: Partial<IpfsFallbackConfig> = {},
+  http?: HttpClient,
+): Promise<EvidenceAvailabilityResult> {
+  const start = Date.now();
+  const fullConfig = { ...DEFAULT_FALLBACK_CONFIG, ...config };
+  let attempts = 0;
+
+  // 1. Check cache first
+  if (fullConfig.enableCache) {
+    const cached = evidenceCache.get(cid, fullConfig.cacheTtlMs);
+    if (cached) {
+      return {
+        available: true,
+        gatewayUsed: cached.gateway,
+        attempts: 0,
+        fromCache: true,
+        latencyMs: Date.now() - start,
+      };
+    }
+  }
+
+  // 2. Check primary gateway
+  attempts++;
+  const primaryAvailable = await checkEvidenceRetrievable(
+    cid,
+    fullConfig.primaryGateway,
+    fullConfig.timeoutMs,
+    http,
+  );
+  if (primaryAvailable) {
+    return {
+      available: true,
+      gatewayUsed: fullConfig.primaryGateway,
+      attempts,
+      fromCache: false,
+      latencyMs: Date.now() - start,
+    };
+  }
+
+  // 3. Check fallback gateways
+  for (const gateway of fullConfig.fallbackGateways) {
+    attempts++;
+    const available = await checkEvidenceRetrievable(cid, gateway, fullConfig.timeoutMs, http);
+    if (available) {
+      return {
+        available: true,
+        gatewayUsed: gateway,
+        attempts,
+        fromCache: false,
+        latencyMs: Date.now() - start,
+      };
+    }
+  }
+
+  return {
+    available: false,
+    attempts,
+    fromCache: false,
+    latencyMs: Date.now() - start,
+    error: `Evidence ${cid} is not retrievable after ${attempts} attempts across configured gateways.`,
+  };
+}
+
+/**
  * Check if evidence is retrievable from any gateway (lightweight health check)
  * 
  * @param cid - The IPFS CID to check
  * @param config - Fallback configuration
+ * @param http - Optional injectable HTTP client for tests
  * @returns true if retrievable from at least one gateway
  */
 export async function isEvidenceAvailable(
   cid: string,
   config: Partial<IpfsFallbackConfig> = {},
+  http?: HttpClient,
 ): Promise<boolean> {
-  const fullConfig = { ...DEFAULT_FALLBACK_CONFIG, ...config };
-
-  // Check cache first
-  if (fullConfig.enableCache) {
-    const cached = evidenceCache.get(cid, fullConfig.cacheTtlMs);
-    if (cached) return true;
-  }
-
-  // Check primary gateway
-  const primaryAvailable = await checkEvidenceRetrievable(
-    cid,
-    fullConfig.primaryGateway,
-    fullConfig.timeoutMs,
-  );
-  if (primaryAvailable) return true;
-
-  // Check fallback gateways
-  for (const gateway of fullConfig.fallbackGateways) {
-    const available = await checkEvidenceRetrievable(cid, gateway, fullConfig.timeoutMs);
-    if (available) return true;
-  }
-
-  return false;
+  const result = await checkEvidenceAvailability(cid, config, http);
+  return result.available;
 }
 
 /**
@@ -295,11 +364,13 @@ function sleep(ms: number): Promise<void> {
  * 
  * @param cids - Array of CIDs to check
  * @param config - Fallback configuration
+ * @param http - Optional injectable HTTP client for tests
  * @returns Map of CID to availability status
  */
 export async function batchCheckAvailability(
   cids: string[],
   config: Partial<IpfsFallbackConfig> = {},
+  http?: HttpClient,
 ): Promise<Map<string, boolean>> {
   const results = new Map<string, boolean>();
   
@@ -308,7 +379,7 @@ export async function batchCheckAvailability(
   
   for (const chunk of chunks) {
     const promises = chunk.map(async (cid) => {
-      const available = await isEvidenceAvailable(cid, config);
+      const available = await isEvidenceAvailable(cid, config, http);
       return { cid, available };
     });
     

@@ -113,6 +113,18 @@ export class InvestorEligibilityCacheService {
     return this.invalidateInvestor(investor, `kyc:${fromStatus ?? 'none'}->${toStatus}`, fromStatus, toStatus);
   }
 
+  /**
+   * Called on generic status changes (e.g. sanctions, compliance tier, accreditation updates).
+   */
+  onStatusChanged(
+    investor: string,
+    fromStatus: string | null,
+    toStatus: string,
+    reason = `status:${fromStatus ?? 'none'}->${toStatus}`,
+  ): number {
+    return this.invalidateInvestor(investor, reason);
+  }
+
   invalidateInvestor(
     investor: string,
     reason: string,
