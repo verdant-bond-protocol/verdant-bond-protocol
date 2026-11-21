@@ -158,5 +158,22 @@ describe('InvestorEligibilityCacheService (#438)', () => {
       const kyc = new KycService(fakeRedis() as any, new KycStoreService());
       await expect(kyc.verify('GA')).resolves.toMatchObject({ status: KycStatus.VERIFIED });
     });
+
+    it('onStatusChanged invalidates on generic status transitions (e.g. sanctions)', () => {
+      const g = cache.generationOf('GA');
+      cache.set('GA', 'bond-1', ELIGIBLE, KycStatus.VERIFIED, g);
+      expect(cache.get('GA', 'bond-1')).toEqual(ELIGIBLE);
+
+      const dropped = cache.onStatusChanged('GA', 'ACTIVE', 'SANCTIONED', 'sanctions:hit');
+      expect(dropped).toBe(1);
+      expect(cache.get('GA', 'bond-1')).toBeUndefined();
+      expect(cache.listInvalidations('GA')).toContainEqual(
+        expect.objectContaining({
+          investor: 'GA',
+          reason: 'sanctions:hit',
+          entriesDropped: 1,
+        }),
+      );
+    });
   });
 });

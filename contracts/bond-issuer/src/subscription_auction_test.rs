@@ -244,3 +244,74 @@ fn missing_order_book_cannot_reopen_direct_subscription() {
         Some(BondError::AuctionRequired as u32)
     );
 }
+
+#[test]
+fn test_cancel_subscription_refunds_escrow_safely() {
+    let (env, client, admin, _) = setup();
+    let (bond, token, _) = auction(&env, &client, &admin, 10, 10);
+    let a = admit(&env, &client, &admin, bond, &token, 1);
+    let token_client = TokenClient::new(&env, &token);
+
+    env.ledger().set_sequence_number(12);
+    let bal_before = token_client.balance(&a);
+    client.commit_subscription(&a, &bond, &4, &0);
+    assert_eq!(token_client.balance(&a), bal_before - 400);
+
+    // Cancel pending subscription before cutoff
+    let nonce = client.get_nonce(&a);
+    client.cancel_subscription(&a, &bond, &nonce);
+
+    // Tokens refunded in full
+    assert_eq!(token_client.balance(&a), bal_before);
+
+    // Verify order state
+    let state = client.get_subscription(&bond);
+    let order = state.orders.get(0).unwrap();
+    assert_eq!(order.requested, 0);
+    assert_eq!(order.refunded, 400);
+
+    // Settle after cutoff
+    env.ledger().set_sequence_number(21);
+    let settled = client.settle_subscription(&bond);
+    assert!(settled.settled);
+    assert_eq!(client.get_balance(&bond, &a), 0);
+}
+
+#[test]
+fn test_cancel_subscription_failures_and_retry() {
+    let (env, client, admin, _) = setup();
+    let (bond, token, _) = auction(&env, &client, &admin, 10, 10);
+    let a = admit(&env, &client, &admin, bond, &token, 1);
+
+    // Failure: cancel before committing
+    env.ledger().set_sequence_number(12);
+    assert_eq!(
+        client.try_cancel_subscription(&a, &bond, &0),
+        Err(Ok(BondError::ZeroAmount))
+    );
+
+    // Commit 4 units
+    client.commit_subscription(&a, &bond, &4, &0);
+
+    // Normal cancel
+    let nonce = client.get_nonce(&a);
+    assert!(client.try_cancel_subscription(&a, &bond, &nonce).is_ok());
+
+    // Retry path: repeated cancel fails with ZeroAmount (prevents double refund)
+    let nonce2 = client.get_nonce(&a);
+    assert_eq!(
+        client.try_cancel_subscription(&a, &bond, &nonce2),
+        Err(Ok(BondError::ZeroAmount))
+    );
+
+    // Failure path: cancel after cutoff fails with AuctionClosed
+    let b = admit(&env, &client, &admin, bond, &token, 2);
+    let nonce_b = client.get_nonce(&b);
+    client.commit_subscription(&b, &bond, &2, &nonce_b);
+    env.ledger().set_sequence_number(25);
+    let nonce_b2 = client.get_nonce(&b);
+    assert_eq!(
+        client.try_cancel_subscription(&b, &bond, &nonce_b2),
+        Err(Ok(BondError::AuctionClosed))
+    );
+}
