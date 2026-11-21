@@ -775,9 +775,13 @@ cd contracts && cargo build --release && cd ..
 Before starting development or opening your first PR, it is highly recommended to run the read-only diagnostics script. This verifies your local environment, Node.js version, environment variables, Redis connectivity, and Postgres connectivity. It provides actionable remediation steps for any failures.
 
 ```bash
-cd api
-npm run diagnostics
+./scripts/diagnostic.sh
 ```
+
+The command is read-only and works from any current directory. Use
+`./scripts/diagnostic.sh --json` for automation or
+`./scripts/diagnostic.sh --no-retry` for a single fast connectivity probe. The
+API-local equivalent is `cd api && npm run diagnostics`.
 
 ### Quick Start (Testnet)
 
