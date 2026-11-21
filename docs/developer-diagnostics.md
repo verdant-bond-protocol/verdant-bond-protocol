@@ -1,13 +1,12 @@
 # Contributor Diagnostics
 
-`npm run diagnostics` (from the `api` directory) is the single command a
-contributor runs to validate their local setup and the external-service
-assumptions the API makes. It is **read-only**: it never migrates, seeds, or
-mutates anything.
+`./scripts/diagnostic.sh` is the single root command a contributor runs to
+validate their local setup and the external-service assumptions the API makes.
+It is **read-only**: it never migrates, seeds, or mutates anything. The wrapper
+can be run from any current directory and delegates to the tested API command.
 
 ```bash
-cd api
-npm run diagnostics
+./scripts/diagnostic.sh
 ```
 
 Exit code is `0` when every check passes and `1` when any check fails, so it can
@@ -19,7 +18,7 @@ be wired into pre-flight scripts or CI.
 | `--no-retry` | Probe Redis/Postgres once instead of retrying transient failures. |
 
 ```bash
-npm run diagnostics -- --json --no-retry
+./scripts/diagnostic.sh --json --no-retry
 ```
 
 ## What it checks
