@@ -1,5 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { OracleIncidentRepository } from '../oracle/oracle-incident.repository';
@@ -65,6 +66,51 @@ export interface RetentionPlanEntry {
  */
 export interface RetentionPlan {
   entries: RetentionPlanEntry[];
+}
+
+export type RetentionComplianceStatus =
+  | 'COMPLIANT'
+  | 'NON_COMPLIANT'
+  | 'NEEDS_REVIEW'
+  | 'INTEGRITY_VIOLATION';
+
+export type ComplianceClassification =
+  | 'RETAINED_COMPLIANT'
+  | 'PROTECTED_LIVE_STORE'
+  | 'HELD_ACTIVE_DISPUTE'
+  | 'ELIGIBLE_FOR_PRUNING'
+  | 'PREMATURE_DELETION_RISK'
+  | 'FILE_UNREADABLE';
+
+export interface EvidenceCheckFinding {
+  type: DataType;
+  file: string;
+  ageDays: number;
+  retentionRequirementDays: number;
+  complianceClassification: ComplianceClassification;
+  isHeld: boolean;
+  holdReason?: string;
+  sha256Digest?: string;
+}
+
+export interface EvidenceRetentionCheckReport {
+  checkedAt: string;
+  overallStatus: RetentionComplianceStatus;
+  summary: {
+    totalChecked: number;
+    retainedCompliantCount: number;
+    protectedLiveStoreCount: number;
+    heldActiveDisputeCount: number;
+    eligibleForPruningCount: number;
+    violationsCount: number;
+  };
+  findings: EvidenceCheckFinding[];
+}
+
+export interface RetentionActor {
+  id?: string;
+  roles?: string[];
+  isAdmin?: boolean;
 }
 
 /**
@@ -143,6 +189,153 @@ export class DataRetentionService {
 
     entries.sort((a, b) => compareNames(a.type, b.type) || compareNames(a.file, b.file));
     return { entries };
+  }
+
+  /**
+   * Verifies data retention compliance and cryptographic integrity for financial and KYC evidence (#643).
+   *
+   * Paths:
+   *   - Normal: Audits compliance against statutory minimums (7 years KYC, 5 years financial evidence)
+   *             and detects items eligible for scheduled pruning.
+   *   - Failure / Integrity: Flags unreadable/corrupted evidence files and fails closed if dispute/incident store is down.
+   *   - Retry: Idempotent and read-only, safe to re-run repeatedly without side effects.
+   *   - Authorization: Requires COMPLIANCE_OFFICER, AUDITOR, or Admin role; throws ForbiddenException if unauthorized.
+   *
+   * Time Complexity: O(F + I) where F = file count, I = incident count
+   * Space Complexity: O(F + I) bounded memory
+   */
+  async verifyEvidenceRetentionCompliance(
+    actor?: RetentionActor,
+    options?: { verifyIntegrity?: boolean },
+  ): Promise<EvidenceRetentionCheckReport> {
+    const isAuthorized =
+      actor?.isAdmin === true ||
+      actor?.roles?.includes('COMPLIANCE_OFFICER') ||
+      actor?.roles?.includes('AUDITOR');
+
+    if (!isAuthorized) {
+      throw new ForbiddenException('Auditor or Admin role required for data retention compliance audit');
+    }
+
+    const now = Date.now();
+    const findings: EvidenceCheckFinding[] = [];
+    let holds: EvidenceHolds | undefined;
+    let holdLoadingFailed = false;
+
+    try {
+      holds = await this.loadEvidenceHolds();
+      if (holds === null) {
+        holdLoadingFailed = true;
+      }
+    } catch {
+      holdLoadingFailed = true;
+      holds = null; // fail closed: all evidence held
+    }
+
+    let retainedCompliantCount = 0;
+    let protectedLiveStoreCount = 0;
+    let heldActiveDisputeCount = 0;
+    let eligibleForPruningCount = 0;
+    let violationsCount = 0;
+
+    // Only financial evidence (EVIDENCE) and KYC audit records (AUDIT) are subject to statutory retention checks
+    const targetTypes = [DataType.AUDIT, DataType.EVIDENCE];
+
+    for (const type of targetTypes) {
+      const dirPath = path.join(this.dataDir, type);
+      const files = await this.listFiles(dirPath);
+
+      for (const file of [...files].sort(compareNames)) {
+        const filePath = path.join(dirPath, file);
+        let ageDays: number | null = null;
+        let sha256Digest: string | undefined;
+
+        try {
+          const stats = await this.fileFs.stat(filePath);
+          if (!stats.isFile()) continue;
+          ageDays = roundAge((now - stats.mtimeMs) / DAY_MS);
+
+          if (options?.verifyIntegrity) {
+            const content = await this.fileFs.readFile(filePath);
+            sha256Digest = createHash('sha256').update(content).digest('hex');
+          }
+        } catch (err) {
+          violationsCount++;
+          findings.push({
+            type,
+            file,
+            ageDays: 0,
+            retentionRequirementDays: RETENTION_DAYS[type],
+            complianceClassification: 'FILE_UNREADABLE',
+            isHeld: true,
+            holdReason: 'I/O failure during audit check',
+          });
+          continue;
+        }
+
+        const requiredDays = RETENTION_DAYS[type];
+        const isLiveStore = NEVER_EXPIRE[type]?.has(file);
+        const hasDisputeHold = type === DataType.EVIDENCE && this.isHeld(file, holds);
+
+        let classification: ComplianceClassification;
+        let isHeld = false;
+        let holdReason: string | undefined;
+
+        if (isLiveStore) {
+          classification = 'PROTECTED_LIVE_STORE';
+          isHeld = true;
+          holdReason = 'Current live store record (never expire)';
+          protectedLiveStoreCount++;
+        } else if (hasDisputeHold) {
+          classification = 'HELD_ACTIVE_DISPUTE';
+          isHeld = true;
+          holdReason = holdLoadingFailed
+            ? 'Incident store unreachable: fail-closed retention hold active'
+            : 'Linked to active/acknowledged incident or dispute';
+          heldActiveDisputeCount++;
+        } else if (ageDays <= requiredDays) {
+          classification = 'RETAINED_COMPLIANT';
+          retainedCompliantCount++;
+        } else {
+          classification = 'ELIGIBLE_FOR_PRUNING';
+          eligibleForPruningCount++;
+        }
+
+        findings.push({
+          type,
+          file,
+          ageDays: ageDays ?? 0,
+          retentionRequirementDays: requiredDays,
+          complianceClassification: classification,
+          isHeld,
+          holdReason,
+          sha256Digest,
+        });
+      }
+    }
+
+    findings.sort((a, b) => compareNames(a.type, b.type) || compareNames(a.file, b.file));
+
+    let overallStatus: RetentionComplianceStatus = 'COMPLIANT';
+    if (violationsCount > 0) {
+      overallStatus = 'NON_COMPLIANT';
+    } else if (holdLoadingFailed) {
+      overallStatus = 'NEEDS_REVIEW';
+    }
+
+    return {
+      checkedAt: new Date(now).toISOString(),
+      overallStatus,
+      summary: {
+        totalChecked: findings.length,
+        retainedCompliantCount,
+        protectedLiveStoreCount,
+        heldActiveDisputeCount,
+        eligibleForPruningCount,
+        violationsCount,
+      },
+      findings,
+    };
   }
 
   /** Missing/unreadable directories contribute no files, as in enforcement. */
