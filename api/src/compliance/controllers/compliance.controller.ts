@@ -12,7 +12,17 @@ import {
   NotFoundException,
   Param,
   Optional,
+  Headers,
+  BadRequestException,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
+import {
+  GovernanceReceiptEnvelope,
+  GovernanceReceiptService,
+  GovernanceReceiptVerification,
+  GOVERNANCE_ACTOR_ROLE,
+} from '../services/governance-receipt.service';
+import { SignedAuditReceipt } from '../../audit/audit.receipt';
 import { ComplianceRulesEngine } from '../services/compliance-rules.engine';
 import { ComplianceAttestationService } from '../services/compliance-attestation.service';
 import { SanctionsService } from '../services/sanctions.service';
@@ -64,7 +74,67 @@ export class ComplianceController {
     private readonly kycCommitmentService: KycCommitmentService,
     @Optional() private readonly explanationService?: InvestorRejectionExplanationService,
     @Optional() private readonly eligibilityCache?: InvestorEligibilityCacheService,
+    @Optional() private readonly governanceReceipts?: GovernanceReceiptService,
   ) {}
+
+  /**
+   * Runs a compliance/governance mutation and, when the receipt service is
+   * wired (always, in the application module), attaches a signed receipt
+   * (#632). The response shape is additive: the original fields are kept and
+   * `signedReceipt` is added alongside them.
+   */
+  private async withReceipt<T extends object>(
+    args: {
+      action: Parameters<GovernanceReceiptService['execute']>[0]['action'];
+      entityId: string;
+      req: any;
+      idempotencyKey?: string;
+      request: unknown;
+      reason?: string;
+      before?: Record<string, unknown> | null;
+      summarize: (result: T) => Record<string, unknown>;
+    },
+    execute: () => Promise<T> | T,
+  ): Promise<T & { signedReceipt?: GovernanceReceiptEnvelope }> {
+    if (!this.governanceReceipts) {
+      return execute();
+    }
+    const user = args.req?.user as AuthenticatedUser | undefined;
+    // AdminGuard has already established that the caller is the protocol admin.
+    const roles = [GOVERNANCE_ACTOR_ROLE, ...((user as any)?.roles ?? [])];
+    const { result, signedReceipt } = await this.governanceReceipts.execute<T>({
+      action: args.action,
+      entityId: args.entityId,
+      actor: user?.walletAddress ?? '',
+      actorRoles: roles,
+      idempotencyKey: args.idempotencyKey,
+      request: args.request,
+      reason: args.reason,
+      before: args.before,
+      execute,
+      summarize: args.summarize,
+    });
+    return { ...result, signedReceipt };
+  }
+
+  /** Public: the SPKI PEM key that signs governance receipts, for offline verifiers. */
+  @Get('receipts/public-key')
+  getReceiptPublicKey(): { algorithm: 'Ed25519'; publicKey: string } {
+    if (!this.governanceReceipts) throw new NotFoundException('Governance receipts are not enabled');
+    return { algorithm: 'Ed25519', publicKey: this.governanceReceipts.publicKey };
+  }
+
+  /** Admin/auditor: verify a governance receipt against the audit chain. */
+  @Post('receipts/verify')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  verifyReceipt(@Body() body: { receipt: SignedAuditReceipt }): GovernanceReceiptVerification {
+    if (!this.governanceReceipts) throw new NotFoundException('Governance receipts are not enabled');
+    if (!body?.receipt || typeof body.receipt !== 'object') {
+      throw new BadRequestException('receipt is required');
+    }
+    return this.governanceReceipts.verify(body.receipt);
+  }
 
   @Get('snapshots/:eventId')
   @UseGuards(JwtAuthGuard, AdminGuard)
@@ -111,7 +181,13 @@ export class ComplianceController {
     };
 
     if (this.eligibilityCache) {
-      return this.eligibilityCache.getOrCompute(dto.investorAddress, String(dto.bondId), compute);
+      // The cache stores and returns the decision `compute` produced; its own
+      // interface is a structural subset, so narrow back to the full type.
+      return (await this.eligibilityCache.getOrCompute(
+        dto.investorAddress,
+        String(dto.bondId),
+        compute,
+      )) as unknown as EligibilityDecision;
     }
     return (await compute()).decision;
   }
@@ -132,14 +208,26 @@ export class ComplianceController {
   @Post('eligibility/flush')
   @UseGuards(JwtAuthGuard, AdminGuard)
   @HttpCode(HttpStatus.OK)
-  flushEligibilityCache(@Req() req: any) {
-    if (!this.eligibilityCache) return { flushed: 0 };
-    const user = req.user as AuthenticatedUser;
-    const dropped = this.eligibilityCache.flushAll({
-      isAdmin: !!user?.isAdmin,
-      address: user?.walletAddress || 'admin',
-    });
-    return { flushed: dropped };
+  flushEligibilityCache(@Req() req: any, @Headers('idempotency-key') idempotencyKey?: string) {
+    return this.withReceipt<{ flushed: number }>(
+      {
+        action: 'compliance.eligibility.flush',
+        entityId: 'all',
+        req,
+        idempotencyKey,
+        request: {},
+        summarize: (r) => ({ flushed: r.flushed }),
+      },
+      () => {
+        if (!this.eligibilityCache) return { flushed: 0 };
+        const user = req.user as AuthenticatedUser;
+        const dropped = this.eligibilityCache.flushAll({
+          isAdmin: !!(user as AuthenticatedUser & { isAdmin?: boolean })?.isAdmin,
+          address: user?.walletAddress || 'admin',
+        });
+        return { flushed: dropped };
+      },
+    );
   }
 
   /**
@@ -151,13 +239,26 @@ export class ComplianceController {
   invalidateInvestorEligibility(
     @Param('address') address: string,
     @Body() body: { reason?: string },
+    @Req() req?: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    if (!this.eligibilityCache) return { address, dropped: 0 };
-    const dropped = this.eligibilityCache.invalidateInvestor(
-      address,
-      body?.reason ?? 'admin:manual_invalidation',
+    const reason = body?.reason ?? 'admin:manual_invalidation';
+    return this.withReceipt<{ address: string; dropped: number }>(
+      {
+        action: 'compliance.eligibility.invalidate',
+        entityId: address,
+        req,
+        idempotencyKey,
+        request: { address, reason },
+        reason,
+        summarize: (r) => ({ address: r.address, dropped: r.dropped }),
+      },
+      () => {
+        if (!this.eligibilityCache) return { address, dropped: 0 };
+        const dropped = this.eligibilityCache.invalidateInvestor(address, reason);
+        return { address, dropped };
+      },
     );
-    return { address, dropped };
   }
 
   /**
@@ -201,8 +302,32 @@ export class ComplianceController {
   @HttpCode(HttpStatus.OK)
   async refreshSanctions(
     @Body() body: { additionalAddresses?: string[]; additionalCountries?: string[] },
-  ): Promise<SanctionsStatus> {
-    return this.sanctionsService.refreshSanctionsList(body);
+    @Req() req?: any,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<SanctionsStatus & { signedReceipt?: GovernanceReceiptEnvelope }> {
+    const before = this.sanctionsService.getStatus();
+    // The receipt binds to a digest of the submitted lists, not the lists themselves.
+    const listDigest = createHash('sha256')
+      .update(JSON.stringify({ a: body?.additionalAddresses ?? [], c: body?.additionalCountries ?? [] }))
+      .digest('hex');
+    return this.withReceipt<SanctionsStatus>(
+      {
+        action: 'compliance.sanctions.refresh',
+        entityId: 'sanctions-list',
+        req,
+        idempotencyKey,
+        request: body ?? {},
+        before: { entryCount: before.entryCount, lastRefreshedAt: before.lastRefreshedAt },
+        summarize: (s) => ({
+          entryCount: s.entryCount,
+          lastRefreshedAt: s.lastRefreshedAt,
+          addedAddresses: body?.additionalAddresses?.length ?? 0,
+          addedCountries: body?.additionalCountries?.length ?? 0,
+          listDigest,
+        }),
+      },
+      () => this.sanctionsService.refreshSanctionsList(body),
+    );
   }
 
   /**
@@ -214,9 +339,22 @@ export class ComplianceController {
   async updateJurisdictionRule(
     @Body() body: { jurisdiction: string; updates: Partial<import('../interfaces/compliance.interface').JurisdictionRule> },
     @Req() req: any,
-  ): Promise<VersionedRuleset> {
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ): Promise<VersionedRuleset & { signedReceipt?: GovernanceReceiptEnvelope }> {
     const user = req.user?.walletAddress || 'GOVERNANCE';
-    return this.rulesEngine.updateJurisdictionRule(body.jurisdiction, body.updates, user);
+    const previous = this.rulesEngine.getRuleset();
+    return this.withReceipt<VersionedRuleset>(
+      {
+        action: 'governance.ruleset.update',
+        entityId: String(body?.jurisdiction ?? '').toUpperCase(),
+        req,
+        idempotencyKey,
+        request: body,
+        before: { version: previous.version, auditHash: previous.auditHash },
+        summarize: (r) => ({ version: r.version, auditHash: r.auditHash, jurisdiction: String(body.jurisdiction).toUpperCase() }),
+      },
+      () => this.rulesEngine.updateJurisdictionRule(body.jurisdiction, body.updates, user),
+    );
   }
 
   /**

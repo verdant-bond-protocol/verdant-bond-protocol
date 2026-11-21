@@ -130,3 +130,79 @@ If an `UNDERFUNDED_REDEMPTION_POOL` alert fires:
      deposit_redemption_pool --bond_id <BOND_ID> --amount <REQUIRED_FUNDS>
    ```
 4. Once funded, notify queued holders or re-run automated redemption sweep.
+
+---
+
+## 7. Injecting into the real flows (#644)
+
+Sections 1–6 describe the simulator (`simulate/payout`, `simulate/redemption`),
+which runs against in-memory mock balances. Since #644 the **same rules** also
+drive the real `BondsService` payout and redemption paths. Faults go into
+`ContractService.sendTransaction`, the single point every state-changing
+contract call passes through. As a result, the real `NonceService`, stable
+error mapping (#641) and RFC 7807 filter all handle a fault exactly as they
+would in production.
+
+### Enabling (staging / chaos runs only)
+
+```bash
+FAILURE_INJECTION_ENABLED=true   # and NODE_ENV must not be "production"
+```
+
+At boot, `ContractFaultInjectionBootstrap` attaches `ContractFaultInjector`.
+It refuses to attach when `NODE_ENV=production` or when the flag is unset,
+so production is unaffected. To roll back, unset the flag and restart; the
+original transport is restored on module shutdown (`detach()`).
+
+Rules are matched by contract method:
+- **Payout:** `distribute_coupon`, `distribute_coupon_batch` and `claim_credits` map to `PAYOUT`.
+- **Redemption:** `redeem` maps to `REDEMPTION`.
+
+`bondId` and `targetAddress` are matched against the decoded call arguments.
+`count` sets how many calls fault before the rule disarms.
+
+### What each mode really does
+
+| Mode | Sent to ledger? | Applied? | API outcome | Consumer action |
+|---|---|---|---|---|
+| `PRE_COMMIT_NETWORK_RESET` | no | no | `503` | Retry; it applies exactly once. |
+| `TRANSIENT_RPC_TIMEOUT` | yes | **yes** | Redemption: reconciled `200 { reconciled: true }`. Payout: `504`. | See "In-doubt recovery" below. |
+| `CORRUPTED_NONCE` | no | no | `BOND_INVALID_NONCE`, `retryable: true`, `resync_nonce` | Retry; the NonceService resyncs from chain. |
+| `UNAUTHORIZED_CALLER` | no | no | `BOND_UNAUTHORIZED`, `retryable: false` | Fix the caller; never retry. |
+| `UNDERFUNDED_REDEMPTION_POOL` | no | no | `BOND_REDEMPTION_UNDERFUNDED`, `after_state_change` | Fund the pool, then retry. |
+| `CONCURRENT_IDEMPOTENCY_REPLAY` | yes | yes | passthrough | API-level mode; simulator only. |
+
+### In-doubt recovery (corrects section 4)
+
+A Soroban poll timeout means the transaction was **accepted and may have
+applied**. Before #644, `ContractService` re-wrapped that timeout as a `400`,
+and nothing deduplicated a retried redemption. What is guaranteed now:
+
+- **`redeem`:** the contract has no duplicate guard, so a blind retry could
+  redeem twice. `BondsService.redeem` reads the holder's contract nonce before
+  the call and again after a timeout. Soroban reverts failed calls, so the
+  nonce only moves when the redeem applied, and the NonceService lock
+  serialises this API's calls per holder. This gives three outcomes:
+  - **Nonce advanced:** the redeem applied. The API returns `200` with `reconciled: true`.
+  - **Nonce unchanged:** nothing applied. The API returns `503`, which is safe to retry.
+  - **Nonce unreadable:** the `504` is kept. Do **not** retry; reconcile holdings first.
+- **`distribute_coupon`:** a retry is rejected on-chain because the period is
+  already distributed (`BOND_OVERFLOW`, non-retryable). Credits are never paid twice.
+- **`claim_credits`:** a retry drains an already-empty escrow and returns `0` credits.
+
+Every injected timeout also records a `retryable: false` entry on the Partial
+Failure board (`payout.distribution` or `redemption.settlement`, keyed by the
+transaction hash), so the incident stays visible.
+
+### Executable verification
+
+`api/src/failures/payout-redemption.e2e-failure-injection.spec.ts` runs the
+real `BondsService`, `ContractService`, `NonceService` and RFC 7807 filter
+against an in-memory ledger. The ledger enforces the contract guards: nonces,
+admin authorization, pool solvency and one distribution per period. After
+every scenario the spec asserts that four quantities are conserved: token
+supply, principal (pool plus paid principal), credits, and a non-negative pool.
+
+```bash
+cd api && npx jest src/failures/payout-redemption.e2e-failure-injection.spec.ts
+```

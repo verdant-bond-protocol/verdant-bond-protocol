@@ -22,6 +22,12 @@ export enum ErrorCode {
   // ── Ownership transfer ────────────────────────────────────────────────────
   OWNERSHIP_TRANSFER_PENDING = 'OWNERSHIP_TRANSFER_PENDING',
   OWNERSHIP_TRANSFER_EXPIRED = 'OWNERSHIP_TRANSFER_EXPIRED',
+
+  // ── Secondary market ──────────────────────────────────────────────────────
+  PRICE_IMPACT_EXCEEDED = 'PRICE_IMPACT_EXCEEDED',
+
+  // ── Compliance & governance ───────────────────────────────────────────────
+  RECEIPT_PENDING = 'RECEIPT_PENDING',
 }
 
 export interface ErrorMetadata {
@@ -167,6 +173,22 @@ export const ErrorTaxonomy: Record<ErrorCode, Omit<ErrorMetadata, 'code'>> = {
     safeMessage: 'The ownership transfer proposal has expired. Please initiate a new transfer.',
     remediationHint: 'The acceptance window (TTL ledgers) elapsed. Issue a fresh propose_admin call to restart the process.',
     remediation: 'Initiate a new ownership transfer; the previous proposal has expired.',
+  },
+
+  // ── Secondary market ────────────────────────────────────────────────────────
+  [ErrorCode.PRICE_IMPACT_EXCEEDED]: {
+    retryable: false,
+    safeMessage: 'This trade exceeds the price-impact or slippage limit for this market.',
+    remediationHint: 'Thin-market guard (#638). No contract call or nonce was consumed. Inspect context.limitSource and the per-bond impact-limit config.',
+    remediation: 'Reduce the amount to `context.suggestedMaxAmount`, choose the best-priced order (`context.bestOrderId`), or raise your own `maxPriceImpactBps`.',
+  },
+
+  // ── Compliance & governance ─────────────────────────────────────────────────
+  [ErrorCode.RECEIPT_PENDING]: {
+    retryable: true,
+    safeMessage: 'The action was applied but its signed receipt is not yet issued.',
+    remediationHint: 'Audit write was rejected after a governance mutation (#632). The mutation is parked as pending_receipt; check audit store capacity, then have the caller retry with the same Idempotency-Key.',
+    remediation: 'Retry with the same `Idempotency-Key` (see `context.idempotencyKey`); the action will not be applied twice.',
   },
 };
 

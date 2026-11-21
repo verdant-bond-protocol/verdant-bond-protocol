@@ -42,7 +42,7 @@ Field guarantees:
 | `correlationId` | Present when the request carried/propagated one; echoed in the `x-correlation-id` response header. |
 | `errors[]` | Validation failures only. `field` is best-effort. |
 | `context` | Non-sensitive, operation-specific signal (e.g. risk assessment). |
-| `contract` | Settlement failures only. Raw Soroban fields for runbook lookup. |
+| `contract` | Settlement failures only. Raw Soroban fields plus the stable contract `code`, `category`, `errorClass` and `retryStrategy` (#641, see [error-mappings.md](error-mappings.md)). |
 
 ## Frozen machine codes
 
@@ -66,6 +66,8 @@ Field guarantees:
 | `COUPON_ALREADY_CLAIMED` | 409 | no | Coupon period already claimed. | No action needed. |
 | `OWNERSHIP_TRANSFER_PENDING` | 409 | no | A transfer proposal is already pending. | Cancel or complete it first. |
 | `OWNERSHIP_TRANSFER_EXPIRED` | 400 | no | Acceptance window elapsed. | Initiate a fresh proposal. |
+| `RECEIPT_PENDING` | 503 | yes | Governance action applied; signed receipt not yet issued (#632). | Retry with the same `Idempotency-Key`. |
+| `PRICE_IMPACT_EXCEEDED` | 400 | no | Secondary-market trade breaches the tier or caller price-impact limit (#638). | Use `context.suggestedMaxAmount` / `context.bestOrderId`, or loosen `maxPriceImpactBps`. |
 
 The HTTP column is the canonical status for each code; the response's own
 `status` field is authoritative. The machine `code`, `retryable` flag and

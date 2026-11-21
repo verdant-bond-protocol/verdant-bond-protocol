@@ -168,13 +168,11 @@ export class KycCommitmentService {
       decisionReason: decisionReason || 'Standard KYC verification',
     });
 
-    const signature = crypto.sign('sha256', Buffer.from(receiptData), {
-      key: this.complianceSigningKey,
-      format: 'der',
-      type: 'pkcs8',
-    });
+    // Ed25519 is a fixed-digest scheme: Node/OpenSSL requires a null digest.
+    // Passing 'sha256' threw "invalid digest", so no receipt could be issued (#632).
+    const signature = crypto.sign(null, Buffer.from(receiptData), this.complianceSigningKey);
 
-    const publicKey = crypto.createPublicKey({ key: this.complianceSigningKey }).export({ format: 'pem', type: 'spki' });
+    const publicKey = crypto.createPublicKey(this.complianceSigningKey).export({ format: 'pem', type: 'spki' }).toString();
 
     const receipt: SignedKycReceipt = {
       commitmentHash: commitment.commitmentHash,
@@ -207,7 +205,7 @@ export class KycCommitmentService {
     });
 
     try {
-      return crypto.verify('sha256', Buffer.from(receiptData), receipt.signerPublicKey, Buffer.from(receipt.signature, 'base64'));
+      return crypto.verify(null, Buffer.from(receiptData), receipt.signerPublicKey, Buffer.from(receipt.signature, 'base64'));
     } catch {
       return false;
     }

@@ -75,12 +75,17 @@ describe('Rfc7807ExceptionFilter', () => {
       expect.objectContaining({
         title: 'Contract Error',
         code: ErrorCode.SETTLEMENT_FAILED,
-        detail: ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage,
-        retryable: true,
+        // #641: an already-filled order is a conflict, not a transient failure.
+        detail: 'Marketplace order is already filled',
+        retryable: false,
         contract: {
           address: 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC',
           method: 'buy_order',
           rawErrorCode: 5,
+          code: StableErrorCode.DEX_ORDER_ALREADY_FILLED,
+          category: 'DEX',
+          errorClass: 'conflict',
+          retryStrategy: 'none',
         },
       }),
     );

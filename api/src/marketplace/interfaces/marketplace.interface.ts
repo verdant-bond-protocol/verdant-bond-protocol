@@ -60,6 +60,8 @@ export type FillabilityStatus = 'fully_fillable' | 'partially_fillable' | 'unfil
 
 export type LiquidityTier = 'LIQUID' | 'MODERATE' | 'ILLIQUID';
 
+export type PriceImpactLimitSource = 'tier' | 'caller';
+
 export interface PriceImpactConfig {
   illiquidThresholdAmount: string;
   moderateThresholdAmount: string;
@@ -78,7 +80,19 @@ export interface PriceImpactEvaluation {
   averageExecutionPrice: string;
   totalCost: string;
   priceImpactBps: number;
+  /** Effective cap: the stricter of the tier cap and the caller's tolerance (#638). */
   maxAllowedImpactBps: number;
+  /** The tier's configured cap before any caller tolerance is applied. */
+  tierMaxImpactBps?: number;
+  /** Caller-supplied slippage tolerance, when given. */
+  callerMaxImpactBps?: number;
+  /** Which limit produced `maxAllowedImpactBps`. */
+  limitSource?: PriceImpactLimitSource;
+  /** Premium of the targeted order's price over the best ask, in bps (targeted fills only). */
+  fillPremiumBps?: number;
+  /** Cheapest resting ask — the order to retry against when the premium is too high. */
+  bestOrderId?: number;
+  targetOrderId?: number;
   isAllowed: boolean;
   depthConsumptionRatioBps: number;
   maxDepthConsumptionBps: number;

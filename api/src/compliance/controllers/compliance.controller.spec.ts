@@ -7,6 +7,7 @@ import { KycStoreService } from '../../common/services/kyc-store.service';
 import { TrancheType } from '../interfaces/compliance.interface';
 import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
 import { ComplianceSnapshotService } from '../services/compliance-snapshot.service';
+import { KycCommitmentService } from '../services/kyc-commitment.service';
 
 describe('ComplianceController', () => {
   let controller: ComplianceController;
@@ -42,6 +43,7 @@ describe('ComplianceController', () => {
         { provide: SanctionsService, useValue: sanctionsService },
         { provide: KycStoreService, useValue: mockKycStore },
         { provide: ComplianceSnapshotService, useValue: { get: jest.fn(), verify: jest.fn() } },
+        { provide: KycCommitmentService, useValue: {} },
       ],
     }).compile();
 
@@ -130,6 +132,7 @@ describe('ComplianceController', () => {
           { provide: SanctionsService, useValue: sanctionsService },
           { provide: KycStoreService, useValue: mockKycStore },
           { provide: ComplianceSnapshotService, useValue: { get: jest.fn(), verify: jest.fn() } },
+          { provide: KycCommitmentService, useValue: {} },
           { provide: InvestorEligibilityCacheService, useValue: cache },
         ],
       }).compile();
@@ -148,14 +151,15 @@ describe('ComplianceController', () => {
       expect(cache.size()).toBe(1);
 
       // Invalidate for this address
-      const invRes = controller.invalidateInvestorEligibility(WALLET, { reason: 'test:status_change' });
+      const invRes = await controller.invalidateInvestorEligibility(WALLET, { reason: 'test:status_change' });
       expect(invRes.dropped).toBe(1);
       expect(cache.size()).toBe(0);
 
       // Flush all
-      cache.set(WALLET, '10', { eligible: true }, KycStatus.ACCREDITED, 0);
+      // The invalidation above bumped the investor's generation; write at the current one.
+      cache.set(WALLET, '10', { eligible: true }, KycStatus.ACCREDITED, cache.generationOf(WALLET));
       expect(cache.size()).toBe(1);
-      const flushRes = controller.flushEligibilityCache({ user: { isAdmin: true, walletAddress: 'GADMIN' } });
+      const flushRes = await controller.flushEligibilityCache({ user: { isAdmin: true, walletAddress: 'GADMIN' } });
       expect(flushRes.flushed).toBe(1);
       expect(cache.size()).toBe(0);
     });

@@ -32,6 +32,8 @@ describe('Error taxonomy contract (#376)', () => {
     'COUPON_ALREADY_CLAIMED',
     'OWNERSHIP_TRANSFER_PENDING',
     'OWNERSHIP_TRANSFER_EXPIRED',
+    'PRICE_IMPACT_EXCEEDED',
+    'RECEIPT_PENDING',
   ];
 
   /** Frozen retryability map — clients use this to decide whether to retry. */
@@ -54,6 +56,8 @@ describe('Error taxonomy contract (#376)', () => {
     COUPON_ALREADY_CLAIMED: false,
     OWNERSHIP_TRANSFER_PENDING: false,
     OWNERSHIP_TRANSFER_EXPIRED: false,
+    PRICE_IMPACT_EXCEEDED: false,
+    RECEIPT_PENDING: true,
   };
 
   /**
@@ -151,6 +155,16 @@ describe('Error taxonomy contract (#376)', () => {
       safeMessage: 'The ownership transfer proposal has expired. Please initiate a new transfer.',
       remediation: 'Initiate a new ownership transfer; the previous proposal has expired.',
       remediationHint: 'The acceptance window (TTL ledgers) elapsed. Issue a fresh propose_admin call to restart the process.',
+    },
+    PRICE_IMPACT_EXCEEDED: {
+      safeMessage: 'This trade exceeds the price-impact or slippage limit for this market.',
+      remediation: 'Reduce the amount to `context.suggestedMaxAmount`, choose the best-priced order (`context.bestOrderId`), or raise your own `maxPriceImpactBps`.',
+      remediationHint: 'Thin-market guard (#638). No contract call or nonce was consumed. Inspect context.limitSource and the per-bond impact-limit config.',
+    },
+    RECEIPT_PENDING: {
+      safeMessage: 'The action was applied but its signed receipt is not yet issued.',
+      remediation: 'Retry with the same `Idempotency-Key` (see `context.idempotencyKey`); the action will not be applied twice.',
+      remediationHint: 'Audit write was rejected after a governance mutation (#632). The mutation is parked as pending_receipt; check audit store capacity, then have the caller retry with the same Idempotency-Key.',
     },
   };
 
