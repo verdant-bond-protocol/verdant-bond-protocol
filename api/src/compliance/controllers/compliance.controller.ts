@@ -29,6 +29,8 @@ import {
 } from '../interfaces/compliance.interface';
 
 import { KycStoreService } from '../../common/services/kyc-store.service';
+import { InvestorEligibilityCacheService } from '../../auth/investor-eligibility-cache.service';
+import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
 
 import { KycCommitmentService, OnChainKycCommitment, RegulatorDisclosureRequest, RegulatorDisclosurePackage, EligibilityTier } from '../services/kyc-commitment.service';
 import {
@@ -61,6 +63,7 @@ export class ComplianceController {
     private readonly snapshots: ComplianceSnapshotService,
     private readonly kycCommitmentService: KycCommitmentService,
     @Optional() private readonly explanationService?: InvestorRejectionExplanationService,
+    @Optional() private readonly eligibilityCache?: InvestorEligibilityCacheService,
   ) {}
 
   @Get('snapshots/:eventId')
@@ -81,24 +84,80 @@ export class ComplianceController {
 
   /**
    * Evaluate investor eligibility without constructing or submitting a transaction.
+   * Utilizes investor eligibility cache with automatic invalidation on status changes.
    */
   @Post('evaluate')
   @HttpCode(HttpStatus.OK)
   async evaluate(@Body() dto: EvaluateEligibilityDto): Promise<EligibilityDecision> {
-    const kycRecord = await this.kycStore.get(dto.investorAddress);
-    return this.rulesEngine.evaluateEligibility({
-      investorAddress: dto.investorAddress,
-      bondId: dto.bondId,
-      tranche: dto.tranche ?? TrancheType.STANDARD,
-      jurisdiction: dto.jurisdiction ?? 'US',
-      purchaseAmount: dto.purchaseAmount,
-      kycRecord: kycRecord
-        ? {
-            status: kycRecord.status,
-            expiresAt: kycRecord.expiresAt,
-          }
-        : undefined,
+    const compute = async () => {
+      const kycRecord = await this.kycStore.get(dto.investorAddress);
+      const decision = this.rulesEngine.evaluateEligibility({
+        investorAddress: dto.investorAddress,
+        bondId: dto.bondId,
+        tranche: dto.tranche ?? TrancheType.STANDARD,
+        jurisdiction: dto.jurisdiction ?? 'US',
+        purchaseAmount: dto.purchaseAmount,
+        kycRecord: kycRecord
+          ? {
+              status: kycRecord.status,
+              expiresAt: kycRecord.expiresAt,
+            }
+          : undefined,
+      });
+      return {
+        decision,
+        kycStatus: kycRecord?.status ?? KycStatus.PENDING,
+      };
+    };
+
+    if (this.eligibilityCache) {
+      return this.eligibilityCache.getOrCompute(dto.investorAddress, String(dto.bondId), compute);
+    }
+    return (await compute()).decision;
+  }
+
+  /**
+   * Admin endpoint: retrieve audit log of eligibility cache invalidations.
+   */
+  @Get('eligibility/invalidations')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  getEligibilityInvalidations(@Query('investor') investor?: string) {
+    if (!this.eligibilityCache) return [];
+    return this.eligibilityCache.listInvalidations(investor);
+  }
+
+  /**
+   * Admin endpoint: flush all entries in the investor eligibility cache.
+   */
+  @Post('eligibility/flush')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  flushEligibilityCache(@Req() req: any) {
+    if (!this.eligibilityCache) return { flushed: 0 };
+    const user = req.user as AuthenticatedUser;
+    const dropped = this.eligibilityCache.flushAll({
+      isAdmin: !!user?.isAdmin,
+      address: user?.walletAddress || 'admin',
     });
+    return { flushed: dropped };
+  }
+
+  /**
+   * Admin endpoint: invalidate eligibility cache for a specific investor.
+   */
+  @Post('eligibility/invalidate/:address')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  invalidateInvestorEligibility(
+    @Param('address') address: string,
+    @Body() body: { reason?: string },
+  ) {
+    if (!this.eligibilityCache) return { address, dropped: 0 };
+    const dropped = this.eligibilityCache.invalidateInvestor(
+      address,
+      body?.reason ?? 'admin:manual_invalidation',
+    );
+    return { address, dropped };
   }
 
   /**

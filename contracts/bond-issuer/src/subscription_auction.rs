@@ -256,6 +256,68 @@ impl BondIssuer {
         Ok(())
     }
 
+    /// Safe cancellation of a pending subscription order before auction cutoff (#639).
+    /// Can only be called before cutoff on an unsettled auction by the authenticated investor.
+    /// Atomically returns 100% of escrowed capital back to the investor.
+    pub fn cancel_subscription(
+        env: Env,
+        investor: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<(), BondError> {
+        investor.require_auth();
+        consume_nonce(&env, &investor, nonce)?;
+        let mut auction = load(&env, bond_id)?;
+        let ledger = env.ledger().sequence();
+        if auction.settled || ledger >= auction.config.cutoff_ledger {
+            return Err(BondError::AuctionClosed);
+        }
+        let config = Self::get_bond(env.clone(), bond_id)?;
+        let mut found_index: Option<u32> = None;
+        let mut refund_amount: i128 = 0;
+        let mut cancelled_units: i128 = 0;
+
+        for index in 0..auction.orders.len() {
+            let order = auction.orders.get(index).unwrap();
+            if order.wallet == investor {
+                if order.requested <= 0 {
+                    return Err(BondError::ZeroAmount);
+                }
+                cancelled_units = order.requested;
+                refund_amount = cancelled_units
+                    .checked_mul(config.face_value)
+                    .ok_or(BondError::Overflow)?;
+                found_index = Some(index);
+                break;
+            }
+        }
+
+        let order_idx = found_index.ok_or(BondError::ZeroAmount)?;
+        let mut order = auction.orders.get(order_idx).unwrap();
+        order.requested = 0;
+        order.refunded = order
+            .refunded
+            .checked_add(refund_amount)
+            .ok_or(BondError::Overflow)?;
+        auction.orders.set(order_idx, order);
+
+        env.storage()
+            .persistent()
+            .set(&AuctionKey::SubscriptionAuction(bond_id), &auction);
+
+        token::Client::new(&env, &auction.config.token).transfer(
+            &env.current_contract_address(),
+            &investor,
+            &refund_amount,
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "subscription_cancelled"), bond_id),
+            (investor, cancelled_units, refund_amount),
+        );
+        Ok(())
+    }
+
     /// Permissionless, bounded, atomic allocation and refund after cutoff.
     /// A matured tranche cancels instead, refunding every committed token.
     pub fn settle_subscription(env: Env, bond_id: u64) -> Result<AuctionState, BondError> {

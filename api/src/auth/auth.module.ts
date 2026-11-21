@@ -25,7 +25,7 @@ import { SessionService } from './session.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService, SessionService],
-  exports: [AuthService, KycService, KycGuard, RbacService, SessionService],
+  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService, SessionService, InvestorEligibilityCacheService],
+  exports: [AuthService, KycService, KycGuard, RbacService, SessionService, InvestorEligibilityCacheService],
 })
 export class AuthModule {}

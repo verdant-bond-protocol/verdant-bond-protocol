@@ -183,6 +183,7 @@ export function digestMatchesReference(bytes: Buffer, reference: string): boolea
 
 export interface FetchEvidenceOptions {
   gateway: string;
+  fallbackGateways?: string[];
   timeoutMs: number;
   maxAttempts: number;
   maxBytes: number;
@@ -195,58 +196,101 @@ export interface FetchEvidenceOptions {
 const RETRYABLE_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 /**
- * Fetch evidence from the gateway and verify its digest.
+ * Fetch evidence from the gateway (with fallback gateways) and verify its digest.
  *
  * Retries (with linear backoff) only transient failures: network errors,
- * timeouts and 408/425/429/5xx. A digest mismatch, a 4xx, or oversize content
- * is deterministic and returned immediately -- retrying would only re-fetch
- * the same wrong bytes.
+ * timeouts and 408/425/429/5xx. If the primary gateway fails with transient
+ * errors, falls back to configured fallback gateways. A digest mismatch,
+ * a 4xx client error, or oversize content is deterministic and returned immediately.
  */
 export async function fetchAndVerifyEvidence(
   reference: string,
   options: FetchEvidenceOptions,
-): Promise<EvidenceVerificationResult & { attempts: number }> {
+): Promise<EvidenceVerificationResult & { attempts: number; gatewayUsed?: string }> {
   const doFetch = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const gateways = [options.gateway, ...(options.fallbackGateways ?? [])];
+  let totalAttempts = 0;
   let lastError = 'no attempt made';
 
-  for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs);
-    try {
-      const response = await doFetch(`${options.gateway}${reference}`, { signal: controller.signal });
-      if (!response.ok) {
-        lastError = `gateway returned status ${response.status}`;
-        if (!RETRYABLE_STATUS.has(response.status)) {
-          return { ...reject('NOT_RETRIEVABLE', `Evidence ${reference}: ${lastError}`), attempts: attempt };
-        }
-      } else {
-        const declared = Number(response.headers?.get?.('content-length'));
-        if (Number.isFinite(declared) && declared > options.maxBytes) {
-          return { ...reject('TOO_LARGE', `Evidence ${reference} exceeds ${options.maxBytes} bytes`), attempts: attempt };
-        }
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.length > options.maxBytes) {
-          return { ...reject('TOO_LARGE', `Evidence ${reference} exceeds ${options.maxBytes} bytes`), attempts: attempt };
-        }
-        if (!digestMatchesReference(bytes, reference)) {
-          return {
-            ...reject('DIGEST_MISMATCH', `Evidence ${reference}: content does not hash to the referenced digest`),
-            attempts: attempt,
+  for (const currentGateway of gateways) {
+    for (let attempt = 1; attempt <= options.maxAttempts; attempt++) {
+      totalAttempts++;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+      try {
+        const response = await doFetch(`${currentGateway}${reference}`, { signal: controller.signal });
+        if (!response.ok) {
+          lastError = `gateway ${currentGateway} returned status ${response.status}`;
+          if (!RETRYABLE_STATUS.has(response.status)) {
+            // Non-retryable status on primary gateway: try fallback if 404/gateway issue, or reject
+            if (response.status === 404 && gateways.indexOf(currentGateway) < gateways.length - 1) {
+              break; // Try next fallback gateway
+            }
+            const res: EvidenceVerificationResult & { attempts: number; gatewayUsed?: string } = {
+              ...reject('NOT_RETRIEVABLE', `Evidence ${reference}: ${lastError}`),
+              attempts: totalAttempts,
+            };
+            if (options.fallbackGateways && options.fallbackGateways.length > 0) {
+              res.gatewayUsed = currentGateway;
+            }
+            return res;
+          }
+        } else {
+          const declared = Number(response.headers?.get?.('content-length'));
+          if (Number.isFinite(declared) && declared > options.maxBytes) {
+            const res: EvidenceVerificationResult & { attempts: number; gatewayUsed?: string } = {
+              ...reject('TOO_LARGE', `Evidence ${reference} exceeds ${options.maxBytes} bytes`),
+              attempts: totalAttempts,
+            };
+            if (options.fallbackGateways && options.fallbackGateways.length > 0) {
+              res.gatewayUsed = currentGateway;
+            }
+            return res;
+          }
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.length > options.maxBytes) {
+            const res: EvidenceVerificationResult & { attempts: number; gatewayUsed?: string } = {
+              ...reject('TOO_LARGE', `Evidence ${reference} exceeds ${options.maxBytes} bytes`),
+              attempts: totalAttempts,
+            };
+            if (options.fallbackGateways && options.fallbackGateways.length > 0) {
+              res.gatewayUsed = currentGateway;
+            }
+            return res;
+          }
+          if (!digestMatchesReference(bytes, reference)) {
+            const res: EvidenceVerificationResult & { attempts: number; gatewayUsed?: string } = {
+              ...reject('DIGEST_MISMATCH', `Evidence ${reference}: content does not hash to the referenced digest`),
+              attempts: totalAttempts,
+            };
+            if (options.fallbackGateways && options.fallbackGateways.length > 0) {
+              res.gatewayUsed = currentGateway;
+            }
+            return res;
+          }
+          const res: EvidenceVerificationResult & { attempts: number; gatewayUsed?: string } = {
+            ...ok,
+            attempts: totalAttempts,
           };
+          if (options.fallbackGateways && options.fallbackGateways.length > 0) {
+            res.gatewayUsed = currentGateway;
+          }
+          return res;
         }
-        return { ...ok, attempts: attempt };
+      } catch (error) {
+        lastError = (error as Error).name === 'AbortError'
+          ? `timed out after ${options.timeoutMs}ms on ${currentGateway}`
+          : (error as Error).message;
+      } finally {
+        clearTimeout(timer);
       }
-    } catch (error) {
-      lastError = (error as Error).name === 'AbortError' ? `timed out after ${options.timeoutMs}ms` : (error as Error).message;
-    } finally {
-      clearTimeout(timer);
+      if (attempt < options.maxAttempts) await sleep((options.backoffMs ?? 250) * attempt);
     }
-    if (attempt < options.maxAttempts) await sleep((options.backoffMs ?? 250) * attempt);
   }
 
   return {
-    ...reject('NOT_RETRIEVABLE', `Evidence ${reference} could not be retrieved after ${options.maxAttempts} attempts: ${lastError}`),
-    attempts: options.maxAttempts,
+    ...reject('NOT_RETRIEVABLE', `Evidence ${reference} could not be retrieved after ${totalAttempts} attempts: ${lastError}`),
+    attempts: totalAttempts,
   };
 }
