@@ -10,13 +10,17 @@ import { AuthController } from '../auth/auth.controller';
 import { BondsController } from '../bonds/bonds.controller';
 import { OracleController } from '../oracle/oracle.controller';
 import { ProjectsController } from '../projects/projects.controller';
+import { MethodologyVersioningController } from '../projects/methodology-versioning.controller';
 import { MarketplaceController } from '../marketplace/marketplace.controller';
 import { ValuationController } from '../valuation/valuation.controller';
+import { QuoteConversionController } from '../valuation/quote-conversion.controller';
 import { PolicyConfigController } from '../policy/policy-config.controller';
 import { IntentReceiptController } from '../intent-receipts/intent-receipt.controller';
 import { JobsController } from '../workers/controllers/jobs.controller';
 
 import { FeesController } from '../fees/fees.controller';
+import { PayoutReconciliationController } from '../reconciliation/controllers/payout-reconciliation.controller';
+import { InvestorComplianceExportController } from '../exports/controllers/investor-compliance-export.controller';
 
 /**
  * Single source of truth for the API route authorization matrix (issue #X part 1).
@@ -154,6 +158,18 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: ProjectsController, method: 'escalateDocument', httpMethod: 'POST', path: 'projects/:id/documents/:hash/escalate', guards: [], role: 'public', mutation: true },
   { controller: ProjectsController, method: 'getDocumentHealth', httpMethod: 'GET', path: 'projects/:id/documents/:hash/health', guards: [], role: 'public', mutation: false },
 
+  // Methodology Versioning (#622)
+  { controller: MethodologyVersioningController, method: 'createDraft', httpMethod: 'POST', path: 'methodologies', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'activate', httpMethod: 'POST', path: 'methodologies/:id/versions/:version/activate', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'deprecate', httpMethod: 'POST', path: 'methodologies/:id/versions/:version/deprecate', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'list', httpMethod: 'GET', path: 'methodologies', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'getOne', httpMethod: 'GET', path: 'methodologies/:id/versions/:version', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'pinToBond', httpMethod: 'POST', path: 'methodologies/bonds/:bondId/pin', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'getBondPin', httpMethod: 'GET', path: 'methodologies/bonds/:bondId/pin', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'bindReport', httpMethod: 'POST', path: 'methodologies/reports/:reportId/bind', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'migrateLegacy', httpMethod: 'POST', path: 'methodologies/migrations/legacy', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'rollbackLegacy', httpMethod: 'POST', path: 'methodologies/migrations/legacy/rollback', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+
 
   // ---- Marketplace ----
   { controller: MarketplaceController, method: 'listQuoteAssets', httpMethod: 'GET', path: 'marketplace/quote-assets', guards: [], role: 'public', mutation: false },
@@ -181,8 +197,11 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: PolicyConfigController, method: 'rollback', httpMethod: 'POST', path: 'admin/config/policy/rollback', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   // ---- Fees (#301); large-integer amount contract in fees.large-integer.contract.spec.ts ----
   { controller: FeesController, method: 'preview', httpMethod: 'POST', path: 'fees/preview', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
-  // ---- Valuations (#204) ----
+  // ---- Valuations (#204) & Quotes (#620) ----
   { controller: ValuationController, method: 'getValuations', httpMethod: 'GET', path: 'valuations', guards: [], role: 'public', mutation: false },
+  { controller: QuoteConversionController, method: 'issueQuote', httpMethod: 'POST', path: 'valuations/quotes', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.REQUEST_CONVERSION_QUOTE], mutation: true },
+  { controller: QuoteConversionController, method: 'consumeQuote', httpMethod: 'POST', path: 'valuations/quotes/:id/consume', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.CONSUME_CONVERSION_QUOTE], mutation: true },
+  { controller: QuoteConversionController, method: 'getQuote', httpMethod: 'GET', path: 'valuations/quotes/:id', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.REQUEST_CONVERSION_QUOTE], mutation: false },
   // ---- Maintainer intent receipts (review surface; read-only + reviews) ----
   { controller: IntentReceiptController, method: 'list', httpMethod: 'GET', path: 'admin/intent-receipts', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'stats', httpMethod: 'GET', path: 'admin/intent-receipts/stats', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
@@ -191,4 +210,13 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: IntentReceiptController, method: 'get', httpMethod: 'GET', path: 'admin/intent-receipts/:id', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'verify', httpMethod: 'GET', path: 'admin/intent-receipts/:id/verify', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'review', httpMethod: 'POST', path: 'admin/intent-receipts/:id/reviews', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: true },
+
+  // ---- Payout reconciliation (#621) ----
+  { controller: PayoutReconciliationController, method: 'run', httpMethod: 'POST', path: 'api/v1/reconciliation/payouts/run', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: true },
+  { controller: PayoutReconciliationController, method: 'getReport', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/reports/:runId', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
+  { controller: PayoutReconciliationController, method: 'createAdjustment', httpMethod: 'POST', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: true },
+  { controller: PayoutReconciliationController, method: 'listAdjustments', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
+
+  // ---- Investor compliance export (#619) ----
+  { controller: InvestorComplianceExportController, method: 'exportCompliance', httpMethod: 'GET', path: 'api/v1/exports/investors/compliance', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.EXPORT_INVESTOR_COMPLIANCE], mutation: false },
 ];

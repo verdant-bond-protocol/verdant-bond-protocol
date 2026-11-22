@@ -8,12 +8,14 @@ export enum QuotaResource {
   CREATE_BOND = 'create_bond',
   SUBMIT_ORACLE_REPORT = 'submit_oracle_report',
   RECONCILE_HOLDERS = 'reconcile_holders',
+  RECONCILE_PAYOUTS = 'reconcile_payouts',
 }
 
 const QUOTA_LIMITS: Record<QuotaResource, number> = {
   [QuotaResource.CREATE_BOND]: 10, // Max 10 bonds per day per issuer
   [QuotaResource.SUBMIT_ORACLE_REPORT]: 100, // Max 100 reports per day per provider
   [QuotaResource.RECONCILE_HOLDERS]: 5, // Max 5 reconciliations per day per manager
+  [QuotaResource.RECONCILE_PAYOUTS]: 20, // Max 20 payout reconciliations per day per manager
 };
 
 const QUOTA_RESET_SECONDS = 86400; // Daily reset
