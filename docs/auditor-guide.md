@@ -18,7 +18,13 @@ The API provides two authenticated export endpoints optimized for audit complian
     *   `reports`: Every oracle telemetry report submitted (sequestration mass, signatures, status).
     *   `relatedBonds`: Deployed bond IDs backing this specific project.
 
-### 2. Bond Audit Export
+### 2. Bond Lifecycle Audit Bundle (#640)
+*   **Endpoint**: `GET /api/v1/audit/bond-lifecycle/:id?caseId=AUD-640&asOf=2026-11-22T00:00:00.000Z`
+*   **Authentication**: Requires JWT Bearer Token and admin access.
+*   **Response Format**: Deterministic, offline-verifiable JSON with a chained event log, stage/path coverage, financial invariants, source-chain verification, and a canonical SHA-256 digest.
+*   **Details**: See `docs/bond-lifecycle-audit-bundle.md`.
+
+### 3. Bond Audit Export
 *   **Endpoint**: `GET /bonds/:id/export`
 *   **Authentication**: Requires JWT Bearer Token (`JwtAuthGuard`).
 *   **Response Format**: Deterministic JSON including:

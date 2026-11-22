@@ -15,6 +15,9 @@ access to evidence leaves a trail.
 Implementation: `api/src/audit/evidence-bundle.ts`. Tests:
 `api/src/audit/evidence-bundle.spec.ts`.
 
+For a whole-bond, lifecycle-specific bundle with normal/failure/retry/
+authorization coverage, see `docs/bond-lifecycle-audit-bundle.md`.
+
 ## What is kept, digested or dropped
 
 | Class | Examples | In the bundle |

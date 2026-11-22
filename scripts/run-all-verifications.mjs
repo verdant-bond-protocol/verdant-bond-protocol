@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const suites = [
+  { name: 'Issue #640 (Reproducible Bond Lifecycle Audit Bundle)', script: 'verify-bond-lifecycle-audit-bundle.mjs' },
   { name: 'Issue #367 (Resource Budget Tests)', script: 'verify-resource-budgets.mjs' },
   { name: 'Issue #368 (Cross-Service Contract Map)', script: 'verify-contract-map.mjs' },
   { name: 'Issue #370 (Safe Public-Status Model)', script: 'verify-status-model.mjs' },

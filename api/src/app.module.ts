@@ -16,6 +16,7 @@ import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { ExportsModule } from './exports/exports.module';
 import { ComplianceModule } from './compliance/compliance.module';
 import { AuditModule } from './audit/audit.module';
+import { BondLifecycleAuditModule } from './audit/bond-lifecycle-audit.module';
 import { RecoveryModule } from './recovery/recovery.module';
 import { MigrationSafetyModule } from './migrations/migration-safety.module';
 import { ImpersonationModule } from './impersonation/impersonation.module';
@@ -59,6 +60,7 @@ import { ResilienceModule } from './resilience/resilience.module';
     ExportsModule,
     ComplianceModule,
     AuditModule,
+    BondLifecycleAuditModule,
     LedgerModule,
     RecoveryModule,
     MigrationSafetyModule,
