@@ -20,6 +20,7 @@ import { JobsController } from '../workers/controllers/jobs.controller';
 
 import { FeesController } from '../fees/fees.controller';
 import { PayoutReconciliationController } from '../reconciliation/controllers/payout-reconciliation.controller';
+import { InvestorComplianceExportController } from '../exports/controllers/investor-compliance-export.controller';
 
 /**
  * Single source of truth for the API route authorization matrix (issue #X part 1).
@@ -215,4 +216,7 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: PayoutReconciliationController, method: 'getReport', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/reports/:runId', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
   { controller: PayoutReconciliationController, method: 'createAdjustment', httpMethod: 'POST', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: true },
   { controller: PayoutReconciliationController, method: 'listAdjustments', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
+
+  // ---- Investor compliance export (#619) ----
+  { controller: InvestorComplianceExportController, method: 'exportCompliance', httpMethod: 'GET', path: 'api/v1/exports/investors/compliance', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.EXPORT_INVESTOR_COMPLIANCE], mutation: false },
 ];

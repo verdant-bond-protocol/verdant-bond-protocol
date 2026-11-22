@@ -26,6 +26,7 @@ export enum Permission {
   CONSUME_CONVERSION_QUOTE = 'consume_conversion_quote',
   MANAGE_METHODOLOGIES = 'manage_methodologies',
   RECONCILE_PAYOUTS = 'reconcile_payouts',
+  EXPORT_INVESTOR_COMPLIANCE = 'export_investor_compliance',
 }
 
 export const RolePermissions: Record<Role, Permission[]> = {
@@ -40,6 +41,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
     Permission.MANAGE_METHODOLOGIES,
+    Permission.EXPORT_INVESTOR_COMPLIANCE,
   ],
   [Role.INVESTOR]: [
     Permission.SUBSCRIBE_BOND,
@@ -48,6 +50,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
     Permission.RECONCILE_PAYOUTS,
+    Permission.EXPORT_INVESTOR_COMPLIANCE,
   ],
   [Role.SETTLEMENT_MANAGER]: [
     Permission.RECONCILE_HOLDERS,
@@ -59,5 +62,6 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
     Permission.RECONCILE_PAYOUTS,
+    Permission.EXPORT_INVESTOR_COMPLIANCE,
   ],
 };
