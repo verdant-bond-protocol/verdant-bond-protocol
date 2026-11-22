@@ -34,6 +34,11 @@ describe('Error taxonomy contract (#376)', () => {
     'OWNERSHIP_TRANSFER_EXPIRED',
     'PRICE_IMPACT_EXCEEDED',
     'RECEIPT_PENDING',
+    'QUOTE_EXPIRED',
+    'QUOTE_ALREADY_USED',
+    'QUOTE_SLIPPAGE_EXCEEDED',
+    'STALE_RATE_SOURCE',
+    'QUOTE_BINDING_MISMATCH',
   ];
 
   /** Frozen retryability map — clients use this to decide whether to retry. */
@@ -58,6 +63,11 @@ describe('Error taxonomy contract (#376)', () => {
     OWNERSHIP_TRANSFER_EXPIRED: false,
     PRICE_IMPACT_EXCEEDED: false,
     RECEIPT_PENDING: true,
+    QUOTE_EXPIRED: false,
+    QUOTE_ALREADY_USED: false,
+    QUOTE_SLIPPAGE_EXCEEDED: false,
+    STALE_RATE_SOURCE: true,
+    QUOTE_BINDING_MISMATCH: false,
   };
 
   /**
@@ -165,6 +175,31 @@ describe('Error taxonomy contract (#376)', () => {
       safeMessage: 'The action was applied but its signed receipt is not yet issued.',
       remediation: 'Retry with the same `Idempotency-Key` (see `context.idempotencyKey`); the action will not be applied twice.',
       remediationHint: 'Audit write was rejected after a governance mutation (#632). The mutation is parked as pending_receipt; check audit store capacity, then have the caller retry with the same Idempotency-Key.',
+    },
+    QUOTE_EXPIRED: {
+      safeMessage: 'The conversion quote has expired. Please request a new quote.',
+      remediation: 'Request a fresh conversion quote and retry within its TTL.',
+      remediationHint: 'Quote TTL elapsed before consumption (#620). No funds were converted.',
+    },
+    QUOTE_ALREADY_USED: {
+      safeMessage: 'This conversion quote has already been consumed.',
+      remediation: 'Request a new conversion quote, or retry with the original `Idempotency-Key` if checking prior result.',
+      remediationHint: 'Single-use quote guard triggered (#620). If this was a network retry, pass the original Idempotency-Key.',
+    },
+    QUOTE_SLIPPAGE_EXCEEDED: {
+      safeMessage: 'The conversion rate deviates too far from the reference rate.',
+      remediation: 'Wait for market rates to stabilize or request a quote within the allowed slippage tolerance.',
+      remediationHint: 'Rate exceeded configured maxSlippageBps (#620). Inspect rate source health.',
+    },
+    STALE_RATE_SOURCE: {
+      safeMessage: 'Exchange rate data is currently stale. Conversion cannot proceed.',
+      remediation: 'Retry shortly once the rate source refreshes.',
+      remediationHint: 'Rate observation age exceeded maxRateAgeMs (#620); fail-closed.',
+    },
+    QUOTE_BINDING_MISMATCH: {
+      safeMessage: 'This conversion quote is bound to a different account or purpose.',
+      remediation: 'Request a quote using the same account and purpose that will consume it.',
+      remediationHint: 'Caller account or purpose did not match the quote binding (#620).',
     },
   };
 

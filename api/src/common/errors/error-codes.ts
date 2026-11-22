@@ -28,6 +28,13 @@ export enum ErrorCode {
 
   // ── Compliance & governance ───────────────────────────────────────────────
   RECEIPT_PENDING = 'RECEIPT_PENDING',
+
+  // ── Cross-currency quotes (#620) ──────────────────────────────────────────
+  QUOTE_EXPIRED = 'QUOTE_EXPIRED',
+  QUOTE_ALREADY_USED = 'QUOTE_ALREADY_USED',
+  QUOTE_SLIPPAGE_EXCEEDED = 'QUOTE_SLIPPAGE_EXCEEDED',
+  STALE_RATE_SOURCE = 'STALE_RATE_SOURCE',
+  QUOTE_BINDING_MISMATCH = 'QUOTE_BINDING_MISMATCH',
 }
 
 export interface ErrorMetadata {
@@ -189,6 +196,38 @@ export const ErrorTaxonomy: Record<ErrorCode, Omit<ErrorMetadata, 'code'>> = {
     safeMessage: 'The action was applied but its signed receipt is not yet issued.',
     remediationHint: 'Audit write was rejected after a governance mutation (#632). The mutation is parked as pending_receipt; check audit store capacity, then have the caller retry with the same Idempotency-Key.',
     remediation: 'Retry with the same `Idempotency-Key` (see `context.idempotencyKey`); the action will not be applied twice.',
+  },
+
+  // ── Cross-currency quotes (#620) ────────────────────────────────────────────
+  [ErrorCode.QUOTE_EXPIRED]: {
+    retryable: false,
+    safeMessage: 'The conversion quote has expired. Please request a new quote.',
+    remediationHint: 'Quote TTL elapsed before consumption (#620). No funds were converted.',
+    remediation: 'Request a fresh conversion quote and retry within its TTL.',
+  },
+  [ErrorCode.QUOTE_ALREADY_USED]: {
+    retryable: false,
+    safeMessage: 'This conversion quote has already been consumed.',
+    remediationHint: 'Single-use quote guard triggered (#620). If this was a network retry, pass the original Idempotency-Key.',
+    remediation: 'Request a new conversion quote, or retry with the original `Idempotency-Key` if checking prior result.',
+  },
+  [ErrorCode.QUOTE_SLIPPAGE_EXCEEDED]: {
+    retryable: false,
+    safeMessage: 'The conversion rate deviates too far from the reference rate.',
+    remediationHint: 'Rate exceeded configured maxSlippageBps (#620). Inspect rate source health.',
+    remediation: 'Wait for market rates to stabilize or request a quote within the allowed slippage tolerance.',
+  },
+  [ErrorCode.STALE_RATE_SOURCE]: {
+    retryable: true,
+    safeMessage: 'Exchange rate data is currently stale. Conversion cannot proceed.',
+    remediationHint: 'Rate observation age exceeded maxRateAgeMs (#620); fail-closed.',
+    remediation: 'Retry shortly once the rate source refreshes.',
+  },
+  [ErrorCode.QUOTE_BINDING_MISMATCH]: {
+    retryable: false,
+    safeMessage: 'This conversion quote is bound to a different account or purpose.',
+    remediationHint: 'Caller account or purpose did not match the quote binding (#620).',
+    remediation: 'Request a quote using the same account and purpose that will consume it.',
   },
 };
 

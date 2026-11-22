@@ -22,6 +22,8 @@ export enum Permission {
   APPROVE_PROJECT = 'approve_project',
   REJECT_PROJECT = 'reject_project',
   RECONCILE_CACHE = 'reconcile_cache',
+  REQUEST_CONVERSION_QUOTE = 'request_conversion_quote',
+  CONSUME_CONVERSION_QUOTE = 'consume_conversion_quote',
 }
 
 export const RolePermissions: Record<Role, Permission[]> = {
@@ -33,11 +35,15 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.EXPORT_BOND,
     Permission.APPROVE_PROJECT,
     Permission.REJECT_PROJECT,
+    Permission.REQUEST_CONVERSION_QUOTE,
+    Permission.CONSUME_CONVERSION_QUOTE,
   ],
   [Role.INVESTOR]: [
     Permission.SUBSCRIBE_BOND,
     Permission.CLAIM_CREDITS,
     Permission.TRANSFER_BOND,
+    Permission.REQUEST_CONVERSION_QUOTE,
+    Permission.CONSUME_CONVERSION_QUOTE,
   ],
   [Role.SETTLEMENT_MANAGER]: [
     Permission.RECONCILE_HOLDERS,
@@ -46,5 +52,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.SWEEP_UNDISTRIBUTED,
     Permission.REGISTER_PROVIDER,
     Permission.MANAGE_INCIDENTS,
+    Permission.REQUEST_CONVERSION_QUOTE,
+    Permission.CONSUME_CONVERSION_QUOTE,
   ],
 };

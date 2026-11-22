@@ -68,6 +68,11 @@ Field guarantees:
 | `OWNERSHIP_TRANSFER_EXPIRED` | 400 | no | Acceptance window elapsed. | Initiate a fresh proposal. |
 | `RECEIPT_PENDING` | 503 | yes | Governance action applied; signed receipt not yet issued (#632). | Retry with the same `Idempotency-Key`. |
 | `PRICE_IMPACT_EXCEEDED` | 400 | no | Secondary-market trade breaches the tier or caller price-impact limit (#638). | Use `context.suggestedMaxAmount` / `context.bestOrderId`, or loosen `maxPriceImpactBps`. |
+| `QUOTE_EXPIRED` | 410 | no | Conversion quote TTL elapsed before consumption (#620). | Request a fresh conversion quote. |
+| `QUOTE_ALREADY_USED` | 409 | no | Conversion quote already consumed (#620). | Request a new quote or retry with original `Idempotency-Key`. |
+| `QUOTE_SLIPPAGE_EXCEEDED` | 400 | no | Quote rate deviates beyond `maxSlippageBps` (#620). | Wait for market stabilization or adjust tolerance. |
+| `STALE_RATE_SOURCE` | 503 | yes | Rate source data is older than `maxRateAgeMs` (#620). | Retry shortly once rate source refreshes. |
+| `QUOTE_BINDING_MISMATCH` | 403 | no | Caller account or purpose does not match quote binding (#620). | Request a quote for the matching account and purpose. |
 
 The HTTP column is the canonical status for each code; the response's own
 `status` field is authoritative. The machine `code`, `retryable` flag and

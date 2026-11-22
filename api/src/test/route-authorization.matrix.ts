@@ -12,6 +12,7 @@ import { OracleController } from '../oracle/oracle.controller';
 import { ProjectsController } from '../projects/projects.controller';
 import { MarketplaceController } from '../marketplace/marketplace.controller';
 import { ValuationController } from '../valuation/valuation.controller';
+import { QuoteConversionController } from '../valuation/quote-conversion.controller';
 import { PolicyConfigController } from '../policy/policy-config.controller';
 import { IntentReceiptController } from '../intent-receipts/intent-receipt.controller';
 import { JobsController } from '../workers/controllers/jobs.controller';
@@ -181,8 +182,11 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: PolicyConfigController, method: 'rollback', httpMethod: 'POST', path: 'admin/config/policy/rollback', guards: [JwtAuthGuard, AdminGuard, IntentGuard], role: 'admin', mutation: true },
   // ---- Fees (#301); large-integer amount contract in fees.large-integer.contract.spec.ts ----
   { controller: FeesController, method: 'preview', httpMethod: 'POST', path: 'fees/preview', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
-  // ---- Valuations (#204) ----
+  // ---- Valuations (#204) & Quotes (#620) ----
   { controller: ValuationController, method: 'getValuations', httpMethod: 'GET', path: 'valuations', guards: [], role: 'public', mutation: false },
+  { controller: QuoteConversionController, method: 'issueQuote', httpMethod: 'POST', path: 'valuations/quotes', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.REQUEST_CONVERSION_QUOTE], mutation: true },
+  { controller: QuoteConversionController, method: 'consumeQuote', httpMethod: 'POST', path: 'valuations/quotes/:id/consume', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.CONSUME_CONVERSION_QUOTE], mutation: true },
+  { controller: QuoteConversionController, method: 'getQuote', httpMethod: 'GET', path: 'valuations/quotes/:id', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.REQUEST_CONVERSION_QUOTE], mutation: false },
   // ---- Maintainer intent receipts (review surface; read-only + reviews) ----
   { controller: IntentReceiptController, method: 'list', httpMethod: 'GET', path: 'admin/intent-receipts', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'stats', httpMethod: 'GET', path: 'admin/intent-receipts/stats', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
