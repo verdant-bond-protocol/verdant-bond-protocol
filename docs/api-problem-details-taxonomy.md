@@ -73,6 +73,10 @@ Field guarantees:
 | `QUOTE_SLIPPAGE_EXCEEDED` | 400 | no | Quote rate deviates beyond `maxSlippageBps` (#620). | Wait for market stabilization or adjust tolerance. |
 | `STALE_RATE_SOURCE` | 503 | yes | Rate source data is older than `maxRateAgeMs` (#620). | Retry shortly once rate source refreshes. |
 | `QUOTE_BINDING_MISMATCH` | 403 | no | Caller account or purpose does not match quote binding (#620). | Request a quote for the matching account and purpose. |
+| `METHODOLOGY_TAMPER_DETECTED` | 500 | no | Stored methodology hash failed verification (#622). | Contact a protocol maintainer. |
+| `METHODOLOGY_IMMUTABLE` | 409 | no | Active methodology version cannot be modified (#622). | Publish a new methodology version. |
+| `METHODOLOGY_ALREADY_PINNED` | 409 | no | Bond already has a permanently pinned methodology (#622). | Use the pinned version or an approved later-version override. |
+| `METHODOLOGY_VERSION_NOT_ALLOWED` | 400 | no | Draft, deprecated, or unapproved methodology version (#622). | Use the pinned active version or supply an approved override. |
 
 The HTTP column is the canonical status for each code; the response's own
 `status` field is authoritative. The machine `code`, `retryable` flag and

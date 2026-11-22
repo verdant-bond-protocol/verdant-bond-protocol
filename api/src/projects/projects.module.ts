@@ -7,16 +7,19 @@ import { IpfsHealthService } from './ipfs-health.service';
 import { IpfsUploadPolicy } from './ipfs-upload.policy';
 import { IpfsDocumentCacheService } from './ipfs-document-cache.service';
 import { IpfsAvailabilityService } from './ipfs-availability.service';
+import { MethodologyVersioningService } from './methodology-versioning.service';
+import { MethodologyVersioningController } from './methodology-versioning.controller';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
-  controllers: [ProjectsController],
+  controllers: [ProjectsController, MethodologyVersioningController],
   providers: [
     ProjectsService,
     IpfsService,
     IpfsHealthService,
     IpfsDocumentCacheService,
     IpfsAvailabilityService,
+    MethodologyVersioningService,
     {
       provide: IpfsUploadPolicy,
       useFactory: () => new IpfsUploadPolicy(),
@@ -28,6 +31,7 @@ import { IpfsAvailabilityService } from './ipfs-availability.service';
     ProjectsService,
     IpfsDocumentCacheService,
     IpfsAvailabilityService,
+    MethodologyVersioningService,
   ],
 })
 export class ProjectsModule {}

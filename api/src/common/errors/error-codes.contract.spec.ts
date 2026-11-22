@@ -39,6 +39,10 @@ describe('Error taxonomy contract (#376)', () => {
     'QUOTE_SLIPPAGE_EXCEEDED',
     'STALE_RATE_SOURCE',
     'QUOTE_BINDING_MISMATCH',
+    'METHODOLOGY_TAMPER_DETECTED',
+    'METHODOLOGY_IMMUTABLE',
+    'METHODOLOGY_ALREADY_PINNED',
+    'METHODOLOGY_VERSION_NOT_ALLOWED',
   ];
 
   /** Frozen retryability map — clients use this to decide whether to retry. */
@@ -68,6 +72,10 @@ describe('Error taxonomy contract (#376)', () => {
     QUOTE_SLIPPAGE_EXCEEDED: false,
     STALE_RATE_SOURCE: true,
     QUOTE_BINDING_MISMATCH: false,
+    METHODOLOGY_TAMPER_DETECTED: false,
+    METHODOLOGY_IMMUTABLE: false,
+    METHODOLOGY_ALREADY_PINNED: false,
+    METHODOLOGY_VERSION_NOT_ALLOWED: false,
   };
 
   /**
@@ -200,6 +208,26 @@ describe('Error taxonomy contract (#376)', () => {
       safeMessage: 'This conversion quote is bound to a different account or purpose.',
       remediation: 'Request a quote using the same account and purpose that will consume it.',
       remediationHint: 'Caller account or purpose did not match the quote binding (#620).',
+    },
+    METHODOLOGY_TAMPER_DETECTED: {
+      safeMessage: 'Methodology integrity verification failed.',
+      remediation: 'Contact a protocol maintainer; this methodology version cannot be trusted.',
+      remediationHint: 'Recomputed SHA-256 of methodology document did not match stored contentHash (#622).',
+    },
+    METHODOLOGY_IMMUTABLE: {
+      safeMessage: 'Active methodology versions are immutable and cannot be modified.',
+      remediation: 'Publish a new methodology version instead of editing an active one.',
+      remediationHint: 'Attempted to mutate an active methodology version (#622). Create a new version instead.',
+    },
+    METHODOLOGY_ALREADY_PINNED: {
+      safeMessage: 'This bond already has a permanently pinned methodology version.',
+      remediation: 'Use the bond’s existing pinned methodology or record an approved later-version report override.',
+      remediationHint: 'Bond methodology pin is write-once at issuance (#622).',
+    },
+    METHODOLOGY_VERSION_NOT_ALLOWED: {
+      safeMessage: 'The specified methodology version is not permitted for this operation.',
+      remediation: 'Use the bond’s pinned active methodology version or provide an approved later-version override.',
+      remediationHint: 'Draft, deprecated, or unapproved methodology version rejected (#622).',
     },
   };
 

@@ -24,6 +24,7 @@ export enum Permission {
   RECONCILE_CACHE = 'reconcile_cache',
   REQUEST_CONVERSION_QUOTE = 'request_conversion_quote',
   CONSUME_CONVERSION_QUOTE = 'consume_conversion_quote',
+  MANAGE_METHODOLOGIES = 'manage_methodologies',
 }
 
 export const RolePermissions: Record<Role, Permission[]> = {
@@ -37,6 +38,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.REJECT_PROJECT,
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
+    Permission.MANAGE_METHODOLOGIES,
   ],
   [Role.INVESTOR]: [
     Permission.SUBSCRIBE_BOND,

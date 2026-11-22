@@ -10,6 +10,7 @@ import { AuthController } from '../auth/auth.controller';
 import { BondsController } from '../bonds/bonds.controller';
 import { OracleController } from '../oracle/oracle.controller';
 import { ProjectsController } from '../projects/projects.controller';
+import { MethodologyVersioningController } from '../projects/methodology-versioning.controller';
 import { MarketplaceController } from '../marketplace/marketplace.controller';
 import { ValuationController } from '../valuation/valuation.controller';
 import { QuoteConversionController } from '../valuation/quote-conversion.controller';
@@ -154,6 +155,18 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: ProjectsController, method: 'flagDocumentAsAudit', httpMethod: 'POST', path: 'projects/:id/documents/:hash/flag-audit', guards: [JwtAuthGuard], role: 'authenticated', mutation: true },
   { controller: ProjectsController, method: 'escalateDocument', httpMethod: 'POST', path: 'projects/:id/documents/:hash/escalate', guards: [], role: 'public', mutation: true },
   { controller: ProjectsController, method: 'getDocumentHealth', httpMethod: 'GET', path: 'projects/:id/documents/:hash/health', guards: [], role: 'public', mutation: false },
+
+  // Methodology Versioning (#622)
+  { controller: MethodologyVersioningController, method: 'createDraft', httpMethod: 'POST', path: 'methodologies', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'activate', httpMethod: 'POST', path: 'methodologies/:id/versions/:version/activate', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'deprecate', httpMethod: 'POST', path: 'methodologies/:id/versions/:version/deprecate', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'list', httpMethod: 'GET', path: 'methodologies', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'getOne', httpMethod: 'GET', path: 'methodologies/:id/versions/:version', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'pinToBond', httpMethod: 'POST', path: 'methodologies/bonds/:bondId/pin', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'getBondPin', httpMethod: 'GET', path: 'methodologies/bonds/:bondId/pin', guards: [JwtAuthGuard], role: 'authenticated', mutation: false },
+  { controller: MethodologyVersioningController, method: 'bindReport', httpMethod: 'POST', path: 'methodologies/reports/:reportId/bind', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'migrateLegacy', httpMethod: 'POST', path: 'methodologies/migrations/legacy', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
+  { controller: MethodologyVersioningController, method: 'rollbackLegacy', httpMethod: 'POST', path: 'methodologies/migrations/legacy/rollback', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.MANAGE_METHODOLOGIES], mutation: true },
 
 
   // ---- Marketplace ----
