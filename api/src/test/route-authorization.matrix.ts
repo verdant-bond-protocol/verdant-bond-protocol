@@ -19,6 +19,7 @@ import { IntentReceiptController } from '../intent-receipts/intent-receipt.contr
 import { JobsController } from '../workers/controllers/jobs.controller';
 
 import { FeesController } from '../fees/fees.controller';
+import { PayoutReconciliationController } from '../reconciliation/controllers/payout-reconciliation.controller';
 
 /**
  * Single source of truth for the API route authorization matrix (issue #X part 1).
@@ -208,4 +209,10 @@ export const ROUTE_AUTHORIZATION_MATRIX: RouteAuthEntry[] = [
   { controller: IntentReceiptController, method: 'get', httpMethod: 'GET', path: 'admin/intent-receipts/:id', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'verify', httpMethod: 'GET', path: 'admin/intent-receipts/:id/verify', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: false },
   { controller: IntentReceiptController, method: 'review', httpMethod: 'POST', path: 'admin/intent-receipts/:id/reviews', guards: [JwtAuthGuard, AdminGuard], role: 'admin', mutation: true },
+
+  // ---- Payout reconciliation (#621) ----
+  { controller: PayoutReconciliationController, method: 'run', httpMethod: 'POST', path: 'api/v1/reconciliation/payouts/run', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: true },
+  { controller: PayoutReconciliationController, method: 'getReport', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/reports/:runId', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
+  { controller: PayoutReconciliationController, method: 'createAdjustment', httpMethod: 'POST', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: true },
+  { controller: PayoutReconciliationController, method: 'listAdjustments', httpMethod: 'GET', path: 'api/v1/reconciliation/payouts/adjustments', guards: [JwtAuthGuard, PermissionsGuard], role: 'permissioned', permissions: [Permission.RECONCILE_PAYOUTS], mutation: false },
 ];

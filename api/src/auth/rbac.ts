@@ -25,6 +25,7 @@ export enum Permission {
   REQUEST_CONVERSION_QUOTE = 'request_conversion_quote',
   CONSUME_CONVERSION_QUOTE = 'consume_conversion_quote',
   MANAGE_METHODOLOGIES = 'manage_methodologies',
+  RECONCILE_PAYOUTS = 'reconcile_payouts',
 }
 
 export const RolePermissions: Record<Role, Permission[]> = {
@@ -46,6 +47,7 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.TRANSFER_BOND,
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
+    Permission.RECONCILE_PAYOUTS,
   ],
   [Role.SETTLEMENT_MANAGER]: [
     Permission.RECONCILE_HOLDERS,
@@ -56,5 +58,6 @@ export const RolePermissions: Record<Role, Permission[]> = {
     Permission.MANAGE_INCIDENTS,
     Permission.REQUEST_CONVERSION_QUOTE,
     Permission.CONSUME_CONVERSION_QUOTE,
+    Permission.RECONCILE_PAYOUTS,
   ],
 };
