@@ -29,7 +29,8 @@
     "backfill": "ts-node --transpile-only scripts/backfill.ts",
     "repair": "ts-node --transpile-only scripts/repair.ts",
     "mutate": "stryker run",
-    "test:mutate": "stryker run --reporter progress --thresholds.high 50"
+    "test:mutate": "stryker run --reporter progress --thresholds.high 50",
+    "verify:bond-lifecycle-audit-bundle": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON ../scripts/verify-bond-lifecycle-audit-bundle.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",
