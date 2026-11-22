@@ -113,3 +113,85 @@ sequenceDiagram
    If asks are concurrently filled by another trader between quote preview and order execution, `DexService` re-fetches the live order from the ledger before calling `PriceImpactService`, preventing stale executions.
 3. **Rollback & Invariants**:
    No on-chain state or escrow balance is modified if price impact validation fails; rejection happens off-chain before any Soroban contract invocation or nonce consumption.
+
+---
+
+## 6. Thin-market slippage limits (#638)
+
+### Targeted-fill premium
+
+`POST /marketplace/buy` fills **one specific order at that order's price**.
+The #471 check measured impact as if the buyer swept the book from the best
+ask. In a thin book, a buyer could pick a resting outlier ask (say 2× the
+best price) and the check would report `0 bps`.
+
+The buy path now passes the target order to the evaluator, which computes:
+
+$$\text{fillPremium}_{bps} = \left\lceil \frac{(p_{\text{order}} - p_{\text{best}}) \times 10{,}000}{p_{\text{best}}} \right\rceil$$
+
+$$\text{priceImpact}_{bps} = \max(\text{sweepImpact}_{bps},\ \text{fillPremium}_{bps})$$
+
+The premium is rounded **up**, so a cap is never exceeded through truncation.
+When the premium exceeds the limit, `suggestedMaxAmount` is `0`, because no
+size of *that* order is acceptable. `bestOrderId` names the order to retry
+against.
+
+### Caller slippage tolerance
+
+`BuyBondDto.maxPriceImpactBps` (optional, integer 0–10000) is the buyer's own
+tolerance. The effective cap is `min(tier cap, caller tolerance)`, so a buyer
+can tighten the limit but never loosen it. `limitSource` (`tier` or `caller`)
+reports which cap applied. `0` means "only fill at the best ask".
+
+The preview endpoint accepts the same inputs, so a preview matches what the
+buy will enforce:
+
+```
+GET /marketplace/prices/:bondId/impact?amount=10&orderId=3&maxPriceImpactBps=250
+```
+
+### Rejection format
+
+A rejection is now an RFC 7807 problem with code `PRICE_IMPACT_EXCEEDED`. The
+previous plain `400` lost its details in the global filter. The retry inputs
+are in `context`:
+
+```json
+{ "status": 400, "code": "PRICE_IMPACT_EXCEEDED", "retryable": false,
+  "context": { "suggestedMaxAmount": "0", "bestOrderId": 1, "targetOrderId": 3,
+               "fillPremiumBps": 5000, "maxAllowedImpactBps": 1000, "limitSource": "tier" } }
+```
+
+### Authorization and config safety
+
+- **Authorization:** `PUT /marketplace/config/:bondId/impact-limits` used to
+  accept *any* `x-wallet-address` header, so anyone could loosen a thin
+  market's limits. It now requires the protocol admin wallet
+  (`STELLAR_PUBLIC_KEY`) and fails closed with `403` when that key is not
+  configured.
+- **Validation:** configs are checked before they are stored. Thresholds must
+  be positive integer strings, the illiquid threshold must not exceed the
+  moderate threshold, tier caps must be between 0 and 10000 bps, and the depth
+  cap must be between 1 and 10000. An invalid patch is rejected and the
+  previous config is kept.
+- **Corrupted cache:** a corrupted cached override (which would previously
+  crash every evaluation in `BigInt`) is ignored with a warning, and the
+  conservative defaults apply.
+- **Bad asks:** a non-positive ask in the book blocks trading instead of
+  dividing by zero.
+
+### Edge cases and invariants
+
+- Every check runs **before** any contract call, so a rejection consumes no
+  nonce and moves no escrow.
+- Retrying with `suggestedMaxAmount` against the same book is guaranteed to
+  pass under the same tolerance.
+- Ask-price ties are broken by order id, so `bestOrderId` is deterministic.
+
+### Tests
+
+```bash
+cd api
+npx jest src/marketplace/price-impact.service.spec.ts src/marketplace/thin-market-buy-guard.spec.ts \
+  src/marketplace/marketplace.controller.guard.spec.ts
+```

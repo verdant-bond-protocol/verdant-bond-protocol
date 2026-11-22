@@ -1,4 +1,12 @@
-import { Injectable, BadRequestException, ForbiddenException, Optional } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  GatewayTimeoutException,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { ContractException } from '../stellar/contract-errors';
 import { StellarService } from '../stellar/stellar.service';
@@ -60,6 +68,7 @@ const BOND_ERROR_CODE = {
 
 @Injectable()
 export class BondsService {
+  private readonly logger = new Logger(BondsService.name);
   constructor(
     private readonly contractService: ContractService,
     private readonly stellarService: StellarService,
@@ -794,12 +803,18 @@ export class BondsService {
 
   async redeem(id: number, dto: RedeemBondDto): Promise<RedeemResponse> {
     const investorSecret = this.signingKeys.investorSecret();
-    const nonce = await this.nonceService.next(this.configService.getBondIssuerAddress(), dto.investorAddress);
+    const issuer = this.configService.getBondIssuerAddress();
+    const nonce = await this.nonceService.next(issuer, dto.investorAddress);
+    // #644: `redeem` has no on-chain duplicate guard, so a blind retry after an
+    // in-doubt timeout could redeem twice. Snapshot the holder's contract
+    // nonce first; it advances only when a redeem is actually applied.
+    const nonceBefore = await this.readContractNonce(issuer, dto.investorAddress);
 
     let transactionHash: string | undefined;
+    let reconciled = false;
     try {
       ({ transactionHash } = await this.contractService.invokeContractMethod(
-        this.configService.getBondIssuerAddress(), 'redeem', investorSecret,
+        issuer, 'redeem', investorSecret,
         [
           Address.fromString(dto.investorAddress).toScVal(),
           nativeToScVal(BigInt(id), { type: 'u64' }),
@@ -808,7 +823,23 @@ export class BondsService {
         dto.investorAddress,
       ));
     } catch (error) {
-      throw this.mapBondError(error, id);
+      if (!(error instanceof GatewayTimeoutException)) {
+        throw this.mapBondError(error, id);
+      }
+      const outcome = await this.reconcileInDoubt(issuer, dto.investorAddress, nonceBefore);
+      if (outcome === 'not_applied') {
+        throw new ServiceUnavailableException(
+          'Redemption was not applied on-ledger after a network timeout; it is safe to retry.',
+        );
+      }
+      if (outcome === 'unknown') {
+        // Cannot prove either way: keep the 504 so the caller reconciles
+        // (GET holdings) before retrying, rather than risk a double redeem.
+        this.logger.error(`Redemption for bond ${id} by ${dto.investorAddress} is in-doubt and could not be reconciled`);
+        throw error;
+      }
+      reconciled = true;
+      this.logger.warn(`Redemption for bond ${id} by ${dto.investorAddress} confirmed applied after timeout`);
     }
 
     this.invalidatePortfolio(dto.investorAddress);
@@ -820,7 +851,41 @@ export class BondsService {
       amount: toBigIntString(dto.amount),
       transactionHash: transactionHash || '',
       status: 'Redeemed',
+      ...(reconciled ? { reconciled: true } : {}),
     };
+  }
+
+  /** Reads a holder's replay-protection nonce from a contract; undefined if unreadable. */
+  private async readContractNonce(contractAddress: string, holder: string): Promise<number | undefined> {
+    try {
+      const value = await this.contractService.simulateCall({
+        contractAddress,
+        method: 'get_nonce',
+        args: [Address.fromString(holder).toScVal()],
+      });
+      const nonce = Number(scValToNative(value));
+      return Number.isSafeInteger(nonce) ? nonce : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Decides whether a timed-out call was applied by comparing the holder's
+   * contract nonce before and after (#644). Soroban reverts failed calls
+   * entirely, so the nonce advances only on success; the NonceService lock
+   * serialises this API's calls per holder, so no other API call can have
+   * advanced it in between.
+   */
+  private async reconcileInDoubt(
+    contractAddress: string,
+    holder: string,
+    nonceBefore: number | undefined,
+  ): Promise<'applied' | 'not_applied' | 'unknown'> {
+    if (nonceBefore === undefined) return 'unknown';
+    const nonceAfter = await this.readContractNonce(contractAddress, holder);
+    if (nonceAfter === undefined) return 'unknown';
+    return nonceAfter > nonceBefore ? 'applied' : 'not_applied';
   }
 
   private encodeBondConfig(dto: CreateBondDto): xdr.ScVal {
@@ -899,7 +964,11 @@ export class BondsService {
       if (code === BOND_ERROR_CODE.BondNotFound) {
         return new BadRequestException(`Bond ${bondId} not found`);
       }
-      return new BadRequestException(error.detail || String(error.message));
+      // Preserve the ContractException (itself a 400) so the stable code and
+      // its retry classification reach API consumers (#641). Re-wrapping it
+      // in a plain BadRequestException used to collapse e.g.
+      // BOND_REDEMPTION_UNDERFUNDED into a generic VALIDATION_FAILED.
+      return error;
     }
 
     if (error instanceof Error) {

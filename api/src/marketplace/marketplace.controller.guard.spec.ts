@@ -4,6 +4,7 @@ import { MarketplaceController } from './marketplace.controller';
 import { DexService } from './dex.service';
 import { LiquidityService } from './liquidity.service';
 import { DexReconciliationService } from './dex.reconciliation.service';
+import { PriceImpactService } from './price-impact.service';
 import { StellarService } from '../stellar/stellar.service';
 import { buildControllerApp } from '../test/controller-guard.harness';
 import { autoMock, TestRole } from '../test/guard-role-mocks';
@@ -23,6 +24,9 @@ describe('MarketplaceController authorization (wallet-header model)', () => {
   const mockDexService = autoMock(DexService);
   const mockLiquidityService = autoMock(LiquidityService);
   const mockStellarService = autoMock(StellarService);
+  const mockPriceImpactService = autoMock(PriceImpactService);
+  const ADMIN = 'G_PROTOCOL_ADMIN';
+  const previousAdmin = process.env.STELLAR_PUBLIC_KEY;
 
   beforeAll(async () => {
     app = await buildControllerApp(MarketplaceController, [
@@ -30,14 +34,18 @@ describe('MarketplaceController authorization (wallet-header model)', () => {
       { provide: LiquidityService, useValue: mockLiquidityService },
       { provide: DexReconciliationService, useValue: autoMock(DexReconciliationService) },
       { provide: StellarService, useValue: mockStellarService },
+      { provide: PriceImpactService, useValue: mockPriceImpactService },
     ]);
+    process.env.STELLAR_PUBLIC_KEY = ADMIN;
     dexService = app.get(DexService) as jest.Mocked<DexService>;
     liquidityService = app.get(LiquidityService) as jest.Mocked<LiquidityService>;
     stellarService = app.get(StellarService) as jest.Mocked<StellarService>;
   });
 
   afterAll(async () => {
-    await app.close();
+    if (previousAdmin === undefined) delete process.env.STELLAR_PUBLIC_KEY;
+    else process.env.STELLAR_PUBLIC_KEY = previousAdmin;
+    await app?.close();
   });
 
   describe('wallet-header mutations reach the service without a JWT', () => {
@@ -94,6 +102,67 @@ describe('MarketplaceController authorization (wallet-header model)', () => {
         .set('x-test-role', 'anon' as TestRole)
         .expect(200);
       expect(liquidityService.getPriceFeed).toHaveBeenCalled();
+    });
+  });
+  describe('price impact limits (#638 authorization path)', () => {
+    beforeEach(() => {
+      mockPriceImpactService.setConfig.mockReset();
+      mockPriceImpactService.setConfig.mockResolvedValue({} as any);
+    });
+
+    it('PUT impact-limits rejects a non-admin wallet header with 403', async () => {
+      await request(app.getHttpServer())
+        .put('/marketplace/config/101/impact-limits')
+        .set('x-test-role', 'anon' as TestRole)
+        .set('x-wallet-address', 'G_RANDOM_TRADER')
+        .send({ maxIlliquidImpactBps: 5000 })
+        .expect(403);
+      expect(mockPriceImpactService.setConfig).not.toHaveBeenCalled();
+    });
+
+    it('PUT impact-limits fails closed when no admin key is configured', async () => {
+      delete process.env.STELLAR_PUBLIC_KEY;
+      try {
+        await request(app.getHttpServer())
+          .put('/marketplace/config/101/impact-limits')
+          .set('x-test-role', 'anon' as TestRole)
+          .set('x-wallet-address', ADMIN)
+          .send({ maxIlliquidDepthConsumptionBps: 4000 })
+          .expect(403);
+      } finally {
+        process.env.STELLAR_PUBLIC_KEY = ADMIN;
+      }
+      expect(mockPriceImpactService.setConfig).not.toHaveBeenCalled();
+    });
+
+    it('PUT impact-limits lets the protocol admin update limits', async () => {
+      await request(app.getHttpServer())
+        .put('/marketplace/config/101/impact-limits')
+        .set('x-test-role', 'anon' as TestRole)
+        .set('x-wallet-address', ADMIN)
+        .send({ maxIlliquidDepthConsumptionBps: 4000 })
+        .expect(200);
+      expect(mockPriceImpactService.setConfig).toHaveBeenCalledWith(101, { maxIlliquidDepthConsumptionBps: 4000 });
+    });
+
+    it('GET impact preview forwards the target order and caller tolerance', async () => {
+      mockDexService.getOrder.mockResolvedValue({ id: 3, bondId: 101, pricePerToken: '150' } as any);
+      mockPriceImpactService.evaluatePriceImpact.mockResolvedValue({ isAllowed: false } as any);
+      await request(app.getHttpServer())
+        .get('/marketplace/prices/101/impact?amount=10&orderId=3&maxPriceImpactBps=250')
+        .set('x-test-role', 'anon' as TestRole)
+        .expect(200);
+      expect(mockPriceImpactService.evaluatePriceImpact).toHaveBeenCalledWith(
+        101, '10', 'USDC', { targetOrder: expect.objectContaining({ id: 3 }), maxPriceImpactBps: 250 },
+      );
+    });
+
+    it('GET impact preview rejects an order from a different bond', async () => {
+      mockDexService.getOrder.mockResolvedValue({ id: 3, bondId: 999, pricePerToken: '150' } as any);
+      await request(app.getHttpServer())
+        .get('/marketplace/prices/101/impact?amount=10&orderId=3')
+        .set('x-test-role', 'anon' as TestRole)
+        .expect(400);
     });
   });
 });
