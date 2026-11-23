@@ -14,6 +14,11 @@ import {
   cadenceForMethodology,
 } from './staleness';
 import { groupAndAssess, CrossSourceAssessment } from './anomaly';
+import {
+  assessMultiOracleFeed,
+  MultiOracleAssessment,
+  OracleSourceReading,
+} from './multi-oracle-monitor';
 
 const DEFAULT_PORT = Number(process.env.ORACLE_MONITOR_PORT || 8080);
 
@@ -129,6 +134,34 @@ export function startMonitorServer(
         const reports = Array.isArray(body) ? body : body.reports ?? [];
         const results: CrossSourceAssessment[] = groupAndAssess(reports);
         sendJson(response, 200, { asOf: new Date().toISOString(), anomalies: results });
+        return;
+      } catch (error) {
+        sendJson(response, 400, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+
+    if (url.pathname === '/multi-oracle' && request.method === 'POST') {
+      try {
+        const body = JSON.parse(await readBody(request)) as {
+          projectId: string;
+          periodKey: string;
+          minQuorum?: number;
+          authorizedSources?: string[];
+          readings?: OracleSourceReading[];
+        };
+        const result: MultiOracleAssessment = assessMultiOracleFeed(
+          body.projectId,
+          body.periodKey,
+          body.readings ?? [],
+          {
+            minQuorum: body.minQuorum ?? 1,
+            authorizedSources: body.authorizedSources,
+          },
+        );
+        sendJson(response, 200, result);
         return;
       } catch (error) {
         sendJson(response, 400, {
