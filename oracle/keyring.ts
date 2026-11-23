@@ -28,6 +28,9 @@ export const OracleKeySchema = z
     secret: z.string().min(1),
     validFromMs: z.number().int().nonnegative(),
     validUntilMs: z.number().int().nonnegative().nullable().optional(),
+    revokedAtMs: z.number().int().nonnegative().nullable().optional(),
+    revocationReason: z.string().min(1).nullable().optional(),
+    revokedBy: z.string().min(1).nullable().optional(),
   })
   .refine(
     (key) => key.validUntilMs == null || key.validUntilMs > key.validFromMs,
@@ -35,6 +38,13 @@ export const OracleKeySchema = z
   );
 
 export type OracleKey = z.infer<typeof OracleKeySchema>;
+
+export interface RevocationRecord {
+  keyId: string;
+  revokedAtMs: number;
+  reason?: string | null;
+  revokedBy?: string | null;
+}
 
 export interface SignedOraclePayload {
   keyId: string;
@@ -57,9 +67,34 @@ export class DuplicateKeyIdError extends Error {
   }
 }
 
+/** Raised when an operation references a `keyId` not present in the keyring. */
+export class UnknownKeyIdError extends Error {
+  constructor(keyId: string) {
+    super(`Unknown oracle key id: ${keyId}`);
+    this.name = 'UnknownKeyIdError';
+  }
+}
+
+/** Raised when attempting to revoke a key that is already revoked. */
+export class KeyAlreadyRevokedError extends Error {
+  constructor(keyId: string) {
+    super(`Oracle key is already revoked: ${keyId}`);
+    this.name = 'KeyAlreadyRevokedError';
+  }
+}
+
+/** Raised when attempting to reinstate a key that is not revoked. */
+export class KeyNotRevokedError extends Error {
+  constructor(keyId: string) {
+    super(`Oracle key is not revoked: ${keyId}`);
+    this.name = 'KeyNotRevokedError';
+  }
+}
+
 function isKeyValidAt(key: OracleKey, timestampMs: number): boolean {
   if (timestampMs < key.validFromMs) return false;
   if (key.validUntilMs != null && timestampMs >= key.validUntilMs) return false;
+  if (key.revokedAtMs != null && timestampMs >= key.revokedAtMs) return false;
   return true;
 }
 
@@ -139,6 +174,118 @@ export class OracleKeyring {
   }
 
   /**
+   * Revoke a key immediately at `revokedAtMs`. Any signature produced at or
+   * after `revokedAtMs` will fail verification even if `validUntilMs` is later.
+   */
+  revokeKey(
+    keyId: string,
+    revokedAtMs: number,
+    reason?: string,
+    actor?: string,
+  ): { keyring: OracleKeyring; revoked: OracleKey } {
+    if (revokedAtMs < 0) {
+      throw new Error('revokedAtMs must be non-negative');
+    }
+    const existing = this.keys.find((key) => key.keyId === keyId);
+    if (!existing) {
+      throw new UnknownKeyIdError(keyId);
+    }
+    if (existing.revokedAtMs != null) {
+      throw new KeyAlreadyRevokedError(keyId);
+    }
+
+    const revoked: OracleKey = {
+      ...existing,
+      revokedAtMs,
+      revocationReason: reason ?? null,
+      revokedBy: actor ?? null,
+    };
+    const nextKeys = this.keys.map((key) => (key.keyId === keyId ? revoked : key));
+    return {
+      keyring: new OracleKeyring(nextKeys),
+      revoked,
+    };
+  }
+
+  /**
+   * Emergency rotation + immediate revocation of a compromised key with zero
+   * overlap window.
+   */
+  rotateAndRevoke(
+    newKey: OracleKey,
+    revokeKeyId: string,
+    revokedAtMs: number,
+    reason?: string,
+    actor?: string,
+  ): { keyring: OracleKeyring; revoked: OracleKey } {
+    const parsedNew = OracleKeySchema.parse(newKey);
+    const { keyring: afterRevoke, revoked } = this.revokeKey(
+      revokeKeyId,
+      revokedAtMs,
+      reason,
+      actor,
+    );
+    return {
+      keyring: afterRevoke.withKey(parsedNew),
+      revoked,
+    };
+  }
+
+  /**
+   * Recovery / rollback: reinstate a key that was revoked in error, provided
+   * its `validUntilMs` window has not already elapsed.
+   */
+  reinstateKey(
+    keyId: string,
+    reinstatedAtMs: number,
+  ): { keyring: OracleKeyring; reinstated: OracleKey } {
+    if (reinstatedAtMs < 0) {
+      throw new Error('reinstatedAtMs must be non-negative');
+    }
+    const existing = this.keys.find((key) => key.keyId === keyId);
+    if (!existing) {
+      throw new UnknownKeyIdError(keyId);
+    }
+    if (existing.revokedAtMs == null) {
+      throw new KeyNotRevokedError(keyId);
+    }
+    if (existing.validUntilMs != null && reinstatedAtMs >= existing.validUntilMs) {
+      throw new Error(`Cannot reinstate expired oracle key: ${keyId}`);
+    }
+
+    const reinstated: OracleKey = {
+      ...existing,
+      revokedAtMs: null,
+      revocationReason: null,
+      revokedBy: null,
+    };
+    const nextKeys = this.keys.map((key) => (key.keyId === keyId ? reinstated : key));
+    return {
+      keyring: new OracleKeyring(nextKeys),
+      reinstated,
+    };
+  }
+
+  /** True if `keyId` is revoked (optionally evaluated at `atMs`). */
+  isRevoked(keyId: string, atMs?: number): boolean {
+    const key = this.keys.find((candidate) => candidate.keyId === keyId);
+    if (!key || key.revokedAtMs == null) return false;
+    return atMs == null ? true : atMs >= key.revokedAtMs;
+  }
+
+  /** Return the revocation metadata for `keyId`, or null if not revoked. */
+  getRevocation(keyId: string): RevocationRecord | null {
+    const key = this.keys.find((candidate) => candidate.keyId === keyId);
+    if (!key || key.revokedAtMs == null) return null;
+    return {
+      keyId: key.keyId,
+      revokedAtMs: key.revokedAtMs,
+      reason: key.revocationReason ?? null,
+      revokedBy: key.revokedBy ?? null,
+    };
+  }
+
+  /**
    * Sign a payload with the key valid at `timestampMs`. Throws when no key is
    * valid at that instant, so a rotation gap cannot silently unsigned reports.
    */
@@ -164,6 +311,13 @@ export class OracleKeyring {
     const key = this.keys.find((candidate) => candidate.keyId === signed.keyId);
     if (!key) {
       return { valid: false, error: `Unknown oracle key id: ${signed.keyId}` };
+    }
+    if (key.revokedAtMs != null && signed.timestampMs >= key.revokedAtMs) {
+      return {
+        valid: false,
+        keyId: key.keyId,
+        error: `Key ${key.keyId} was revoked at ${key.revokedAtMs}`,
+      };
     }
     if (!isKeyValidAt(key, signed.timestampMs)) {
       return {

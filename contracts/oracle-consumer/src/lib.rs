@@ -52,6 +52,19 @@ pub enum DataKey {
     ProjectDisputed(BytesN<32>),
     ProjectStalenessConfig(BytesN<32>),
     ProjectLastVerifiedAt(BytesN<32>),
+    ProviderSigner(Address),
+    SignerToProvider(Address),
+    RevokedSigner(Address),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct SignerRevocation {
+    pub signer: Address,
+    pub provider: Address,
+    pub revoked_at: u64,
+    pub revoked_by: Address,
+    pub reason: Symbol,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -281,6 +294,205 @@ impl OracleConsumer {
         Ok(())
     }
 
+    /// Rotate the active signing address for `provider` to `new_signer` (#618).
+    /// Authorized by either the contract admin or the `provider` itself.
+    /// Rejects revoked signers or signers already bound to another provider.
+    pub fn rotate_provider_signer(
+        env: Env,
+        caller: Address,
+        provider: Address,
+        new_signer: Address,
+        nonce: u64,
+    ) -> Result<(), OracleError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(OracleError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(OracleError::NotInitialized)?;
+        if caller != admin && caller != provider {
+            return Err(OracleError::Unauthorized);
+        }
+
+        let p: OracleProvider = env
+            .storage()
+            .instance()
+            .get(&DataKey::Provider(provider.clone()))
+            .ok_or(OracleError::ProviderNotFound)?;
+        if !p.active {
+            return Err(OracleError::Unauthorized);
+        }
+
+        let active_signer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderSigner(provider.clone()))
+            .unwrap_or_else(|| provider.clone());
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::RevokedSigner(active_signer))
+        {
+            return Err(OracleError::Unauthorized);
+        }
+
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::RevokedSigner(new_signer.clone()))
+        {
+            return Err(OracleError::Unauthorized);
+        }
+
+        if let Some(bound_provider) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::SignerToProvider(new_signer.clone()))
+        {
+            if bound_provider != provider {
+                return Err(OracleError::ProviderAlreadyExists);
+            }
+        }
+
+        let previous_signer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderSigner(provider.clone()))
+            .unwrap_or_else(|| provider.clone());
+
+        if previous_signer != new_signer {
+            env.storage()
+                .instance()
+                .remove(&DataKey::SignerToProvider(previous_signer.clone()));
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderSigner(provider.clone()), &new_signer);
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerToProvider(new_signer.clone()), &provider);
+
+        env.events().publish(
+            (Symbol::new(&env, "signer_rotated"),),
+            (provider, previous_signer, new_signer),
+        );
+
+        Ok(())
+    }
+
+    /// Immediately revoke `signer` for `provider` (#618).
+    /// Authorized by either the contract admin or the `provider` itself.
+    pub fn revoke_provider_signer(
+        env: Env,
+        caller: Address,
+        provider: Address,
+        signer: Address,
+        reason: Symbol,
+        nonce: u64,
+    ) -> Result<(), OracleError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(OracleError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(OracleError::NotInitialized)?;
+        if caller != admin && caller != provider {
+            return Err(OracleError::Unauthorized);
+        }
+
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Provider(provider.clone()))
+        {
+            return Err(OracleError::ProviderNotFound);
+        }
+
+        let revocation = SignerRevocation {
+            signer: signer.clone(),
+            provider: provider.clone(),
+            revoked_at: env.ledger().timestamp(),
+            revoked_by: caller,
+            reason: reason.clone(),
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::RevokedSigner(signer.clone()), &revocation);
+        env.storage()
+            .instance()
+            .remove(&DataKey::SignerToProvider(signer.clone()));
+
+        let current_active: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderSigner(provider.clone()))
+            .unwrap_or_else(|| provider.clone());
+        if current_active == signer {
+            env.storage()
+                .instance()
+                .remove(&DataKey::ProviderSigner(provider.clone()));
+        }
+
+        env.events().publish(
+            (Symbol::new(&env, "signer_revoked"),),
+            (provider, signer, reason),
+        );
+
+        Ok(())
+    }
+
+    /// Return the active signer for `provider`, or `Unauthorized` if its
+    /// current signer has been revoked and not yet rotated (#618).
+    pub fn get_active_signer(env: Env, provider: Address) -> Result<Address, OracleError> {
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Provider(provider.clone()))
+        {
+            return Err(OracleError::ProviderNotFound);
+        }
+        let signer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderSigner(provider.clone()))
+            .unwrap_or(provider);
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::RevokedSigner(signer.clone()))
+        {
+            return Err(OracleError::Unauthorized);
+        }
+        Ok(signer)
+    }
+
+    pub fn is_signer_revoked(env: Env, signer: Address) -> bool {
+        env.storage()
+            .instance()
+            .has(&DataKey::RevokedSigner(signer))
+    }
+
+    pub fn get_signer_revocation(env: Env, signer: Address) -> Option<SignerRevocation> {
+        env.storage()
+            .instance()
+            .get(&DataKey::RevokedSigner(signer))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn submit_report(
         env: Env,
@@ -309,6 +521,19 @@ impl OracleConsumer {
             .ok_or(OracleError::ProviderNotFound)?;
 
         if !p.active {
+            return Err(OracleError::Unauthorized);
+        }
+
+        let active_signer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderSigner(provider.clone()))
+            .unwrap_or_else(|| provider.clone());
+        if env
+            .storage()
+            .instance()
+            .has(&DataKey::RevokedSigner(active_signer))
+        {
             return Err(OracleError::Unauthorized);
         }
 
@@ -3032,5 +3257,60 @@ mod test {
 
         let state = client.get_project_staleness_state(&project_id, &1000);
         assert_eq!(state.current_tier, 0);
+    }
+
+    #[test]
+    fn test_signer_rotation_revocation_and_recovery() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let new_signer = Address::generate(&env);
+        let recovery_signer = Address::generate(&env);
+        let outsider = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(
+            &admin,
+            &provider,
+            &Symbol::new(&env, "verra_vcs"),
+            &0,
+        );
+        assert_eq!(client.get_active_signer(&provider), provider);
+
+        // Unauthorized caller cannot rotate signer.
+        assert_eq!(
+            client.try_rotate_provider_signer(&outsider, &provider, &new_signer, &0),
+            Err(Ok(OracleError::Unauthorized))
+        );
+
+        // Provider rotates its own signer (nonce 0).
+        client.rotate_provider_signer(&provider, &provider, &new_signer, &0);
+        assert_eq!(client.get_active_signer(&provider), new_signer);
+
+        // Admin revokes the rotated signer (admin nonce 1).
+        client.revoke_provider_signer(
+            &admin,
+            &provider,
+            &new_signer,
+            &Symbol::new(&env, "compromised"),
+            &1,
+        );
+        assert!(client.is_signer_revoked(&new_signer));
+        assert!(client.get_signer_revocation(&new_signer).is_some());
+
+        // Rotating back to the revoked signer is rejected.
+        assert_eq!(
+            client.try_rotate_provider_signer(&provider, &provider, &new_signer, &1),
+            Err(Ok(OracleError::Unauthorized))
+        );
+
+        // Recovery: provider rotates to a fresh signer (nonce 2).
+        client.rotate_provider_signer(&provider, &provider, &recovery_signer, &2);
+        assert_eq!(client.get_active_signer(&provider), recovery_signer);
+        assert!(!client.is_signer_revoked(&recovery_signer));
     }
 }
