@@ -90,6 +90,32 @@ pub struct Proposal {
     pub veto_weight: u128,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ParameterChangeSpec {
+    pub param_name: Symbol,
+    pub current_value: u64,
+    pub proposed_value: u64,
+    pub min_allowed: u64,
+    pub max_allowed: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct ProposalSimulationResult {
+    pub allowed: bool,
+    pub valid_track: bool,
+    pub target_paused: bool,
+    pub bounds_ok: bool,
+    pub track: GovernanceTrack,
+    pub required_threshold: u32,
+    pub min_approval_weight: u128,
+    pub timelock_seconds: u64,
+    pub earliest_execution_at: u64,
+    pub delta: i128,
+    pub error_code: u32,
+}
+
 fn get_nonce(env: &Env, addr: &Address) -> u64 {
     env.storage()
         .instance()
@@ -590,6 +616,82 @@ impl Governance {
         );
 
         Ok(proposal_id)
+    }
+
+    /// Read-only dry-run simulation of a parameter-change governance proposal (#615).
+    /// Validates signer authorization, allow-list, track policy, target pause state,
+    /// and parameter bounds without mutating contract storage or consuming a nonce.
+    pub fn simulate_parameter_change(
+        env: Env,
+        caller: Address,
+        target: Address,
+        method: Symbol,
+        track: GovernanceTrack,
+        spec: ParameterChangeSpec,
+    ) -> Result<ProposalSimulationResult, GovernanceError> {
+        if !env.storage().instance().has(&DataKey::Signers) {
+            return Err(GovernanceError::NotInitialized);
+        }
+        require_signer(&env, &caller)?;
+
+        let allowed = is_method_allowed(&env, &target, &method);
+        let is_emergency = is_emergency_method(&env, &method);
+        let min_track = get_method_min_track(&env, &target, &method);
+
+        let mut valid_track = true;
+        if track == GovernanceTrack::Emergency
+            && !is_emergency
+            && min_track != GovernanceTrack::Emergency
+        {
+            valid_track = false;
+        }
+        if min_track == GovernanceTrack::Critical && track != GovernanceTrack::Critical {
+            valid_track = false;
+        }
+        if min_track == GovernanceTrack::Emergency && track != GovernanceTrack::Emergency {
+            valid_track = false;
+        }
+
+        let target_paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused(target))
+            .unwrap_or(false);
+
+        let bounds_ok = spec.min_allowed <= spec.max_allowed
+            && spec.proposed_value >= spec.min_allowed
+            && spec.proposed_value <= spec.max_allowed;
+
+        let track_config = get_track_config(&env, track);
+        let earliest_execution_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(track_config.timelock_seconds);
+        let delta = (spec.proposed_value as i128) - (spec.current_value as i128);
+
+        let error_code = if !allowed {
+            GovernanceError::Unauthorized as u32
+        } else if !valid_track {
+            GovernanceError::InvalidTrack as u32
+        } else if target_paused || !bounds_ok {
+            GovernanceError::InvalidNonce as u32
+        } else {
+            0
+        };
+
+        Ok(ProposalSimulationResult {
+            allowed,
+            valid_track,
+            target_paused,
+            bounds_ok,
+            track,
+            required_threshold: track_config.threshold,
+            min_approval_weight: track_config.min_approval_weight,
+            timelock_seconds: track_config.timelock_seconds,
+            earliest_execution_at,
+            delta,
+            error_code,
+        })
     }
 
     pub fn vote_approve(
@@ -1900,6 +2002,102 @@ mod test {
             &0,
         );
         assert_eq!(pid, 1);
+    }
+
+    #[test]
+    fn test_simulate_parameter_change_normal_failure_retry_and_auth() {
+        let (env, client, signers) = setup();
+        let target = make_target(&env);
+        let method = Symbol::new(&env, "set_fee_bps");
+        let signer = signers.get(0).unwrap();
+        let outsider = Address::generate(&env);
+
+        let valid_spec = ParameterChangeSpec {
+            param_name: Symbol::new(&env, "fee_bps"),
+            current_value: 50,
+            proposed_value: 75,
+            min_allowed: 0,
+            max_allowed: 1_000,
+        };
+
+        // Authorization path: non-signer is rejected.
+        assert_eq!(
+            client.try_simulate_parameter_change(
+                &outsider,
+                &target,
+                &method,
+                &GovernanceTrack::Routine,
+                &valid_spec,
+            ),
+            Err(Ok(GovernanceError::NotSigner))
+        );
+
+        // Failure path 1: method not yet allow-listed.
+        let unallowed = client.simulate_parameter_change(
+            &signer,
+            &target,
+            &method,
+            &GovernanceTrack::Routine,
+            &valid_spec,
+        );
+        assert!(!unallowed.allowed);
+        assert_ne!(unallowed.error_code, 0);
+
+        // Retry path: allow-list method with Critical min track and re-simulate.
+        client.allow_method_with_track(
+            &signer,
+            &target,
+            &method,
+            &GovernanceTrack::Critical,
+            &0,
+        );
+
+        // Failure path 2: Routine track rejected for Critical method.
+        let wrong_track = client.simulate_parameter_change(
+            &signer,
+            &target,
+            &method,
+            &GovernanceTrack::Routine,
+            &valid_spec,
+        );
+        assert!(wrong_track.allowed);
+        assert!(!wrong_track.valid_track);
+        assert_ne!(wrong_track.error_code, 0);
+
+        // Failure path 3: out-of-bounds parameter rejected.
+        let oob_spec = ParameterChangeSpec {
+            param_name: Symbol::new(&env, "fee_bps"),
+            current_value: 50,
+            proposed_value: 5_000,
+            min_allowed: 0,
+            max_allowed: 1_000,
+        };
+        let oob = client.simulate_parameter_change(
+            &signer,
+            &target,
+            &method,
+            &GovernanceTrack::Critical,
+            &oob_spec,
+        );
+        assert!(!oob.bounds_ok);
+        assert_ne!(oob.error_code, 0);
+
+        // Normal path: valid Critical simulation succeeds without mutating state.
+        let ok = client.simulate_parameter_change(
+            &signer,
+            &target,
+            &method,
+            &GovernanceTrack::Critical,
+            &valid_spec,
+        );
+        assert!(ok.allowed);
+        assert!(ok.valid_track);
+        assert!(ok.bounds_ok);
+        assert!(!ok.target_paused);
+        assert_eq!(ok.delta, 25);
+        assert_eq!(ok.timelock_seconds, CRITICAL_TIMELOCK_SECONDS);
+        assert_eq!(ok.error_code, 0);
+        assert_eq!(client.proposal_count(), 0);
     }
 
 }
