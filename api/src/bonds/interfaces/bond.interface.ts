@@ -93,6 +93,11 @@ export interface RedeemResponse {
   amount: string;
   transactionHash: string;
   status?: string;
+  /**
+   * True when the call timed out but the redemption was confirmed applied
+   * on-ledger (#644). `transactionHash` may then be empty.
+   */
+  reconciled?: boolean;
 }
 
 /**

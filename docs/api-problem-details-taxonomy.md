@@ -42,7 +42,7 @@ Field guarantees:
 | `correlationId` | Present when the request carried/propagated one; echoed in the `x-correlation-id` response header. |
 | `errors[]` | Validation failures only. `field` is best-effort. |
 | `context` | Non-sensitive, operation-specific signal (e.g. risk assessment). |
-| `contract` | Settlement failures only. Raw Soroban fields for runbook lookup. |
+| `contract` | Settlement failures only. Raw Soroban fields plus the stable contract `code`, `category`, `errorClass` and `retryStrategy` (#641, see [error-mappings.md](error-mappings.md)). |
 
 ## Frozen machine codes
 
@@ -59,19 +59,62 @@ Field guarantees:
 | `STEP_UP_REQUIRED` | 401 | yes | Additional verification required. | Complete step-up and resend with `x-risk-step-up-token`. |
 | `RISK_REVIEW_REQUIRED` | 403 | no | Operation flagged, not auto-executed. | Contact support with the `correlationId`. |
 | `INTERNAL_ERROR` | 500 | no | Unexpected server failure. | Retry once; then contact support with `correlationId`. |
+| `QUEUE_BACKPRESSURE` | 429 | yes | Queue admission bound reached. | Back off and poll `GET /api/v1/jobs/queue/status`. |
+| `BOND_NOT_ACTIVE` | 400 | no | Bond not in Active state. | Check bond status before subscribing/transferring. |
+| `BOND_MATURED` | 400 | no | Bond lifecycle is terminal. | Redeem outstanding balance. |
+| `DUPLICATE_SUBSCRIPTION` | 409 | no | Subscription already in progress. | Wait for the existing subscription. |
+| `COUPON_ALREADY_CLAIMED` | 409 | no | Coupon period already claimed. | No action needed. |
+| `OWNERSHIP_TRANSFER_PENDING` | 409 | no | A transfer proposal is already pending. | Cancel or complete it first. |
+| `OWNERSHIP_TRANSFER_EXPIRED` | 400 | no | Acceptance window elapsed. | Initiate a fresh proposal. |
+| `RECEIPT_PENDING` | 503 | yes | Governance action applied; signed receipt not yet issued (#632). | Retry with the same `Idempotency-Key`. |
+| `PRICE_IMPACT_EXCEEDED` | 400 | no | Secondary-market trade breaches the tier or caller price-impact limit (#638). | Use `context.suggestedMaxAmount` / `context.bestOrderId`, or loosen `maxPriceImpactBps`. |
+| `QUOTE_EXPIRED` | 410 | no | Conversion quote TTL elapsed before consumption (#620). | Request a fresh conversion quote. |
+| `QUOTE_ALREADY_USED` | 409 | no | Conversion quote already consumed (#620). | Request a new quote or retry with original `Idempotency-Key`. |
+| `QUOTE_SLIPPAGE_EXCEEDED` | 400 | no | Quote rate deviates beyond `maxSlippageBps` (#620). | Wait for market stabilization or adjust tolerance. |
+| `STALE_RATE_SOURCE` | 503 | yes | Rate source data is older than `maxRateAgeMs` (#620). | Retry shortly once rate source refreshes. |
+| `QUOTE_BINDING_MISMATCH` | 403 | no | Caller account or purpose does not match quote binding (#620). | Request a quote for the matching account and purpose. |
+| `METHODOLOGY_TAMPER_DETECTED` | 500 | no | Stored methodology hash failed verification (#622). | Contact a protocol maintainer. |
+| `METHODOLOGY_IMMUTABLE` | 409 | no | Active methodology version cannot be modified (#622). | Publish a new methodology version. |
+| `METHODOLOGY_ALREADY_PINNED` | 409 | no | Bond already has a permanently pinned methodology (#622). | Use the pinned version or an approved later-version override. |
+| `METHODOLOGY_VERSION_NOT_ALLOWED` | 400 | no | Draft, deprecated, or unapproved methodology version (#622). | Use the pinned active version or supply an approved override. |
 
-> Changing any value in this table requires editing both `error-codes.ts` and
-> the frozen expectations in `error-codes.contract.spec.ts` in the same commit.
+The HTTP column is the canonical status for each code; the response's own
+`status` field is authoritative. The machine `code`, `retryable` flag and
+client-safe `remediation` text are frozen by `error-codes.contract.spec.ts`
+(`FROZEN_CODES`, `FROZEN_RETRYABLE`, and `FROZEN_COPY`, which pins the exact
+`safeMessage`, `remediation` and operator-only `remediationHint` strings).
+
+> Changing any value in this table requires editing `error-codes.ts`, the frozen
+> expectations in `error-codes.contract.spec.ts`, and this document in the same
+> commit. A wording-only change to a safe message or remediation now fails the
+> build too, so it is reviewed as a public-contract change.
 
 ## How to add a code
 
 1. Add the enum member to `ErrorCode` in `error-codes.ts`.
-2. Add its `retryable`, `safeMessage`, and `remediation` to `ErrorTaxonomy`.
-3. Extend `FROZEN_CODES` and `FROZEN_RETRYABLE` in
+2. Add its `retryable`, `safeMessage`, `remediation` and `remediationHint` to
+   `ErrorTaxonomy`. Keep operator tooling (runbook links, Grafana/ Horizon
+   queries) in `remediationHint` only — never in `safeMessage` or `remediation`.
+3. Extend `FROZEN_CODES`, `FROZEN_RETRYABLE` and `FROZEN_COPY` in
    `error-codes.contract.spec.ts`.
-4. Update the table above.
+4. Update the table above and add an HTTP assertion in
+   `api-problem.contract.spec.ts` if the code has a distinct status/context.
 5. Prefer throwing `ApiProblemException` (or `DomainException`) over raw
    `HttpException` so the stable `code` and `remediation` are preserved.
+
+## Deprecation and migration
+
+Codes are **append-only**: never rename, reuse or delete a value in `ErrorCode`.
+To retire a code, add a replacement code, return the new code from new code
+paths while continuing to accept the old code for at least one major version,
+and mark the old entry as deprecated in this table with a sunset notice (the
+field-versioning precedent is `SchemaEvolutionGuardrails`). Only remove the old
+entry in a major release, and remove it from `FROZEN_CODES` in the same commit.
+Because the client-safe text is frozen, a deprecation notice cannot be slipped
+into `remediation` silently — it must be an explicit reviewed edit.
+
+Client rollout rule: treat an unrecognised `code` as non-retryable and render
+`detail` plus `remediation`. This lets a new code ship before SDKs know it.
 
 ## Operational edge cases
 

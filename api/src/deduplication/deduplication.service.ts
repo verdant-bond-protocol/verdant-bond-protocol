@@ -24,7 +24,9 @@ import { KycDeduplicationAdapter } from './adapters/kyc-deduplication.adapter';
 import { ProjectDeduplicationAdapter } from './adapters/project-deduplication.adapter';
 import { AuditService } from '../audit/audit.service';
 import {
+  compareIds,
   computeCanonicalDigest,
+  computeScanFingerprintV2,
   deterministicCandidateId,
   stableJsonStringify,
   stableSortCandidates,
@@ -92,7 +94,7 @@ export class DeduplicationService {
 
           // Deterministic primary selection:
           // Lower lexicographical ID becomes primary by default for stability
-          const [primary, secondary] = idA.localeCompare(idB) <= 0 ? [entityA, entityB] : [entityB, entityA];
+          const [primary, secondary] = compareIds(idA, idB) <= 0 ? [entityA, entityB] : [entityB, entityA];
           const primaryId = adapter.idOf(primary);
           const secondaryId = adapter.idOf(secondary);
 
@@ -104,7 +106,7 @@ export class DeduplicationService {
           const existing = this.candidates.get(candidateId);
           let status = CandidateStatus.PENDING_REVIEW;
           let review = existing?.review;
-          let mergeId = existing?.mergeId;
+          const mergeId = existing?.mergeId;
 
           if (existing) {
             // If states haven't drifted, keep existing review decision
@@ -158,6 +160,23 @@ export class DeduplicationService {
       )
       .digest('hex');
 
+    // Additive content-bearing fingerprint: keeps the legacy field intact while
+    // making score / review-state drift observable to callers and audit logs.
+    const scanFingerprintV2 = computeScanFingerprintV2({
+      entityType: options.entityType,
+      minConfidence,
+      totalScanned: entities.length,
+      candidates: resultCandidates.map((c) => ({
+        id: c.id,
+        primaryId: c.primaryId,
+        secondaryId: c.secondaryId,
+        confidenceScore: c.confidenceScore,
+        primaryDigest: c.primaryDigest,
+        secondaryDigest: c.secondaryDigest,
+        status: c.status,
+      })),
+    });
+
     if (this.auditService && discovered.length > 0) {
       await this.auditService.record({
         entityType: 'deduplication',
@@ -171,6 +190,7 @@ export class DeduplicationService {
           scannedCount: entities.length,
           candidatesFound: discovered.length,
           scanFingerprint,
+          scanFingerprintV2,
         },
       });
     }
@@ -181,6 +201,7 @@ export class DeduplicationService {
       candidatesFound: discovered.length,
       candidates: resultCandidates,
       scanFingerprint,
+      scanFingerprintV2,
       scannedAt,
     };
   }

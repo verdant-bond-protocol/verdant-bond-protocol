@@ -75,6 +75,18 @@ jobs:
         run: npm run build
         working-directory: api
 
+  audit-bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify reproducible bond lifecycle audit bundle
+        run: node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/verify-bond-lifecycle-audit-bundle.mjs
+
   frontend:
     runs-on: ubuntu-latest
     steps:

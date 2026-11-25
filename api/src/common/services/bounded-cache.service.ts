@@ -43,12 +43,16 @@ export class BoundedCacheService<T = any> {
   private evictionCount = 0;
   private expiredCount = 0;
   private staleDetections = 0;
+  private accessSequence = 0;
 
   constructor(
     maxSize: number = 1000,
     defaultTtlMs: number = 5 * 60 * 1000, // 5 minutes
     staleThresholdMs: number = 60 * 1000, // 1 minute
   ) {
+    if (!Number.isInteger(maxSize) || maxSize < 1) throw new RangeError('maxSize must be a positive integer');
+    if (!Number.isFinite(defaultTtlMs) || defaultTtlMs < 0) throw new RangeError('defaultTtlMs must be non-negative');
+    if (!Number.isFinite(staleThresholdMs) || staleThresholdMs < 0) throw new RangeError('staleThresholdMs must be non-negative');
     this.maxSize = maxSize;
     this.defaultTtlMs = defaultTtlMs;
     this.staleThresholdMs = staleThresholdMs;
@@ -74,7 +78,7 @@ export class BoundedCacheService<T = any> {
       createdAt: now,
       expiresAt: now + ttlMs,
       accessCount: 0,
-      lastAccessedAt: now,
+      lastAccessedAt: ++this.accessSequence,
       metadata,
     };
 
@@ -106,11 +110,11 @@ export class BoundedCacheService<T = any> {
 
     // Update access tracking
     entry.accessCount++;
-    entry.lastAccessedAt = now;
+    entry.lastAccessedAt = ++this.accessSequence;
     this.hitCount++;
 
     // Check if stale
-    if (now - entry.createdAt > this.staleThresholdMs) {
+    if (now - entry.createdAt >= this.staleThresholdMs) {
       this.staleDetections++;
       this.logger.warn(`Cache STALE: ${key} (age: ${now - entry.createdAt}ms)`);
     }
@@ -155,6 +159,7 @@ export class BoundedCacheService<T = any> {
     const keysToDelete: string[] = [];
 
     for (const key of this.cache.keys()) {
+      pattern.lastIndex = 0;
       if (pattern.test(key)) {
         keysToDelete.push(key);
       }
@@ -166,6 +171,7 @@ export class BoundedCacheService<T = any> {
         count++;
       }
     }
+    pattern.lastIndex = 0;
 
     this.logger.log(`Cache INVALIDATE: ${count} entries matching pattern ${pattern}`);
     return count;
@@ -213,7 +219,7 @@ export class BoundedCacheService<T = any> {
    */
   private evictLRU(): void {
     let lruKey: string | null = null;
-    let lruTime = Date.now();
+    let lruTime = Number.POSITIVE_INFINITY;
 
     for (const [key, entry] of this.cache) {
       if (entry.lastAccessedAt < lruTime) {

@@ -86,6 +86,13 @@ export class BackfillRunner {
     }
   }
 
+  /**
+   * Undo a run using its write-ahead journal. Every before-image is restored
+   * only if the record still holds its journalled after-image; otherwise the
+   * key is reported as a conflict and left untouched. Restore is idempotent:
+   * a key already at its before-image is reported as restored without a write,
+   * so re-running a partially failed rollback is safe.
+   */
   async rollback<R>(
     job: BackfillJob<R>,
     runId: string,
@@ -99,10 +106,15 @@ export class BackfillRunner {
       const changes = entries
         .reverse()
         .map((e): BackfillChange<R> => ({ key: e.key, before: e.before, after: e.after }));
+      // Dedupe by key, keeping the first (newest) entry, which is the after-image
+      // the record should currently hold; the oldest before-image wins below.
+      const oldestBefore = new Map<string, BackfillChange<R>>();
+      for (const c of changes) oldestBefore.set(c.key, c);
+      const unique = [...oldestBefore.values()];
       const size = options.batchSize ?? DEFAULT_BATCH_SIZE;
       const result: BackfillRestoreResult = { restored: [], conflicts: [] };
-      for (let i = 0; i < changes.length; i += size) {
-        const part = await job.restore(changes.slice(i, i + size));
+      for (let i = 0; i < unique.length; i += size) {
+        const part = await job.restore(unique.slice(i, i + size));
         result.restored.push(...part.restored);
         result.conflicts.push(...part.conflicts);
       }
@@ -296,29 +308,25 @@ export class BackfillRunner {
     }
 
     if (options.resume) {
-      throw new BackfillRefusedError(`No unfinished run of ${job.id} to resume.`);
+      throw new BackfillRefusedError(`No unfinished run to resume for ${job.id}.`);
     }
-    return { keys: [...(await job.listKeys())].sort(), resumeFrom: null, retryOf: null };
+
+    const keys = [...(await job.listKeys())].sort();
+    return { keys, resumeFrom: null, retryOf: null };
   }
 
+  /** Plan a set of keys without writing. Per-record errors are captured, not thrown. */
   private async planBatch<R>(job: BackfillJob<R>, keys: string[]): Promise<BatchOutcome<R>> {
     const outcome: BatchOutcome<R> = { counters: emptyCounters(), changes: [], diff: [], skipped: [], failed: [] };
     for (const key of keys) {
       outcome.counters.scanned++;
-      let record: R | null;
       try {
-        record = await job.load(key);
-      } catch (error) {
-        outcome.counters.failed++;
-        outcome.failed.push({ key, error: `load failed: ${message(error)}`, attempts: 1 });
-        continue;
-      }
-      if (record === null) {
-        outcome.counters.skipped++;
-        outcome.skipped.push({ key, reason: 'record no longer exists' });
-        continue;
-      }
-      try {
+        const record = await job.load(key);
+        if (record === null) {
+          outcome.counters.skipped++;
+          outcome.skipped.push({ key, reason: 'record not found' });
+          continue;
+        }
         const decision = job.plan(key, record);
         if (decision.action === 'update') {
           outcome.counters.updated++;
@@ -332,27 +340,28 @@ export class BackfillRunner {
         }
       } catch (error) {
         outcome.counters.failed++;
-        outcome.failed.push({ key, error: message(error), attempts: 1 });
+        outcome.failed.push({ key, error: (error as Error).message, attempts: 1 });
       }
     }
     return outcome;
   }
 
+  /** Returns null on success, or the last error message after all attempts fail. */
   private async commitWithRetry<R>(
     job: BackfillJob<R>,
     changes: BackfillChange<R>[],
     maxAttempts: number,
   ): Promise<string | null> {
-    let last = '';
+    let lastError = '';
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await job.commit(changes);
         return null;
       } catch (error) {
-        last = message(error);
+        lastError = (error as Error).message;
       }
     }
-    return last;
+    return lastError;
   }
 }
 
@@ -365,21 +374,13 @@ function addCounters(into: BackfillCounters, add: BackfillCounters): void {
 }
 
 function mergeSkipped(into: BackfillSkippedEntry[], add: BackfillSkippedEntry[]): void {
-  for (const entry of add) {
-    const i = into.findIndex((e) => e.key === entry.key);
-    if (i >= 0) into[i] = entry;
-    else into.push(entry);
-  }
+  into.push(...add);
 }
 
 function mergeFailed(into: BackfillFailedEntry[], add: BackfillFailedEntry[]): void {
   for (const entry of add) {
-    const i = into.findIndex((e) => e.key === entry.key);
-    if (i >= 0) into[i] = { ...entry, attempts: into[i].attempts + entry.attempts };
+    const idx = into.findIndex((f) => f.key === entry.key);
+    if (idx >= 0) into[idx] = entry;
     else into.push(entry);
   }
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

@@ -3,6 +3,7 @@ import * as request from 'supertest';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { KycService } from './kyc.service';
+import { SessionService } from './session.service';
 import { buildControllerApp } from '../test/controller-guard.harness';
 import { autoMock, TestRole } from '../test/guard-role-mocks';
 
@@ -13,11 +14,13 @@ describe('AuthController authorization (behavioral)', () => {
 
   const mockAuthService = autoMock(AuthService);
   const mockKycService = autoMock(KycService);
+  const mockSessionService = autoMock(SessionService);
 
   beforeAll(async () => {
     app = await buildControllerApp(AuthController, [
       { provide: AuthService, useValue: mockAuthService },
       { provide: KycService, useValue: mockKycService },
+      { provide: SessionService, useValue: mockSessionService },
     ]);
     authService = app.get(AuthService) as jest.Mocked<AuthService>;
     kycService = app.get(KycService) as jest.Mocked<KycService>;
@@ -82,6 +85,55 @@ describe('AuthController authorization (behavioral)', () => {
         .set('x-test-role', 'user' as TestRole)
         .expect(200);
       expect(authService.getProfile).toHaveBeenCalledWith('G_USER_ADDRESS');
+    });
+  });
+
+  describe('session revocation endpoints', () => {
+    beforeEach(() => {
+      mockSessionService.revokeAll.mockResolvedValue(1);
+      jest.clearAllMocks();
+      mockSessionService.revokeAll.mockResolvedValue(1);
+    });
+
+    it('POST /auth/logout rejects anonymous callers', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/logout')
+        .set('x-test-role', 'anon' as TestRole)
+        .expect(401);
+      expect(mockSessionService.revokeAll).not.toHaveBeenCalled();
+    });
+
+    it('POST /auth/logout revokes only the caller\'s own sessions', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/logout')
+        .set('x-test-role', 'user' as TestRole)
+        .expect(200);
+      expect(mockSessionService.revokeAll).toHaveBeenCalledWith(
+        'G_USER_ADDRESS',
+        expect.objectContaining({ walletAddress: 'G_USER_ADDRESS' }),
+        'logout',
+      );
+    });
+
+    it('forbids a non-admin from revoking somebody else\'s sessions', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/sessions/revoke/G_OTHER_ADDRESS')
+        .set('x-test-role', 'user' as TestRole)
+        .expect(403);
+      expect(mockSessionService.revokeAll).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin revoke another wallet and returns the new epoch', async () => {
+      mockSessionService.revokeAll.mockResolvedValue(4);
+      await request(app.getHttpServer())
+        .post('/auth/sessions/revoke/G_OTHER_ADDRESS')
+        .set('x-test-role', 'admin' as TestRole)
+        .expect(200, { address: 'G_OTHER_ADDRESS', sessionVersion: 4 });
+      expect(mockSessionService.revokeAll).toHaveBeenCalledWith(
+        'G_OTHER_ADDRESS',
+        expect.objectContaining({ walletAddress: 'G_ADMIN_ADDRESS' }),
+        'admin revocation',
+      );
     });
   });
 });

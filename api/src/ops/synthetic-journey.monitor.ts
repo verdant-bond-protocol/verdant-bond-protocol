@@ -32,6 +32,8 @@ export interface JourneyStepResult {
   name: JourneyStepName;
   ok: boolean;
   latencyMs: number;
+  /** HTTP attempts made for this step; 1 unless bounded retries kicked in. */
+  attempts: number;
   httpStatus?: number;
   /** Set on failure. */
   dependency?: JourneyDependency;
@@ -71,6 +73,14 @@ export interface SyntheticJourneyConfig {
   /** How long to wait for the subscription transaction to settle. */
   confirmTimeoutMs: number;
   confirmPollMs: number;
+  /**
+   * Maximum attempts per step for transient failures. Defaults to 1 (the
+   * original, no-retry behaviour). 401/403, other 4xx, data failures and
+   * degraded readiness are never retried.
+   */
+  maxAttempts?: number;
+  /** Delay before a transient retry. Defaults to 0. */
+  retryDelayMs?: number;
 }
 
 export interface JourneyRuntime {
@@ -86,6 +96,8 @@ class StepFailure extends Error {
     readonly dependency: JourneyDependency,
     message: string,
     readonly httpStatus?: number,
+    /** Transient faults (timeouts, 429, 5xx, network) are safe to re-probe. */
+    readonly retryable = false,
   ) {
     super(message);
   }
@@ -110,6 +122,9 @@ export class SyntheticJourneyMonitor {
   /** One pass through the journey. Never throws; failures are in the report. O(steps). */
   async run(): Promise<JourneyReport> {
     const started = this.runtime.now();
+    // One key per run, shared by every attempt of the subscribe step: a retry
+    // after a lost reply must replay the original mutation, never submit twice.
+    const idempotencyKey = this.runtime.idempotencyKey();
     const report: JourneyReport = {
       journey: 'investor-subscription',
       ok: false,
@@ -137,7 +152,7 @@ export class SyntheticJourneyMonitor {
       (await this.step(report, 'preview-subscribe', () => this.preview(report.bondId!))) &&
       (!this.config.write ||
         ((await this.step(report, 'subscribe', async () => {
-          report.transactionHash = await this.subscribe(report.bondId!, this.config.write!);
+          report.transactionHash = await this.subscribe(report.bondId!, this.config.write!, idempotencyKey);
         })) &&
           (await this.step(report, 'confirm-transaction', () => this.confirm(report.transactionHash!)))));
 
@@ -149,23 +164,39 @@ export class SyntheticJourneyMonitor {
 
   private async step(report: JourneyReport, name: JourneyStepName, body: () => Promise<unknown>): Promise<boolean> {
     const started = this.runtime.now();
-    try {
-      await body();
-      report.steps.push({ name, ok: true, latencyMs: this.runtime.now() - started });
-      return true;
-    } catch (error) {
-      const failure =
-        error instanceof StepFailure ? error : new StepFailure('api', error instanceof Error ? error.message : String(error));
-      report.steps.push({
-        name,
-        ok: false,
-        latencyMs: this.runtime.now() - started,
-        httpStatus: failure.httpStatus,
-        dependency: failure.dependency,
-        error: failure.message,
-      });
-      return false;
+    const maxAttempts = Math.max(1, Math.floor(this.config.maxAttempts ?? 1));
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      try {
+        await body();
+        report.steps.push({ name, ok: true, latencyMs: this.runtime.now() - started, attempts });
+        return true;
+      } catch (error) {
+        const failure =
+          error instanceof StepFailure
+            ? error
+            : new StepFailure('api', error instanceof Error ? error.message : String(error));
+        if (!failure.retryable || attempts >= maxAttempts) {
+          report.steps.push({
+            name,
+            ok: false,
+            latencyMs: this.runtime.now() - started,
+            attempts,
+            httpStatus: failure.httpStatus,
+            dependency: failure.dependency,
+            error: failure.message,
+          });
+          return false;
+        }
+        // Transient: wait before the next probe. Read steps and the idempotent
+        // subscribe are both safe to repeat; authorization and data faults are
+        // never retried (see StepFailure classification).
+        await this.runtime.sleep(Math.max(0, this.config.retryDelayMs ?? 0));
+      }
     }
+    return false;
   }
 
   /** Maps GET /api/health/ready to the dependencies it reports as not healthy. */
@@ -203,18 +234,20 @@ export class SyntheticJourneyMonitor {
     }
   }
 
-  private async subscribe(bondId: number, write: SyntheticWriteConfig): Promise<string> {
+  private async subscribe(bondId: number, write: SyntheticWriteConfig, idempotencyKey: string): Promise<string> {
     const response = await this.request(`/api/bonds/${bondId}/subscribe`, 'stellar-network', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${write.token}`,
-        'Idempotency-Key': this.runtime.idempotencyKey(),
+        'Idempotency-Key': idempotencyKey,
       },
       body: JSON.stringify({ amount: this.config.amount, investorAddress: write.investorAddress }),
     });
     const body = (await response.json()) as { transactionHash?: string };
-    if (!body.transactionHash) throw new StepFailure('api', 'Subscription response carried no transactionHash');
+    if (!body.transactionHash) {
+      throw new StepFailure('api', 'Subscription response carried no transactionHash', undefined, false);
+    }
     return body.transactionHash;
   }
 
@@ -256,6 +289,8 @@ export class SyntheticJourneyMonitor {
       throw new StepFailure(
         'api',
         timedOut ? `No response from the API within ${this.config.stepTimeoutMs}ms` : `API unreachable: ${(error as Error)?.message}`,
+        undefined,
+        true, // a timeout or dropped connection is a transient probe fault
       );
     } finally {
       clearTimeout(timer);
@@ -266,8 +301,17 @@ export class SyntheticJourneyMonitor {
       .json()
       .then((b: { detail?: string; message?: string }) => b?.detail ?? b?.message)
       .catch(() => undefined);
-    const dependency: JourneyDependency =
-      response.status === 401 || response.status === 403 ? 'config' : response.status >= 500 ? serverErrorDependency : 'api';
-    throw new StepFailure(dependency, `${init.method ?? 'GET'} ${path} → ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
+    const isAuth = response.status === 401 || response.status === 403;
+    const dependency: JourneyDependency = isAuth ? 'config' : response.status >= 500 ? serverErrorDependency : 'api';
+    // 408/429/5xx are transient. 401/403 mean the synthetic credentials or
+    // permissions are wrong and any retry would be identical; other 4xx mean
+    // the request/data is wrong. Neither is safe or useful to re-probe.
+    const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+    throw new StepFailure(
+      dependency,
+      `${init.method ?? 'GET'} ${path} → ${response.status}${detail ? `: ${detail}` : ''}`,
+      response.status,
+      retryable,
+    );
   }
 }

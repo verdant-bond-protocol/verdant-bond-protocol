@@ -39,11 +39,13 @@ export function randomFaults(seed: number, rate: number, kinds: Fault[]): FaultP
 }
 
 interface Entry {
-  value: string | Set<string>;
+  value: string | Set<string> | string[];
   expiresAt?: number;
 }
 
-const WRITE_OPS = new Set(['set', 'setEx', 'del', 'sAdd', 'sRem', 'expire', 'incr', 'eval']);
+const WRITE_OPS = new Set([
+  'set', 'setEx', 'del', 'sAdd', 'sRem', 'expire', 'incr', 'eval', 'lPush',
+]);
 
 export class ChaosRedisClient {
   nowMs = 0;
@@ -67,13 +69,23 @@ export class ChaosRedisClient {
     return e && e.value instanceof Set ? [...e.value] : [];
   }
 
+  list(key: string): string[] {
+    const e = this.live(key);
+    return e && Array.isArray(e.value) ? [...e.value] : [];
+  }
+
   /** Every live key, sorted, for byte-for-byte comparison of two runs (#390). */
   snapshot(): Record<string, string | string[]> {
     const out: Record<string, string | string[]> = {};
     for (const key of [...this.store.keys()].sort()) {
       const e = this.live(key);
       if (!e) continue;
-      out[key] = e.value instanceof Set ? [...e.value].sort() : e.value;
+      out[key] =
+        e.value instanceof Set
+          ? [...e.value].sort()
+          : Array.isArray(e.value)
+            ? [...e.value]
+            : e.value;
     }
     return out;
   }
@@ -172,6 +184,21 @@ export class ChaosRedisClient {
   async sMembers(key: string): Promise<string[]> {
     this.fault('sMembers', key);
     return this.members(key);
+  }
+
+  async lPush(key: string, value: string): Promise<number> {
+    return this.write('lPush', key, () => {
+      const list = this.list(key);
+      list.unshift(value); // newest-first, matching RedisService.lrange(0, n)
+      this.put(key, { value: list });
+      return list.length;
+    });
+  }
+
+  async lRange(key: string, start: number, stop: number): Promise<string[]> {
+    this.fault('lRange', key);
+    const list = this.list(key);
+    return list.slice(start, stop === -1 ? undefined : stop + 1);
   }
 
   private live(key: string): Entry | undefined {

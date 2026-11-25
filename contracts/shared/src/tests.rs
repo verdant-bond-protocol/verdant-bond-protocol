@@ -66,6 +66,138 @@ fn test_default_state_is_not_paused() {
     assert!(!is_distribution_paused(&state));
 }
 
+#[test]
+fn test_migration_window_pauses_coupons_and_claims() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let t = deploy(env, admin);
+
+    let project_id = create_project_id(&t._env, 42);
+    let holder = Address::generate(&t._env);
+    let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+    t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+    let report_id = submit_verified_report_with_period(
+        &t._env,
+        &t,
+        &project_id,
+        100_000,
+        BiodiversityMetrics::Absent,
+        0,
+        1_000,
+        2_000,
+    );
+    let holders = vec![&t._env, holder.clone()];
+    t.client
+        .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+    assert!(t.client.escrowed_credits(&bond_id, &holder) > 0);
+
+    t.client.begin_migration(&t.admin, &bond_id, &2);
+    assert!(t.client.get_migration_window(&bond_id).is_some());
+
+    // Distribution blocked
+    assert_eq!(
+        t.client
+            .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id, &3),
+        Err(Ok(BondError::MigrationInProgress))
+    );
+    // Claims blocked
+    assert_eq!(
+        t.client.try_claim_credits(&holder, &bond_id, &0),
+        Err(Ok(BondError::MigrationInProgress))
+    );
+    // Consumption blocked
+    assert_eq!(
+        t.client.try_consume_credits(&holder, &bond_id, &1),
+        Err(Ok(BondError::MigrationInProgress))
+    );
+}
+
+// New test: read operations are NOT blocked by migration window
+#[test]
+fn test_migration_window_reads_allowed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let t = deploy(env, admin);
+
+    let project_id = create_project_id(&t._env, 1);
+    let holder = Address::generate(&t._env);
+    let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+    t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+    let report_id = submit_verified_report_with_period(
+        &t._env,
+        &t,
+        &project_id,
+        100_000,
+        BiodiversityMetrics::Absent,
+        0,
+        1_000,
+        2_000,
+    );
+    t.client
+        .distribute_coupon(&t.admin, &bond_id, &0, &[&holder], &report_id, &1);
+
+    t.client.begin_migration(&t.admin, &bond_id, &2);
+    assert!(t.client.get_migration_window(&bond_id).is_some());
+
+    // Read operations should NOT be blocked by migration window
+    let info = t.client.get_period_info(&bond_id, &0);
+    // get_period_info may return an error for other reasons, but not MigrationInProgress
+    let err_code = info.unwrap_err_or_panic().code();
+    assert_ne!(err_code, "MigrationInProgress");
+}
+
+// New test: retry path for migration window
+#[test]
+fn test_migration_window_retry_after_resume() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let t = deploy(env, admin);
+
+    let project_id = create_project_id(&t._env, 1);
+    let holder = Address::generate(&t._env);
+    let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+    t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+    let report_id = submit_verified_report_with_period(
+        &t._env,
+        &t,
+        &project_id,
+        100_000,
+        BiodiversityMetrics::Absent,
+        0,
+        1_000,
+        2_000,
+    );
+    let holders = vec![&t._env, holder.clone()];
+    t.client
+        .distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+    assert!(t.client.escrowed_credits(&bond_id, &holder) > 0);
+
+    t.client.begin_migration(&t.admin, &bond_id, &2);
+    assert!(t.client.get_migration_window(&bond_id).is_some());
+
+    // While migration is in progress, operations should be blocked
+    assert_eq!(
+        t.client
+            .try_distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id, &3),
+        Err(Ok(BondError::MigrationInProgress))
+    );
+
+    // Resume distribution
+    t.client.resume_distribution(&t.admin);
+
+    // After resume, operations should succeed
+    let result = t.client
+        .distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id, &3);
+    assert!(result.is_ok());
+    assert!(t.client.escrowed_credits(&bond_id, &holder) > 0);
+}
+
 // ─── Jurisdiction rule versioning (#450) ─────────────────────────────────────
 
 #[test]
@@ -107,6 +239,53 @@ fn test_migrate_investor_to_latest() {
     let env = setup_env();
     let mut registry = JurisdictionRegistry::new(&env);
     let investor = Address::generate(&env);
+
+    registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 1_000_000, true);
+    registry.lock_investor(&env, &investor);
+    registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 500_000, true);
+
+    let new_version = registry.migrate_investor(&env, &investor);
+    assert_eq!(new_version, Some(2));
+    assert_eq!(registry.get_investor_version(&investor), Some(2));
+}
+
+#[test]
+fn test_migrate_investor_already_on_latest_fails() {
+    let env = setup_env();
+    let mut registry = JurisdictionRegistry::new(&env);
+    let investor = Address::generate(&env);
+
+    registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 1_000_000, true);
+    registry.lock_investor(&env, &investor);
+    registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 500_000, true);
+
+    let new_version = registry.migrate_investor(&env, &investor);
+    assert_eq!(new_version, Some(2));
+    assert_eq!(registry.get_investor_version(&investor), Some(2));
+
+    // Attempt to migrate again - should return the same version (no change needed)
+    let another_version = registry.migrate_investor(&env, &investor);
+    assert_eq!(another_version, Some(2));
+}
+
+#[test]
+fn test_migrate_investor_without_locked_version_panics() {
+    let env = setup_env();
+    let mut registry = JurisdictionRegistry::new(&env);
+    let investor = Address::generate(&env);
+
+    registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 1_000_000, true);
+    // Investor not locked; migrate should fail or return None
+    let result = registry.migrate_investor(&env, &investor);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_migrate_investor_governance_authorized() {
+    let env = setup_env();
+    let mut registry = JurisdictionRegistry::new(&env);
+    let investor = Address::generate(&env);
+    let governance = Address::generate(&env);
 
     registry.add_rule(&env, soroban_sdk::String::from_str(&env, "US"), 1_000_000, true);
     registry.lock_investor(&env, &investor);

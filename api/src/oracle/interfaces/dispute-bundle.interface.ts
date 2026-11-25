@@ -60,7 +60,7 @@ export function computeBundleDigest(
 }
 
 export function encodeBase58btc(input: Buffer): string {
-  let digits = [0];
+  const digits = [0];
   for (const byte of input) {
     let carry = byte;
     for (let i = 0; i < digits.length; i += 1) {

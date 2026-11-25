@@ -5,6 +5,7 @@ import {
   MigrationRecord,
   MigrationRunReport,
 } from './migration.interface';
+import { ReleaseReadinessReport, evaluateMigrationReleaseReadiness } from './release-readiness';
 
 /**
  * Migration safety framework (issue #263): dry-run preview, mandatory
@@ -147,6 +148,23 @@ export class MigrationSafetyService {
 
   getRegisteredIds(): string[] {
     return [...this.definitions.keys()];
+  }
+
+  /**
+   * Go/no-go for a release containing `releaseMigrationIds` (default: every
+   * registered migration, in registration order) (#514). Read-only.
+   */
+  evaluateReleaseReadiness(
+    releaseMigrationIds?: string[],
+    options: { now?: Date; maxDryRunAgeMs?: number } = {},
+  ): ReleaseReadinessReport {
+    return evaluateMigrationReleaseReadiness({
+      releaseMigrationIds: releaseMigrationIds ?? this.getRegisteredIds(),
+      definitions: [...this.definitions.values()],
+      history: this.history,
+      now: options.now ?? new Date(),
+      maxDryRunAgeMs: options.maxDryRunAgeMs,
+    });
   }
 
   isRegistered(migrationId: string): boolean {

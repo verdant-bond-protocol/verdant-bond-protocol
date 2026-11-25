@@ -1,6 +1,7 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Optional } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { SanctionsStatus } from '../interfaces/compliance.interface';
+import { InvestorEligibilityCacheService } from '../../auth/investor-eligibility-cache.service';
 
 // Default initial sanctioned entities (SDN list sample for testing and dev)
 const SEED_SANCTIONED_ADDRESSES = new Set<string>([
@@ -21,7 +22,9 @@ export class SanctionsService implements OnModuleInit {
   private refreshCadence: string = '0 0 * * *';
   private alertRaised: boolean = false;
 
-  constructor() {
+  constructor(
+    @Optional() private readonly eligibilityCache?: InvestorEligibilityCacheService,
+  ) {
     const configuredHours = Number(process.env.SANCTIONS_MAX_STALENESS_HOURS);
     if (!Number.isNaN(configuredHours) && configuredHours > 0) {
       this.maxStalenessHours = configuredHours;
@@ -76,6 +79,7 @@ export class SanctionsService implements OnModuleInit {
    */
   addSanctionedAddress(address: string, reason?: string): void {
     this.sanctionedAddresses.add(address);
+    this.eligibilityCache?.onStatusChanged(address, null, 'SANCTIONED', reason ?? 'sanctions:address_added');
   }
 
   /**
@@ -110,6 +114,7 @@ export class SanctionsService implements OnModuleInit {
     if (opts?.additionalAddresses) {
       for (const addr of opts.additionalAddresses) {
         this.sanctionedAddresses.add(addr);
+        this.eligibilityCache?.onStatusChanged(addr, null, 'SANCTIONED', 'sanctions:batch_refresh');
       }
     }
     if (opts?.additionalCountries) {

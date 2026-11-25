@@ -9,6 +9,7 @@ import { HolderIndexService } from './holder-index.service';
 import { StaleIndexDetectionService } from './stale-index-detection.service';
 import { MaturedBondArchivalService } from './matured-bond-archival.service';
 import { LiabilityReserveAlertService } from './liability-reserve-alert.service';
+import { SubscriptionCancellationService } from './subscription-cancellation.service';
 
 @Module({
   imports: [OracleModule, ComplianceModule],
@@ -21,6 +22,7 @@ import { LiabilityReserveAlertService } from './liability-reserve-alert.service'
     StaleIndexDetectionService,
     MaturedBondArchivalService,
     LiabilityReserveAlertService,
+    SubscriptionCancellationService,
   ],
   exports: [
     BondsService,
@@ -30,6 +32,7 @@ import { LiabilityReserveAlertService } from './liability-reserve-alert.service'
     StaleIndexDetectionService,
     MaturedBondArchivalService,
     LiabilityReserveAlertService,
+    SubscriptionCancellationService,
   ],
 })
 export class BondsModule {}

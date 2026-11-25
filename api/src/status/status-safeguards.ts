@@ -18,8 +18,8 @@ import type {
   PublicIncident,
   PublicMaintenanceWindow,
   StatusReport,
-} from './status.interface.ts';
-import { STATUS_SCHEMA_VERSION, StatusError } from './status.interface.ts';
+} from './status.interface';
+import { STATUS_SCHEMA_VERSION, StatusError } from './status.interface';
 
 export function redactSecretsFromText(text: string): string {
   if (!text) return text;

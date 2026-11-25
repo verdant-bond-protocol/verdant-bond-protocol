@@ -12,6 +12,7 @@ import {
 } from '../interfaces/export.interface';
 import { RedisService } from '../../common/services/redis.service';
 import { ExportStreamPipeline } from './export-stream.pipeline';
+import { ExportRedactionMode } from './export-field-redaction';
 import * as crypto from 'crypto';
 
 const EXPORT_SCHEMA_VERSION = '1.0.0';
@@ -167,12 +168,13 @@ export class ExportService {
     caller: ExportCaller,
     abortSignal?: AbortSignal,
     chunkConsumer?: (chunk: ExportableRecord[]) => Promise<void>,
+    redaction?: ExportRedactionMode,
   ): Promise<ExportStreamResult> {
     const result = await this.pipeline.streamExport(
       exportId,
       exportType,
       source,
-      { caller, abortSignal },
+      { caller, abortSignal, redaction },
       chunkConsumer,
       () => this.isExportCancelled(exportId),
     );

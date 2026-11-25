@@ -6,7 +6,16 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { Response, Request } from 'express';
-import { ContractException } from '../../stellar/contract-errors';
+import { ContractException, ContractRetryStrategy, stableContractMessage } from '../../stellar/contract-errors';
+
+/** Client-safe next step for non-retryable contract errors (#641). */
+const CONTRACT_REMEDIATION: Record<ContractRetryStrategy, string> = {
+  none: 'Do not retry this request unchanged. Inspect `contract.code` and correct the request or caller.',
+  after_state_change:
+    'Retry only after the blocking condition in `contract.code` is resolved (for example a report is verified or a pool is funded).',
+  resync_nonce: 'Retry the request; the API re-reads the on-chain nonce on every attempt.',
+  backoff: 'Retry with exponential backoff and the same idempotency key.',
+};
 import { ErrorCode, ErrorTaxonomy, DomainException, problemTypeUri, remediationFor } from '../errors/error-codes';
 import { ApiProblemException } from '../errors/problem-exception';
 
@@ -27,6 +36,11 @@ type ProblemDetail = {
     address?: string;
     method?: string;
     rawErrorCode?: number;
+    /** Stable contract error code, e.g. `BOND_REDEMPTION_UNDERFUNDED` (#641). */
+    code?: string;
+    category?: string;
+    errorClass?: string;
+    retryStrategy?: string;
   };
 };
 
@@ -110,15 +124,32 @@ export class Rfc7807ExceptionFilter implements ExceptionFilter {
       remediation = remediationFor(mappedCode);
 
       if (exception instanceof ContractException) {
+        // The top-level `code` stays SETTLEMENT_FAILED for backwards
+        // compatibility; the precise stable code and its classification are
+        // exposed under `contract` (#641). `retryable` follows the precise
+        // classification so consumers never auto-retry an authorization or
+        // already-filled failure.
+        const descriptor = exception.descriptor;
         title = 'Contract Error';
         code = ErrorCode.SETTLEMENT_FAILED;
-        detail = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage;
-        retryable = ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].retryable;
-        remediation = remediationFor(ErrorCode.SETTLEMENT_FAILED);
+        retryable = descriptor.retryable;
+        // The SETTLEMENT_FAILED copy promises a safe retry, so it is used only
+        // when that is true. Otherwise the curated (non-sensitive) message
+        // from ERROR_MAPPINGS is shown — never the raw contract detail.
+        detail = retryable
+          ? ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage
+          : stableContractMessage(descriptor.code) ?? ErrorTaxonomy[ErrorCode.SETTLEMENT_FAILED].safeMessage;
+        remediation = retryable
+          ? remediationFor(ErrorCode.SETTLEMENT_FAILED)
+          : CONTRACT_REMEDIATION[descriptor.retryStrategy];
         contract = {
           address: exception.contractAddress,
           method: exception.method,
           rawErrorCode: exception.rawErrorCode,
+          code: descriptor.code,
+          category: descriptor.category,
+          errorClass: descriptor.errorClass,
+          retryStrategy: descriptor.retryStrategy,
         };
       }
     } else {

@@ -132,11 +132,23 @@ export function geoProximityScore(distKm: number, maxRadiusKm = 100): number {
 }
 
 /**
+ * Code-point comparison of two identifiers, independent of the process locale
+ * and ICU version. `String.prototype.localeCompare` can order non-ASCII IDs
+ * differently across hosts, which would change candidate IDs and scan order;
+ * this comparator is byte-for-byte reproducible everywhere.
+ */
+export function compareIds(a: string, b: string): number {
+  const left = String(a);
+  const right = String(b);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
  * Computes an order-independent deterministic candidate ID.
  * Regardless of whether (idA, idB) or (idB, idA) is passed, returns the identical hash.
  */
 export function deterministicCandidateId(entityType: string, idA: string, idB: string): string {
-  const sorted = [String(idA), String(idB)].sort((x, y) => x.localeCompare(y));
+  const sorted = [String(idA), String(idB)].sort(compareIds);
   return createHash('sha256')
     .update(`${entityType}:${sorted[0]}:${sorted[1]}`)
     .digest('hex');
@@ -177,8 +189,39 @@ export function stableSortCandidates<T>(candidates: CandidateDuplicate<T>[]): Ca
     if (b.confidenceScore !== a.confidenceScore) {
       return b.confidenceScore - a.confidenceScore;
     }
-    const cmpPrimary = a.primaryId.localeCompare(b.primaryId);
+    const cmpPrimary = compareIds(a.primaryId, b.primaryId);
     if (cmpPrimary !== 0) return cmpPrimary;
-    return a.secondaryId.localeCompare(b.secondaryId);
+    return compareIds(a.secondaryId, b.secondaryId);
   });
+}
+
+/** Canonical inputs to the content-bearing scan fingerprint (see below). */
+export interface ScanFingerprintV2Input {
+  entityType: string;
+  minConfidence: number;
+  totalScanned: number;
+  candidates: Array<{
+    id: string;
+    primaryId: string;
+    secondaryId: string;
+    confidenceScore: number;
+    primaryDigest: string;
+    secondaryDigest: string;
+    status: string;
+  }>;
+}
+
+/**
+ * Additive, content-bearing fingerprint for a scan.
+ *
+ * The legacy `scanFingerprint` hashes candidate IDs only, so two scans whose
+ * scores or review states drift but whose pairs do not change produce the same
+ * value. This v2 also covers scores, state digests, review status and the
+ * confidence threshold. It is emitted alongside (never in place of) the
+ * legacy field so existing clients keep working.
+ */
+export function computeScanFingerprintV2(input: ScanFingerprintV2Input): string {
+  return createHash('sha256')
+    .update(stableJsonStringify(input))
+    .digest('hex');
 }

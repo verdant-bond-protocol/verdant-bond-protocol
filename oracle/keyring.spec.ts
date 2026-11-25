@@ -2,6 +2,9 @@ import {
   OracleKeyring,
   overlapWindow,
   DuplicateKeyIdError,
+  UnknownKeyIdError,
+  KeyAlreadyRevokedError,
+  KeyNotRevokedError,
   OracleKey,
 } from './keyring';
 import { signEvidence } from '../ipfs/evidence';
@@ -156,5 +159,106 @@ describe('Oracle key rotation with overlapping validity windows (#447)', () => {
         -1,
       ),
     ).toThrow(/overlapMs must be non-negative/);
+  });
+
+  describe('key revocation and recovery (#618)', () => {
+    it('revokes an active key immediately and rejects signatures at or after revocation', () => {
+      const start = new OracleKeyring([v1]);
+      const revokedAt = T0 + 2 * DAY;
+      const { keyring, revoked } = start.revokeKey(
+        v1.keyId,
+        revokedAt,
+        'key_compromised',
+        'security-admin',
+      );
+
+      expect(revoked.revokedAtMs).toBe(revokedAt);
+      expect(keyring.isRevoked(v1.keyId)).toBe(true);
+      expect(keyring.isRevoked(v1.keyId, revokedAt - 1)).toBe(false);
+      expect(keyring.isRevoked(v1.keyId, revokedAt)).toBe(true);
+      expect(keyring.getRevocation(v1.keyId)).toEqual({
+        keyId: v1.keyId,
+        revokedAtMs: revokedAt,
+        reason: 'key_compromised',
+        revokedBy: 'security-admin',
+      });
+
+      // Signing before revocation remains valid; signing at/after revocation fails.
+      const beforeRevoke = start.sign(payload, revokedAt - 1000);
+      expect(keyring.verify(payload, beforeRevoke)).toEqual({ valid: true, keyId: v1.keyId });
+
+      const afterRevoke = start.sign(payload, revokedAt);
+      const result = keyring.verify(payload, afterRevoke);
+      expect(result.valid).toBe(false);
+      expect(result.error).toMatch(/was revoked at/);
+      expect(() => keyring.sign(payload, revokedAt)).toThrow(/No oracle key valid/);
+    });
+
+    it('performs atomic emergency rotateAndRevoke with zero overlap', () => {
+      const start = new OracleKeyring([v1]);
+      const emergencyAt = T0 + 5 * DAY;
+      const v2: OracleKey = {
+        keyId: 'VERDANT_ORACLE_KEY_V2_EMERGENCY',
+        secret: 'emergency-secret',
+        validFromMs: emergencyAt,
+        validUntilMs: null,
+      };
+
+      const { keyring } = start.rotateAndRevoke(
+        v2,
+        v1.keyId,
+        emergencyAt,
+        'compromised_host',
+        'ops-oncall',
+      );
+
+      const oldSig = start.sign(payload, emergencyAt);
+      expect(keyring.verify(payload, oldSig).valid).toBe(false);
+
+      const newSig = keyring.sign(payload, emergencyAt);
+      expect(newSig.keyId).toBe(v2.keyId);
+      expect(keyring.verify(payload, newSig)).toEqual({ valid: true, keyId: v2.keyId });
+    });
+
+    it('supports recovery by reinstating a non-expired revoked key', () => {
+      const start = new OracleKeyring([v1]);
+      const revokedAt = T0 + 2 * DAY;
+      const { keyring: revokedRing } = start.revokeKey(v1.keyId, revokedAt, 'false_alarm');
+      expect(revokedRing.isRevoked(v1.keyId)).toBe(true);
+
+      const { keyring: restoredRing, reinstated } = revokedRing.reinstateKey(
+        v1.keyId,
+        revokedAt + 1000,
+      );
+      expect(reinstated.revokedAtMs).toBeNull();
+      expect(restoredRing.isRevoked(v1.keyId)).toBe(false);
+      expect(restoredRing.getRevocation(v1.keyId)).toBeNull();
+
+      const sig = restoredRing.sign(payload, revokedAt + 2000);
+      expect(restoredRing.verify(payload, sig)).toEqual({ valid: true, keyId: v1.keyId });
+    });
+
+    it('rejects invalid revocation and reinstatement failure paths', () => {
+      const expiring: OracleKey = {
+        keyId: 'EXPIRING',
+        secret: 's',
+        validFromMs: T0,
+        validUntilMs: T0 + 5 * DAY,
+      };
+      const ring = new OracleKeyring([expiring]);
+
+      expect(() => ring.revokeKey('MISSING', T0)).toThrow(UnknownKeyIdError);
+      expect(() => ring.revokeKey(expiring.keyId, -1)).toThrow(/non-negative/);
+      expect(() => ring.reinstateKey(expiring.keyId, T0)).toThrow(KeyNotRevokedError);
+      expect(() => ring.reinstateKey('MISSING', T0)).toThrow(UnknownKeyIdError);
+
+      const { keyring: revokedRing } = ring.revokeKey(expiring.keyId, T0 + DAY);
+      expect(() => revokedRing.revokeKey(expiring.keyId, T0 + 2 * DAY)).toThrow(
+        KeyAlreadyRevokedError,
+      );
+      expect(() => revokedRing.reinstateKey(expiring.keyId, T0 + 5 * DAY)).toThrow(
+        /Cannot reinstate expired/,
+      );
+    });
   });
 });

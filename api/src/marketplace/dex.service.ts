@@ -185,10 +185,15 @@ export class DexService {
     }
 
     if (this.priceImpactService) {
+      // #638: evaluate the fill the buyer will actually get — this order, at
+      // this order's price — against the buyer's own tolerance as well as the
+      // tier cap. Runs before any contract call, so a rejection consumes no
+      // nonce and moves no escrow.
       const evaluation = await this.priceImpactService.evaluatePriceImpact(
         order.bondId,
         dto.amount.toString(),
         order.quoteAsset,
+        { targetOrder: order, maxPriceImpactBps: dto.maxPriceImpactBps },
       );
       this.priceImpactService.assertPriceImpactPermitted(evaluation);
     }
@@ -489,20 +494,14 @@ export class DexService {
   }
 
   private mapDexError(error: unknown): Error {
+    let code: number | undefined;
     if (error instanceof ContractException) {
-      const code = error.rawErrorCode as number | undefined;
-      if (code === DEX_ERROR_CODE.InsufficientFunds) {
-        return new HttpException(
-          'Insufficient escrowed funds. Call POST /marketplace/escrow/deposit before purchasing.',
-          HttpStatus.PAYMENT_REQUIRED,
-        );
-      }
-      return new BadRequestException(error.detail || String(error.message));
+      code = error.rawErrorCode as number | undefined;
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      const match = message.match(/#(\d+)/) ?? message.match(/Error\(-(\d+)/);
+      code = match ? Number(match[1]) : undefined;
     }
-
-    const message = error instanceof Error ? error.message : String(error);
-    const match = message.match(/#(\d+)/) ?? message.match(/Error\(-(\d+)/);
-    const code = match ? Number(match[1]) : undefined;
 
     if (code === DEX_ERROR_CODE.InsufficientFunds) {
       return new HttpException(
@@ -525,10 +524,12 @@ export class DexService {
       return new NotFoundException('Order not found.');
     }
 
+    // A ContractException is itself an HttpException: returning it unchanged
+    // keeps its stable code and retry classification for consumers (#641).
     if (error instanceof HttpException) {
       return error;
     }
 
-    return new BadRequestException(message);
+    return new BadRequestException(error instanceof Error ? error.message : String(error));
   }
 }

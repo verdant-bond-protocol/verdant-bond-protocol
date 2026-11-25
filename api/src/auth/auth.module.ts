@@ -7,8 +7,10 @@ import { JwtStrategy } from './jwt.strategy';
 import { KycService } from './kyc.service';
 import { KycGuard } from '../common/guards/kyc.guard';
 import { ConfigService } from '../config/config.service';
+import { InvestorEligibilityCacheService } from './investor-eligibility-cache.service';
 
 import { RbacService } from './rbac.service';
+import { SessionService } from './session.service';
 
 @Global()
 @Module({
@@ -23,7 +25,7 @@ import { RbacService } from './rbac.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService],
-  exports: [AuthService, KycService, KycGuard, RbacService],
+  providers: [AuthService, JwtStrategy, KycService, KycGuard, RbacService, SessionService, InvestorEligibilityCacheService],
+  exports: [AuthService, KycService, KycGuard, RbacService, SessionService, InvestorEligibilityCacheService],
 })
 export class AuthModule {}

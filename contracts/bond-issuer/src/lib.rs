@@ -397,7 +397,7 @@ impl BondIssuer {
         if proposed != pending {
             return Err(BondError::Unauthorized);
         }
-        if env.ledger().sequence() > expiry {
+        if env.ledger().sequence() >= expiry {
             return Err(BondError::AdminTransferExpired);
         }
 

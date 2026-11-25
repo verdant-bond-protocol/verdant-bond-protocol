@@ -1,3 +1,4 @@
+mod default_waterfall_property_test;
 mod property_fuzz_coupon;
 #[cfg(test)]
 mod integration {

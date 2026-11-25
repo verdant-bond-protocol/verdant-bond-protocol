@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req, Res, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException, ForbiddenException
+  Controller, Get, Post, Body, Param, Query, Req, Res, HttpCode, HttpStatus, UseGuards, ParseIntPipe, Header, NotFoundException, ForbiddenException, ConflictException
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { BondsService } from './bonds.service';
@@ -47,6 +47,11 @@ import {
 import { CouponBacktestService, PerformanceDataset, BacktestReport } from './coupon-backtest.service';
 import { MaturedBondArchivalService, ArchiveBondDto, RestoreBondDto, ArchivalResult, RestoreResult, BondRestoreVerificationReport } from './matured-bond-archival.service';
 import { Optional } from '@nestjs/common';
+import {
+  SubscriptionCancellationService,
+  CancelSubscriptionDto,
+  SubscriptionCancellationReceipt,
+} from './subscription-cancellation.service';
 
 @ApiTags('bonds')
 @ApiBearerAuth()
@@ -57,6 +62,7 @@ export class BondsController {
     private readonly regulatorExportService: RegulatorExportService,
     private readonly backtestService: CouponBacktestService,
     @Optional() private readonly archivalService?: MaturedBondArchivalService,
+    @Optional() private readonly cancellationService?: SubscriptionCancellationService,
   ) {}
 
   @Post()
@@ -123,6 +129,32 @@ export class BondsController {
     @Body() dto: SubscribeDto,
   ): Promise<SubscriptionResponse> {
     return this.bondsService.subscribe(id, dto);
+  }
+
+  /**
+   * Safe cancellation of a pending subscription (#639).
+   */
+  @Post(':id/subscribe/cancel')
+  @UseGuards(JwtAuthGuard, KycGuard)
+  @HttpCode(HttpStatus.OK)
+  async cancelSubscription(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelSubscriptionDto,
+    @Req() req: any,
+  ): Promise<SubscriptionCancellationReceipt> {
+    const user = req.user;
+    const actorRole = user?.isAdmin ? 'admin' : 'investor';
+    if (!this.cancellationService) {
+      throw new ConflictException({
+        code: 'CANCELLATION_SERVICE_UNAVAILABLE',
+        message: 'Subscription cancellation service is not configured',
+      });
+    }
+    return this.cancellationService.cancel(id, dto, {
+      address: user?.walletAddress || dto.investorAddress,
+      role: actorRole,
+      isAdmin: !!user?.isAdmin,
+    });
   }
 
   /**

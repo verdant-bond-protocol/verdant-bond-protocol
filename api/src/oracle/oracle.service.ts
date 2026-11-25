@@ -638,8 +638,14 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
    */
   private async assertEvidenceContentMatches(evidenceHash: string): Promise<void> {
     if (!evidenceHash.startsWith('Qm')) return;
+    const fallbackGateways = (process.env.IPFS_FALLBACK_GATEWAYS || 'https://ipfs.io/ipfs/,https://cloudflare-ipfs.com/ipfs/,https://dweb.link/ipfs/,https://gateway.ipfs.io/ipfs/')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+
     const result = await fetchAndVerifyEvidence(evidenceHash, {
       gateway: process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/',
+      fallbackGateways,
       timeoutMs: Number(process.env.ORACLE_EVIDENCE_RETRIEVABILITY_TIMEOUT_MS) || 5000,
       maxAttempts: Number(process.env.ORACLE_EVIDENCE_FETCH_ATTEMPTS) || 3,
       maxBytes: Number(process.env.ORACLE_EVIDENCE_MAX_BYTES) || 10 * 1024 * 1024,
@@ -665,30 +671,40 @@ async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
    * network-independent per this issue's contributor guidance. Only
    * meaningful for a CIDv0 reference: a bare hex digest names no gateway to
    * fetch from, so it is skipped rather than treated as unretrievable.
+   * Supports fallback gateways when primary gateway is unreachable (#627).
    */
   private async assertEvidenceRetrievable(evidenceHash: string): Promise<void> {
     if (!evidenceHash.startsWith('Qm')) return;
 
-    const gateway = process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/';
+    const primaryGateway = process.env.IPFS_GATEWAY || 'https://gateway.pinata.cloud/ipfs/';
+    const fallbackGateways = (process.env.IPFS_FALLBACK_GATEWAYS || 'https://ipfs.io/ipfs/,https://cloudflare-ipfs.com/ipfs/,https://dweb.link/ipfs/,https://gateway.ipfs.io/ipfs/')
+      .split(',')
+      .map((g) => g.trim())
+      .filter(Boolean);
+    const gateways = [primaryGateway, ...fallbackGateways];
     const timeoutMs = Number(process.env.ORACLE_EVIDENCE_RETRIEVABILITY_TIMEOUT_MS) || 5000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    try {
-      const response = await fetch(`${gateway}${evidenceHash}`, { signal: controller.signal });
-      if (!response.ok) {
-        throw new UnprocessableEntityException(
-          `Evidence ${evidenceHash} is not retrievable from the configured IPFS gateway (status ${response.status}).`,
-        );
+    let lastError = 'No gateway attempt succeeded';
+    for (const gateway of gateways) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(`${gateway}${evidenceHash}`, { signal: controller.signal });
+        if (response.ok) {
+          return; // Retrievable from this gateway
+        }
+        lastError = `status ${response.status} on ${gateway}`;
+      } catch (error) {
+        lastError = `${(error as Error).message} on ${gateway}`;
+      } finally {
+        clearTimeout(timer);
       }
-    } catch (error) {
-      if (error instanceof UnprocessableEntityException) throw error;
-      throw new UnprocessableEntityException(
-        `Evidence ${evidenceHash} could not be retrieved from the configured IPFS gateway: ${(error as Error).message}`,
-      );
-    } finally {
-      clearTimeout(timer);
     }
+
+    throw new UnprocessableEntityException(
+      `Evidence ${evidenceHash} could not be retrieved from any configured IPFS gateway: ${lastError}`,
+    );
   }
 
   async getProjectStalenessState(projectId: string): Promise<{

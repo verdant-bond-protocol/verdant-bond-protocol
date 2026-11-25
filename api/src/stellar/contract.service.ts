@@ -194,6 +194,16 @@ export class ContractService {
 
       const transactionResult = await this.pollTransaction(response.hash);
       if (transactionResult.status !== 'SUCCESS') {
+        // A transaction that passed simulation can still fail on-ledger when
+        // state changed in between (e.g. the order was filled). Surface the
+        // contract's stable code when the diagnostics carry one (#641).
+        const failedCode = this.extractContractErrorCode(
+          transactionResult.errorResult,
+          transactionResult.diagnosticEventsXdr,
+        );
+        if (failedCode !== undefined) {
+          this.throwMappedContractError(contractAddress, method, this.describeTransactionFailure(transactionResult), failedCode);
+        }
         throw new BadRequestException(
           `Contract transaction failed with status ${transactionResult.status}: ${this.describeTransactionFailure(transactionResult)}`,
         );
@@ -205,7 +215,14 @@ export class ContractService {
         successful: true,
       };
     } catch (error) {
-      if (error instanceof ContractException || error instanceof BadRequestException) {
+      // A poll timeout means the transaction was *accepted* and may still be
+      // applied: it is in-doubt, not invalid. Re-wrapping it as a 400 told
+      // callers the request was bad and hid the need to reconcile (#644).
+      if (
+        error instanceof ContractException ||
+        error instanceof BadRequestException ||
+        error instanceof GatewayTimeoutException
+      ) {
         throw error;
       }
       throw new BadRequestException(

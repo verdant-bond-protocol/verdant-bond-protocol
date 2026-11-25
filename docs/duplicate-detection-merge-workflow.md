@@ -117,8 +117,8 @@ When executing an approved merge, the reviewer specifies or accepts default fiel
 | **State Drift Between Review & Merge** | Target entity modified after review. `liveDigest !== snapshotDigest`. Merge refused with `409 Conflict: STATE_DRIFT`. | Re-run scan to update candidate snapshot. Reviewer re-reviews updated diffs before merging. |
 | **Transitive Merge Conflict ($A \to B$ then $B \to C$)** | Secondary record was already merged into another account in a previous merge. | Merge execution refused with `409 Conflict: Transitive conflict`. Reviewer must review against current canonical primary. |
 | **Cyclic / Self-Merge ($A \to A$)** | Input entity IDs are identical. | Refused at scan and merge boundaries with `400 Bad Request: Self-merge invariant violation`. |
-| **Merge Rollback State Drift** | Primary entity's attributes modified after merge was executed. | Rollback verifies primary record still reflects post-merge state before applying pre-merge snapshot. |
-| **Concurrent Review Race Condition** | Two reviewers concurrently review the same candidate. | First review commits; second review detects non-pending status or returns idempotent update. |
+| **Merge Rollback State Drift** | Primary entity's attributes modified after merge was executed. | Rollback restores the journal's `preMerge*` snapshots. It does **not** re-fetch live state first (known limitation — see the determinism addendum below); verify the restored entity after reversal. |
+| **Concurrent Review Race Condition** | Two reviewers concurrently review the same candidate. | The last write wins for non-merged candidates; a candidate already in `MERGED` cannot be re-reviewed (`409 Conflict`). Re-check status before acting on a review. |
 | **Secondary Account Activity Post-Merge** | Merged secondary wallet attempts transactions. | Secondary record is set to `KycStatus.NONE` or `Inactive`, preventing authorization at the guard boundary. |
 
 ---
@@ -148,3 +148,41 @@ If an authorized merge is found to have erroneously combined distinct entities (
    - Primary record: Verify status and expiry reverted to `preMergePrimary`.
    - Secondary record: Verify re-activated from `NONE`/`Inactive` to original pre-merge status.
    - Audit trail: Verify `merge_reversed` entry recorded in `AuditService` with operator identity and reason.
+
+---
+
+## Determinism Contract (additive, v2)
+
+Reproducibility is covered by `api/src/deduplication/deduplication.determinism.spec.ts`.
+
+**What is stable:**
+- Candidate IDs are `sha256(entityType:sorted(primaryId,secondaryId))`. Ordering uses a
+  code-point comparator (`compareIds`) rather than `localeCompare`, so IDs and result
+  order are identical across host locales and ICU versions.
+- Similarity scores are rounded to 4 decimals; `stableSortCandidates` breaks ties by
+  primary ID then secondary ID using the same comparator.
+- `scanFingerprint` keeps its original definition (entity type, scanned count,
+  candidate IDs, **excluding time**) and its original wire field.
+- `scanFingerprintV2` is an **additional** field. It also hashes the confidence
+  threshold, per-candidate scores, canonical state digests and review status, so a
+  silent score/digest drift cannot leave a false "unchanged" signal. It is optional
+  on `DeduplicationScanResult` — no existing consumer contract is broken.
+
+**What is intentionally NOT deterministic:**
+- `scannedAt`, `detectedAt`, review/merge timestamps and reversal timestamps are
+  wall-clock values. Tests inject a fixed clock via `service.now`.
+- Merge journal IDs include a timestamp and a UUID. Repeating the same merge must
+  produce a distinct journal ID; do not use a journal ID as a content fingerprint.
+- A scan result is a snapshot of the in-memory stores. Candidates and journals are
+  **not durable** — a process restart loses them. Re-run a scan after restart and
+  reconcile against the audit chain before trusting review state.
+
+**Recovery / rollback behavior:**
+- State drift between review and merge → `409 STATE_DRIFT`; re-scan, re-review, merge.
+- Rejected audit writes are currently non-fatal. Check the audit chain when a
+  review/merge must be evidentiary; a missing entry requires manual reconstruction.
+- Reversal restores the journal's pre-merge snapshots but does not verify live state.
+  After a reversal, confirm the entity values directly, then re-review and re-merge
+  if the reversal itself must be undone.
+- There is no "undo" for a scan; re-scanning refreshes snapshots and resets review
+  state for drifted candidates.
