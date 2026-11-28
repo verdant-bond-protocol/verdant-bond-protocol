@@ -7,6 +7,7 @@ import { KycStoreService } from '../../common/services/kyc-store.service';
 import { TrancheType } from '../interfaces/compliance.interface';
 import { KycStatus } from '../../common/interfaces/authenticated-request.interface';
 import { ComplianceSnapshotService } from '../services/compliance-snapshot.service';
+import { KycCommitmentService } from '../services/kyc-commitment.service';
 
 describe('ComplianceController', () => {
   let controller: ComplianceController;
@@ -42,6 +43,7 @@ describe('ComplianceController', () => {
         { provide: SanctionsService, useValue: sanctionsService },
         { provide: KycStoreService, useValue: mockKycStore },
         { provide: ComplianceSnapshotService, useValue: { get: jest.fn(), verify: jest.fn() } },
+        { provide: KycCommitmentService, useValue: {} },
       ],
     }).compile();
 
@@ -104,5 +106,62 @@ describe('ComplianceController', () => {
 
     expect(status.isStale).toBe(false);
     expect(sanctionsService.isSanctioned('GNEWSANCTION12345')).toBe(true);
+  });
+
+  describe('Eligibility Cache & Invalidation Endpoints (#636)', () => {
+    let cache: any;
+
+    beforeEach(async () => {
+      const { InvestorEligibilityCacheService } = await import('../../auth/investor-eligibility-cache.service');
+      cache = new InvestorEligibilityCacheService();
+
+      const mockKycStore = {
+        get: jest.fn().mockResolvedValue({
+          walletAddress: WALLET,
+          status: KycStatus.ACCREDITED,
+          source: 'test',
+          updatedAt: Date.now(),
+        }),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        controllers: [ComplianceController],
+        providers: [
+          { provide: ComplianceRulesEngine, useValue: rulesEngine },
+          { provide: ComplianceAttestationService, useValue: attestationService },
+          { provide: SanctionsService, useValue: sanctionsService },
+          { provide: KycStoreService, useValue: mockKycStore },
+          { provide: ComplianceSnapshotService, useValue: { get: jest.fn(), verify: jest.fn() } },
+          { provide: KycCommitmentService, useValue: {} },
+          { provide: InvestorEligibilityCacheService, useValue: cache },
+        ],
+      }).compile();
+
+      controller = moduleRef.get(ComplianceController);
+    });
+
+    it('caches evaluate decision and invalidates on admin request', async () => {
+      const decision1 = await controller.evaluate({
+        investorAddress: WALLET,
+        bondId: 10,
+        tranche: TrancheType.RESTRICTED_ACCREDITED,
+        jurisdiction: 'US',
+      });
+      expect(decision1.eligible).toBe(true);
+      expect(cache.size()).toBe(1);
+
+      // Invalidate for this address
+      const invRes = await controller.invalidateInvestorEligibility(WALLET, { reason: 'test:status_change' });
+      expect(invRes.dropped).toBe(1);
+      expect(cache.size()).toBe(0);
+
+      // Flush all
+      // The invalidation above bumped the investor's generation; write at the current one.
+      cache.set(WALLET, '10', { eligible: true }, KycStatus.ACCREDITED, cache.generationOf(WALLET));
+      expect(cache.size()).toBe(1);
+      const flushRes = await controller.flushEligibilityCache({ user: { isAdmin: true, walletAddress: 'GADMIN' } });
+      expect(flushRes.flushed).toBe(1);
+      expect(cache.size()).toBe(0);
+    });
   });
 });

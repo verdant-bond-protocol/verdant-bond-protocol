@@ -61,6 +61,35 @@ The following are **never sampled out** (100% retention guarantee):
 
 ---
 
+## 3b. Deterministic sampling and HTTP labels (contributor slice)
+
+Two additive changes make the safeguards testable and effective on the
+automatic HTTP path:
+
+1. **`TelemetryConfig.samplingRandom`** injects the sampling draw (default
+   `Math.random`). Tests and incident replays can now assert the exact
+   keep/drop decision under adaptive load instead of tolerating a flaky
+   assertion. No production behaviour changes when it is omitted.
+2. **`TelemetryInterceptor` now attaches bounded labels** (`http_method`,
+   `http_route`, `actor_type`). Previously HTTP telemetry carried no labels, so
+   the cardinality guards in `TelemetryService` were never exercised by the
+   automatic path. The route uses Nest's parametrized `route.path` when
+   available; otherwise `normalizeTelemetryRoute()` collapses numeric ids,
+   UUIDs, Stellar addresses and opaque hashes/tokens to `:id`, `:uuid`,
+   `:address` and `:token`. Query strings are always dropped.
+
+`labels` is an optional field in `TelemetryFields`, so existing consumers are
+unaffected. Redaction still runs on label *values* before they are tracked, and
+invalid label keys are still discarded.
+
+Tests: `api/src/common/services/telemetry-safeguards.spec.ts` (deterministic
+adaptive sampling, route normalization, retry/auth retention) and
+`api/src/common/interceptors/telemetry.interceptor.spec.ts` (normal, failure,
+authorization and retry paths; 20 distinct bond ids collapse to one route
+series).
+
+---
+
 ## 4. Failure Modes & Recovery
 
 ### Failure Mode 1: Cardinality Clamping Saturating `__other__`
@@ -73,7 +102,19 @@ The following are **never sampled out** (100% retention guarantee):
 - **Diagnosis:** High volume of non-critical success queries.
 - **Remediation:** Lower `sampleRateSuccess` via runtime configuration or let adaptive volume reduction downsample automatically. Failures remain 100% captured.
 
+### Failure Mode 3: Route label explodes despite normalization
+- **Symptom:** `http_route` approaches `maxLabelCardinality` and clamps to `__other__`.
+- **Diagnosis:** A route segment is an unrecognized opaque value (e.g. a new id
+  format) or the router pattern is missing on a proxy-generated path.
+- **Remediation:** Extend `normalizeTelemetryRoute()` with a placeholder for the
+  new segment shape. Existing label sets are rebuilt after the next
+  `resetStats()`; dashboards must tolerate one cardinality reset.
+
 ### Rollback Procedure
 If telemetry configuration changes cause unexpected behavior:
 1. Revert to default `TelemetryConfig` with standard 100-cardinality cap and 1.0 sample rate.
 2. Call `telemetryService.resetStats()` to clear tracking caches without restarting the application service.
+3. To remove the HTTP labels while keeping the rest of the service, drop the
+   `labels` field from the two `this.telemetry.emit(...)` calls in
+   `TelemetryInterceptor`. This is an additive, backward-compatible field:
+   no stored data or downstream contract needs migration.

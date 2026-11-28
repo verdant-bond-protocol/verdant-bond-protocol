@@ -32,6 +32,11 @@ describe('FeatureFlagsService — Feature Rollout Guardrails (#425)', () => {
     it('should return false for disabled flags', () => {
       expect(service.isEnabled(FeatureFlag.ENABLE_SECONDARY_MARKET)).toBe(false);
     });
+
+    it('fails closed when a disabled feature is asserted', () => {
+      expect(() => service.assertEnabled(FeatureFlag.ENABLE_SECONDARY_MARKET))
+        .toThrow('not currently available');
+    });
   });
 
   describe('Normal rollout path', () => {

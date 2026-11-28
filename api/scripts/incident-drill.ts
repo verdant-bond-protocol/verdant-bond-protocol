@@ -80,6 +80,13 @@ async function main(): Promise<void> {
     if (!isJson) renderDrillReport(report);
   }
 
+  if (drillFilter === 'oracle' || drillFilter === 'circuit-breaker' || drillFilter === 'all') {
+    const report = await service.runOracleCircuitBreakerRecoveryDrill();
+    reports.push(report);
+    if (report.status === 'FAILED') hasFailure = true;
+    if (!isJson) renderDrillReport(report);
+  }
+
   if (isJson) {
     console.log(JSON.stringify(reports, null, 2));
   } else {

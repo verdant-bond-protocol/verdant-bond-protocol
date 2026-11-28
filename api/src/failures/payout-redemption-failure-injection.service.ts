@@ -78,6 +78,15 @@ export class PayoutRedemptionFailureInjectionService {
   }
 
   /**
+   * Consumes a matching rule for a *real* contract call (#644). Used by
+   * `ContractFaultInjector`, so operator-registered rules drive the real
+   * payout/redemption flows as well as the simulator.
+   */
+  consumeRule(flowType: FlowType, bondId?: number, targetAddress?: string): InjectionRule | null {
+    return this.matchAndConsumeRule(flowType, bondId, targetAddress);
+  }
+
+  /**
    * Find and consume an applicable injection rule for a given flow and target.
    */
   private matchAndConsumeRule(flowType: FlowType, bondId?: number, targetAddress?: string): InjectionRule | null {

@@ -22,6 +22,25 @@ export enum ErrorCode {
   // ── Ownership transfer ────────────────────────────────────────────────────
   OWNERSHIP_TRANSFER_PENDING = 'OWNERSHIP_TRANSFER_PENDING',
   OWNERSHIP_TRANSFER_EXPIRED = 'OWNERSHIP_TRANSFER_EXPIRED',
+
+  // ── Secondary market ──────────────────────────────────────────────────────
+  PRICE_IMPACT_EXCEEDED = 'PRICE_IMPACT_EXCEEDED',
+
+  // ── Compliance & governance ───────────────────────────────────────────────
+  RECEIPT_PENDING = 'RECEIPT_PENDING',
+
+  // ── Cross-currency quotes (#620) ──────────────────────────────────────────
+  QUOTE_EXPIRED = 'QUOTE_EXPIRED',
+  QUOTE_ALREADY_USED = 'QUOTE_ALREADY_USED',
+  QUOTE_SLIPPAGE_EXCEEDED = 'QUOTE_SLIPPAGE_EXCEEDED',
+  STALE_RATE_SOURCE = 'STALE_RATE_SOURCE',
+  QUOTE_BINDING_MISMATCH = 'QUOTE_BINDING_MISMATCH',
+
+  // ── Methodology versioning (#622) ─────────────────────────────────────────
+  METHODOLOGY_TAMPER_DETECTED = 'METHODOLOGY_TAMPER_DETECTED',
+  METHODOLOGY_IMMUTABLE = 'METHODOLOGY_IMMUTABLE',
+  METHODOLOGY_ALREADY_PINNED = 'METHODOLOGY_ALREADY_PINNED',
+  METHODOLOGY_VERSION_NOT_ALLOWED = 'METHODOLOGY_VERSION_NOT_ALLOWED',
 }
 
 export interface ErrorMetadata {
@@ -167,6 +186,80 @@ export const ErrorTaxonomy: Record<ErrorCode, Omit<ErrorMetadata, 'code'>> = {
     safeMessage: 'The ownership transfer proposal has expired. Please initiate a new transfer.',
     remediationHint: 'The acceptance window (TTL ledgers) elapsed. Issue a fresh propose_admin call to restart the process.',
     remediation: 'Initiate a new ownership transfer; the previous proposal has expired.',
+  },
+
+  // ── Secondary market ────────────────────────────────────────────────────────
+  [ErrorCode.PRICE_IMPACT_EXCEEDED]: {
+    retryable: false,
+    safeMessage: 'This trade exceeds the price-impact or slippage limit for this market.',
+    remediationHint: 'Thin-market guard (#638). No contract call or nonce was consumed. Inspect context.limitSource and the per-bond impact-limit config.',
+    remediation: 'Reduce the amount to `context.suggestedMaxAmount`, choose the best-priced order (`context.bestOrderId`), or raise your own `maxPriceImpactBps`.',
+  },
+
+  // ── Compliance & governance ─────────────────────────────────────────────────
+  [ErrorCode.RECEIPT_PENDING]: {
+    retryable: true,
+    safeMessage: 'The action was applied but its signed receipt is not yet issued.',
+    remediationHint: 'Audit write was rejected after a governance mutation (#632). The mutation is parked as pending_receipt; check audit store capacity, then have the caller retry with the same Idempotency-Key.',
+    remediation: 'Retry with the same `Idempotency-Key` (see `context.idempotencyKey`); the action will not be applied twice.',
+  },
+
+  // ── Cross-currency quotes (#620) ────────────────────────────────────────────
+  [ErrorCode.QUOTE_EXPIRED]: {
+    retryable: false,
+    safeMessage: 'The conversion quote has expired. Please request a new quote.',
+    remediationHint: 'Quote TTL elapsed before consumption (#620). No funds were converted.',
+    remediation: 'Request a fresh conversion quote and retry within its TTL.',
+  },
+  [ErrorCode.QUOTE_ALREADY_USED]: {
+    retryable: false,
+    safeMessage: 'This conversion quote has already been consumed.',
+    remediationHint: 'Single-use quote guard triggered (#620). If this was a network retry, pass the original Idempotency-Key.',
+    remediation: 'Request a new conversion quote, or retry with the original `Idempotency-Key` if checking prior result.',
+  },
+  [ErrorCode.QUOTE_SLIPPAGE_EXCEEDED]: {
+    retryable: false,
+    safeMessage: 'The conversion rate deviates too far from the reference rate.',
+    remediationHint: 'Rate exceeded configured maxSlippageBps (#620). Inspect rate source health.',
+    remediation: 'Wait for market rates to stabilize or request a quote within the allowed slippage tolerance.',
+  },
+  [ErrorCode.STALE_RATE_SOURCE]: {
+    retryable: true,
+    safeMessage: 'Exchange rate data is currently stale. Conversion cannot proceed.',
+    remediationHint: 'Rate observation age exceeded maxRateAgeMs (#620); fail-closed.',
+    remediation: 'Retry shortly once the rate source refreshes.',
+  },
+  [ErrorCode.QUOTE_BINDING_MISMATCH]: {
+    retryable: false,
+    safeMessage: 'This conversion quote is bound to a different account or purpose.',
+    remediationHint: 'Caller account or purpose did not match the quote binding (#620).',
+    remediation: 'Request a quote using the same account and purpose that will consume it.',
+  },
+
+  // ── Methodology versioning (#622) ───────────────────────────────────────────
+  [ErrorCode.METHODOLOGY_TAMPER_DETECTED]: {
+    retryable: false,
+    safeMessage: 'Methodology integrity verification failed.',
+    remediationHint: 'Recomputed SHA-256 of methodology document did not match stored contentHash (#622).',
+    remediation: 'Contact a protocol maintainer; this methodology version cannot be trusted.',
+  },
+  [ErrorCode.METHODOLOGY_IMMUTABLE]: {
+    retryable: false,
+    safeMessage: 'Active methodology versions are immutable and cannot be modified.',
+    remediationHint: 'Attempted to mutate an active methodology version (#622). Create a new version instead.',
+    remediation: 'Publish a new methodology version instead of editing an active one.',
+  },
+  [ErrorCode.METHODOLOGY_ALREADY_PINNED]: {
+    retryable: false,
+    safeMessage: 'This bond already has a permanently pinned methodology version.',
+    remediationHint: 'Bond methodology pin is write-once at issuance (#622).',
+    remediation: 'Use the bond’s existing pinned methodology or record an approved later-version report override.',
+  },
+  [ErrorCode.METHODOLOGY_VERSION_NOT_ALLOWED]: {
+    retryable: false,
+    safeMessage: 'The specified methodology version is not permitted for this operation.',
+    remediationHint: 'Draft, deprecated, or unapproved methodology version rejected (#622).',
+    remediation: 'Use the bond’s pinned active methodology version or provide an approved later-version override.',
   },
 };
 

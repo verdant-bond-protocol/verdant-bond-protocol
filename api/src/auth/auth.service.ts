@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   InternalServerErrorException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -20,6 +21,7 @@ import { VerifySignatureDto } from './dto/verify-signature.dto';
 import { ChallengeResponse, AuthTokenResponse, UserProfileResponse } from './interfaces/auth.interface';
 import { ConfigService } from '../config/config.service';
 import { RbacService } from './rbac.service';
+import { SessionService } from './session.service';
 
 const CHALLENGE_TTL_SECONDS = 300;
 
@@ -47,6 +49,7 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly config: ConfigService,
     private readonly rbacService: RbacService,
+    private readonly sessions: SessionService,
   ) {
     this.accessTokenExpiry = this.config.getJwtExpiry();
     this.refreshTokenExpiry = this.config.getJwtRefreshExpiry();
@@ -188,7 +191,10 @@ export class AuthService {
     const roles = this.rbacService.getUserRoles(dto.address);
     const permissions = this.rbacService.getUserPermissions(dto.address);
 
-    const payload = { sub: dto.address, kycStatus, roles, permissions };
+    // One session id per login, shared by the access/refresh pair so a single
+    // `revokeToken(jti)` revokes both. `sv` pins the token to the wallet epoch.
+    const { sessionVersion, jti } = await this.sessions.issue(dto.address);
+    const payload = { sub: dto.address, kycStatus, roles, permissions, sv: sessionVersion, jti };
     const accessToken = this.jwtService.sign(payload);
     const refreshToken = this.jwtService.sign(
       { ...payload, tokenType: 'refresh' },
@@ -208,19 +214,34 @@ export class AuthService {
     try {
       const payload = this.jwtService.verify(token, {
         secret: this.refreshTokenSecret,
-      }) as { sub: string; kycStatus: string; tokenType: string; roles?: string[]; permissions?: string[] };
+      }) as {
+        sub: string; kycStatus: string; tokenType: string;
+        roles?: string[]; permissions?: string[]; sv?: number; jti?: string;
+      };
       if (payload.tokenType !== 'refresh') {
         throw new UnauthorizedException('Invalid refresh token');
       }
+      // A stale/revoked refresh token must not mint a fresh access token.
+      await this.sessions.assertActive({
+        sub: payload.sub,
+        sv: payload.sv,
+        jti: payload.jti,
+      });
 
       // Recalculate roles just in case they changed
       const roles = this.rbacService.getUserRoles(payload.sub);
       const permissions = this.rbacService.getUserPermissions(payload.sub);
+      const sessionVersion = await this.sessions.currentVersion(payload.sub);
 
-      const newPayload = { sub: payload.sub, kycStatus: payload.kycStatus, roles, permissions };
+      const newPayload = {
+        sub: payload.sub, kycStatus: payload.kycStatus, roles, permissions,
+        sv: sessionVersion, jti: payload.jti,
+      };
       const accessToken = this.jwtService.sign(newPayload);
       return { accessToken, tokenType: 'Bearer', expiresIn: this.accessTokenExpiry };
-    } catch {
+    } catch (error) {
+      // Don't turn an outage into a bogus "bad credentials" answer.
+      if (error instanceof ServiceUnavailableException) throw error;
       throw new UnauthorizedException('Invalid or expired token');
     }
   }

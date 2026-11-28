@@ -7,6 +7,17 @@ describe('BoundedCacheService', () => {
     cache = new BoundedCacheService(10, 5000, 1000);
   });
 
+  it('rejects unbounded cache configuration', () => {
+    expect(() => new BoundedCacheService(0)).toThrow('maxSize must be a positive integer');
+    expect(() => new BoundedCacheService(1, -1)).toThrow('defaultTtlMs must be non-negative');
+  });
+
+  it('handles global regular expressions without skipping invalidations', () => {
+    cache.set('bond:1', 1);
+    cache.set('bond:2', 2);
+    expect(cache.invalidatePattern(/^bond:/g)).toBe(2);
+  });
+
   describe('Basic Operations', () => {
     it('should set and get values', () => {
       cache.set('key1', { value: 'test' });

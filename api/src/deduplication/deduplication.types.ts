@@ -124,6 +124,12 @@ export interface DeduplicationScanResult {
   candidatesFound: number;
   candidates: CandidateDuplicate[];
   scanFingerprint: string;
+  /**
+   * Additive content-bearing fingerprint. Unlike `scanFingerprint`, changes
+   * when scores, state digests, review status or the confidence threshold
+   * change. Optional so existing callers and stored results stay compatible.
+   */
+  scanFingerprintV2?: string;
   scannedAt: string;
 }
 

@@ -26,6 +26,8 @@ describe('ErrorTaxonomy', () => {
         ErrorCode.RATE_LIMIT_EXCEEDED,
         ErrorCode.QUEUE_BACKPRESSURE,
         ErrorCode.STEP_UP_REQUIRED,
+        ErrorCode.RECEIPT_PENDING,
+        ErrorCode.STALE_RATE_SOURCE,
       ].sort(),
     );
   });

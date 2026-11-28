@@ -74,12 +74,48 @@ describe('IncidentDrillService (#356 Incident Drill & Verification)', () => {
     });
   });
 
+  describe('Oracle Anomaly Circuit-Breaker Scoped Halt & Governed Resumption Drill (#642)', () => {
+    it('executes anomaly trip, verifies blast-radius scoping, enforces multisig gate, and validates baseline conservation', async () => {
+      const report = await drillService.runOracleCircuitBreakerRecoveryDrill();
+
+      expect(report.drillType).toBe('ORACLE_CIRCUIT_BREAKER_RECOVERY');
+      expect(report.status).toBe('PASSED');
+      expect(report.recoverySucceeded).toBe(true);
+      expect(report.dataValidationPassed).toBe(true);
+      expect(report.steps.length).toBeGreaterThanOrEqual(4);
+
+      // Verify specific steps
+      const tripStep = report.steps.find((s) => s.stepName === 'INJECT_STATISTICAL_ORACLE_ANOMALY');
+      expect(tripStep).toBeDefined();
+      expect(tripStep!.status).toBe('SUCCESS');
+
+      const gateStep = report.steps.find((s) => s.stepName === 'REHEARSE_UNAUTHORIZED_UNPAUSE_GATE');
+      expect(gateStep).toBeDefined();
+      expect(gateStep!.status).toBe('SUCCESS');
+
+      const resumeStep = report.steps.find((s) => s.stepName === 'EXECUTE_GOVERNED_MULTISIG_RESUMPTION');
+      expect(resumeStep).toBeDefined();
+      expect(resumeStep!.status).toBe('SUCCESS');
+
+      const invariantStep = report.steps.find((s) => s.stepName === 'VALIDATE_FINANCIAL_INVARIANTS');
+      expect(invariantStep).toBeDefined();
+      expect(invariantStep!.status).toBe('SUCCESS');
+
+      // User impact verification
+      expect(report.userImpact.impactSeverity).toBe('MEDIUM');
+      expect(report.userImpact.affectedUsersCount).toBe(88);
+      expect(report.userImpact.totalFinancialExposureUSD).toBe(120000);
+      expect(report.userImpact.slaBreachRisk).toBe(false);
+      expect(report.userImpact.userFacingMessage).toContain('safely held by the oracle anomaly circuit breaker');
+    });
+  });
+
   describe('Comprehensive Incident Drill Suite', () => {
-    it('executes all three mission-critical drills and returns overall PASSED status', async () => {
+    it('executes all four mission-critical drills and returns overall PASSED status', async () => {
       const suiteReport = await drillService.runAllDrills();
 
       expect(suiteReport.overallStatus).toBe('PASSED');
-      expect(suiteReport.drills).toHaveLength(3);
+      expect(suiteReport.drills).toHaveLength(4);
       expect(suiteReport.drills.every((d) => d.status === 'PASSED')).toBe(true);
     });
   });

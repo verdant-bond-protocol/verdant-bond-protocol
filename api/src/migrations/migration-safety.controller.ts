@@ -1,6 +1,17 @@
-import { Controller, Get, Post, Param, Body, UseGuards, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
 import { MigrationSafetyService } from './migration-safety.service';
 import { MigrationRunReport } from './migration.interface';
+import { ReleaseReadinessReport } from './release-readiness';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AdminGuard } from '../common/guards/admin.guard';
 import {
@@ -47,6 +58,31 @@ export class MigrationSafetyController {
   @Get('registered')
   async registered(): Promise<{ ids: string[] }> {
     return { ids: this.migrations.getRegisteredIds() };
+  }
+
+  /**
+   * Release go/no-go for migrations plus the rollback plan (#514). Read-only.
+   * `ids` is a comma-separated list in apply order (default: all registered);
+   * `maxDryRunAgeMinutes` overrides the 24h dry-run freshness window.
+   */
+  @Get('release-readiness')
+  async releaseReadiness(
+    @Query('ids') ids?: string,
+    @Query('maxDryRunAgeMinutes') maxDryRunAgeMinutes?: string,
+  ): Promise<ReleaseReadinessReport> {
+    const releaseIds = ids
+      ?.split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    let maxDryRunAgeMs: number | undefined;
+    if (maxDryRunAgeMinutes !== undefined) {
+      const minutes = Number(maxDryRunAgeMinutes);
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        throw new BadRequestException('maxDryRunAgeMinutes must be a positive number');
+      }
+      maxDryRunAgeMs = minutes * 60 * 1000;
+    }
+    return this.migrations.evaluateReleaseReadiness(releaseIds?.length ? releaseIds : undefined, { maxDryRunAgeMs });
   }
 
   /**

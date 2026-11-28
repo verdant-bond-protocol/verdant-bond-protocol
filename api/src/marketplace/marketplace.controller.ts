@@ -1,6 +1,6 @@
 import {
   Controller, Get, Post, Put, Delete, Body, Param, Query, Req,
-  HttpCode, HttpStatus, ParseIntPipe, UseGuards, NotFoundException, BadRequestException,
+  HttpCode, HttpStatus, ParseIntPipe, UseGuards, NotFoundException, BadRequestException, ForbiddenException,
 } from '@nestjs/common';
 import { DexService } from './dex.service';
 import { LiquidityService } from './liquidity.service';
@@ -179,13 +179,37 @@ export class MarketplaceController {
     return this.liquidityService.calculateSlippage(bondId, amount, quoteAsset);
   }
 
+  /**
+   * Pre-trade preview. Pass `orderId` to preview the exact fill a buy would
+   * make and `maxPriceImpactBps` to apply your own slippage tolerance (#638);
+   * the response then matches what `POST /marketplace/buy` will enforce.
+   */
   @Get('prices/:bondId/impact')
   async evaluatePriceImpact(
     @Param('bondId', ParseIntPipe) bondId: number,
     @Query('amount') amount: string,
     @Query('quoteAsset') quoteAsset: QuoteAsset = 'USDC',
+    @Query('orderId') orderId?: string,
+    @Query('maxPriceImpactBps') maxPriceImpactBps?: string,
   ): Promise<PriceImpactEvaluation> {
-    return this.priceImpactService.evaluatePriceImpact(bondId, amount, quoteAsset);
+    const options: { targetOrder?: OrderResponse; maxPriceImpactBps?: number } = {};
+    if (maxPriceImpactBps !== undefined) {
+      if (!/^\d+$/.test(maxPriceImpactBps)) {
+        throw new BadRequestException('maxPriceImpactBps must be an integer between 0 and 10000');
+      }
+      options.maxPriceImpactBps = Number(maxPriceImpactBps);
+    }
+    if (orderId !== undefined) {
+      if (!/^[1-9]\d*$/.test(orderId)) {
+        throw new BadRequestException('orderId must be a positive integer');
+      }
+      const order = await this.dexService.getOrder(Number(orderId));
+      if (order.bondId !== bondId) {
+        throw new BadRequestException(`Order ${orderId} does not belong to bond ${bondId}`);
+      }
+      options.targetOrder = order;
+    }
+    return this.priceImpactService.evaluatePriceImpact(bondId, amount, quoteAsset, options);
   }
 
   @Get('config/:bondId/impact-limits')
@@ -206,6 +230,14 @@ export class MarketplaceController {
     const operator = req.headers['x-wallet-address'] as string;
     if (!operator) {
       throw new BadRequestException('Missing x-wallet-address header for operator authorization');
+    }
+    // #638: loosening a thin market's limits is a privileged action. Any
+    // wallet header used to be accepted; only the protocol admin may now
+    // change them (same identity AdminGuard checks). Fail closed when the
+    // admin key is not configured.
+    const adminKey = process.env.STELLAR_PUBLIC_KEY;
+    if (!adminKey || operator !== adminKey) {
+      throw new ForbiddenException('Only the protocol admin may change price impact limits');
     }
     const patch: Partial<PriceImpactConfig> = {};
     if (dto.illiquidThresholdAmount !== undefined) patch.illiquidThresholdAmount = dto.illiquidThresholdAmount;

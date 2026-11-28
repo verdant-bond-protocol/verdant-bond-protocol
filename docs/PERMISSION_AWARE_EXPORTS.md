@@ -75,3 +75,65 @@ Exports can be cancelled via two mechanisms:
 ### Rollback / Recovery Steps
 - If an export fails: status updates to `'failed'` with error diagnostics; caller may re-request with narrower date boundaries.
 - Completed exports are retained for 30 days (`DEFAULT_RETENTION_DAYS`) and auto-expire via Redis TTL.
+
+---
+
+## 5. Field Redaction Modes (#506)
+
+The role matrix above decides **which** fields a caller may not see. The
+redaction mode decides **how** they are hidden. Logic lives in
+[`api/src/exports/services/export-field-redaction.ts`](../api/src/exports/services/export-field-redaction.ts).
+
+| Mode | Behaviour | Use when |
+|---|---|---|
+| `strip` (default) | Forbidden fields are removed — identical to the pre-#506 output. | Existing integrations; nothing changes unless a caller opts in. |
+| `mask` | Forbidden fields stay in the record with a placeholder, so every role gets the same column set. | CSV/BI consumers that need a stable schema, or reviewers who must tell "redacted" from "absent". |
+
+Opt in with `ExportStreamOptions.redaction = 'mask'` (or the new trailing
+`redaction` argument of `ExportService.streamExportDataset`).
+
+### Per-field strategy in `mask` mode
+
+| Field (case-insensitive, any depth) | Strategy | Output |
+|---|---|---|
+| `signingKey`, `signingSeed`, `privateKey`, `passwordHash`, `nonce`, `rawKycDocument` | `strip` — in **every** mode | key removed; not even its presence leaks |
+| `ssn`, `nationalId`, `passportNumber`, `taxId` | `partial` | last 4 characters when the value is ≥ 8 long (`*******6789`), else `[REDACTED]` |
+| any other forbidden field (`internalRiskScore`, `complianceNotes`, …) | `mask` | `[REDACTED]` (a nested object is masked as one value) |
+
+### Redaction manifest
+
+Every `ExportStreamResult` (completed, cancelled, or failed) now carries
+`redaction`: the policy version, mode, caller role, and for each redacted
+path (`data.beneficiaries[].passportNumber`) the strategy and count. Store it
+with the export record so auditors can see exactly what was withheld without
+seeing the values.
+
+### Authorization
+
+- Export-type permission and investor ownership checks run **before** any
+  redaction, in both modes — masking is never a way around them.
+- A caller whose role has no field policy is refused (`403`) instead of
+  being treated as "nothing to hide". This tightens `sanitizeRecordForCaller`,
+  which previously exported such records unredacted if called directly;
+  `streamExport` already refused them via the type matrix.
+- An unknown mode is rejected with `400` before the source is read.
+
+### Retry & recovery
+
+Redaction is deterministic (no randomness, no clock), so retrying a failed or
+cancelled export yields byte-identical records. The manifest is built fresh
+per run, so a retry reports only its own redactions — never cumulative counts
+from the failed attempt. A failed run's partial output should be discarded as
+described in §4; nothing about redaction needs to be undone.
+
+### Compatibility / migration
+
+- Default mode is `strip`; existing callers and the existing
+  `sanitizeRecordForCaller(record, caller)` two-argument form are unchanged.
+- `ExportStreamOptions.redaction` and `ExportStreamResult.redaction` are
+  optional, additive fields.
+- Consumers moving to `mask` should expect string placeholders in fields
+  that used to be absent (e.g. `internalRiskScore: "[REDACTED]"` instead of
+  a missing number) and update schema validation accordingly.
+
+Tests: `api/src/exports/services/export-field-redaction.spec.ts`.

@@ -91,9 +91,9 @@ run `--interval` as a long-lived process and alert on `"ok":false` lines.
   "totalLatencyMs": 104,
   "bondId": 3,
   "steps": [
-    { "name": "readiness", "ok": false, "latencyMs": 89, "dependency": "soroban-rpc", "error": "Degraded: soroban-rpc" },
-    { "name": "list-bonds", "ok": true, "latencyMs": 10 },
-    { "name": "bond-detail", "ok": false, "latencyMs": 4, "httpStatus": 504, "dependency": "soroban-rpc",
+    { "name": "readiness", "ok": false, "latencyMs": 89, "attempts": 1, "dependency": "soroban-rpc", "error": "Degraded: soroban-rpc" },
+    { "name": "list-bonds", "ok": true, "latencyMs": 10, "attempts": 1 },
+    { "name": "bond-detail", "ok": false, "latencyMs": 4, "attempts": 3, "httpStatus": 504, "dependency": "soroban-rpc",
       "error": "GET /api/bonds/3/detail → 504: An unexpected error occurred. Please contact support with your correlation ID." }
   ],
   "blame": "soroban-rpc",
@@ -101,8 +101,43 @@ run `--interval` as a long-lived process and alert on `"ok":false` lines.
 }
 ```
 
+## Bounded retries for transient faults
+
+By default each step is attempted once. `--max-attempts=N` (env
+`SYNTHETIC_MAX_ATTEMPTS`, default `1`) retries *transient* step faults up to
+`N` total attempts, waiting `--retry-delay-ms=M` (env
+`SYNTHETIC_RETRY_DELAY_MS`, default `0`) between them. `POST /ops/synthetic-journey`
+exposes the same two controls as query parameters.
+
+| Fault | Retried? | Blame |
+|---|---|---|
+| Timeout, dropped connection, network error | yes | `api` |
+| HTTP 408 / 429 / 5xx | yes | the step's own dependency (e.g. `soroban-rpc`) |
+| HTTP 401 / 403 | **no** | `config` (synthetic credentials) |
+| Other 4xx | **no** | `api` |
+| Degraded `/health/ready` | **no** | the degraded dependency |
+| No subscribable bond / predicted contract rejection | **no** | `data` |
+| Transaction failed or never settled | **no** | `stellar-network` |
+
+Each `steps[]` entry now carries an `attempts` count, so an alert can distinguish
+"flaky but recovered" (`attempts > 1, ok: true`) from "down" (`attempts == N,
+ok: false`). Retrying a *write* step is safe: one idempotency key is generated per
+run and reused by every subscribe attempt, so a lost reply cannot cause a second
+subscription.
+
+Tests: `api/src/ops/synthetic-journey.retry.spec.ts` covers normal (no retries),
+transient 5xx/408/429/network retries, bounded exhaustion, authorization
+(never retried), degraded readiness, idempotency-key reuse and per-run key
+generation.
+
 ## Edge cases and failure modes
 
+- **Retries extend a run's duration.** `totalLatencyMs` includes retry delays,
+  so keep `stepTimeoutMs × maxAttempts + retryDelayMs × (maxAttempts − 1)` below
+  the scheduler's interval to avoid overlapping runs. Scheduled runs never
+  overlap by design.
+- **A retried 5xx is still an incident.** `attempts > 1` on a passing step means
+  the dependency was flaky; alert on the count as well as on `ok: false`.
 - **Cached reads.** `GET /api/bonds` is cached in Redis for 60 seconds, so `list-bonds` can
   pass while Soroban RPC is down. `bond-detail` and `preview-subscribe` read the chain, so
   they still catch it.
@@ -121,4 +156,8 @@ run `--interval` as a long-lived process and alert on `"ok":false` lines.
 ## Rollback
 
 The monitor only calls public endpoints and has no state. To roll back, stop the scheduled
-runs and remove the `monitor:journey` script. Nothing else depends on it.
+runs and remove the `monitor:journey` script. Nothing else depends on it. To disable
+retries without touching the runner, remove `--max-attempts` / the
+`SYNTHETIC_MAX_ATTEMPTS` env var (the default is one attempt, the original
+behaviour). The added `steps[].attempts` field is additive: consumers that ignore
+it keep working.
