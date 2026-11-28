@@ -28,6 +28,8 @@ export const OracleKeySchema = z
     secret: z.string().min(1),
     validFromMs: z.number().int().nonnegative(),
     validUntilMs: z.number().int().nonnegative().nullable().optional(),
+    /** Emergency revocation is separate from normal rolling retirement. */
+    revokedAtMs: z.number().int().nonnegative().nullable().optional(),
     revokedAtMs: z.number().int().nonnegative().nullable().optional(),
     revocationReason: z.string().min(1).nullable().optional(),
     revokedBy: z.string().min(1).nullable().optional(),
@@ -35,6 +37,10 @@ export const OracleKeySchema = z
   .refine(
     (key) => key.validUntilMs == null || key.validUntilMs > key.validFromMs,
     { message: 'validUntilMs must be after validFromMs' },
+  )
+  .refine(
+    (key) => key.revokedAtMs == null || key.revokedAtMs >= key.validFromMs,
+    { message: 'revokedAtMs must be at or after validFromMs' },
   );
 
 export type OracleKey = z.infer<typeof OracleKeySchema>;
@@ -138,6 +144,37 @@ export class OracleKeyring {
    */
   withKey(key: OracleKey): OracleKeyring {
     return new OracleKeyring([...this.keys, key]);
+  }
+
+  /**
+   * Emergency revoke a key with a two-approver recovery decision.  Normal
+   * rotation should use `rotateKey`, which preserves the configured overlap;
+   * revocation closes the key immediately for signatures at or after the
+   * decision timestamp.  The returned keyring is immutable and auditable.
+   */
+  revokeKey(
+    keyId: string,
+    approvers: readonly string[],
+    revokedAtMs: number,
+  ): OracleKeyring {
+    const uniqueApprovers = new Set(approvers.filter((approver) => approver.length > 0));
+    if (uniqueApprovers.size < 2) {
+      throw new Error('Emergency oracle key revocation requires two approvers');
+    }
+    if (!Number.isInteger(revokedAtMs) || revokedAtMs < 0) {
+      throw new Error('revokedAtMs must be a non-negative integer');
+    }
+    let found = false;
+    const revoked = this.keys.map((key) => {
+      if (key.keyId !== keyId) return key;
+      if (revokedAtMs < key.validFromMs) {
+        throw new Error('revokedAtMs cannot precede key validity');
+      }
+      found = true;
+      return { ...key, revokedAtMs };
+    });
+    if (!found) throw new Error(`Unknown oracle key id: ${keyId}`);
+    return new OracleKeyring(revoked);
   }
 
   /**
